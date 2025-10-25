@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="001-reference-tables" author="englishfriend">
+        <comment>Create enums and static reference tables</comment>
+        
+        <sql>
+            DO $$ BEGIN
+                CREATE TYPE cefr_level AS ENUM ('A1','A2','B1','B2','C1','C2');
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        </sql>
+        
+        <sql>
+            DO $$ BEGIN
+                CREATE TYPE memory_kind AS ENUM ('episodic','semantic','persona','skill');
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        </sql>
+        
+        <sql>
+            DO $$ BEGIN
+                CREATE TYPE access_channel AS ENUM ('telegram','mobile_app','web');
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        </sql>
+        
+        <createTable tableName="dim_emotion">
+            <column name="code" type="text">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="name_ru" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="valence" type="int">
+                <constraints nullable="false"/>
+            </column>
+            <column name="arousal" type="int">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        
+        <addCheckConstraint tableName="dim_emotion" constraintName="dim_emotion_valence_check" checkCondition="valence between -5 and 5"/>
+        <addCheckConstraint tableName="dim_emotion" constraintName="dim_emotion_arousal_check" checkCondition="arousal between 0 and 5"/>
+        
+        <createTable tableName="dim_topic">
+            <column name="id" type="uuid" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="slug" type="text">
+                <constraints unique="true" nullable="false"/>
+            </column>
+            <column name="display_name" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="parent_id" type="uuid"/>
+            <column name="updated_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        
+        <addForeignKeyConstraint baseTableName="dim_topic" baseColumnNames="parent_id" 
+                                 constraintName="dim_topic_parent_id_fkey" 
+                                 referencedTableName="dim_topic" referencedColumnNames="id" 
+                                 onDelete="SET NULL"/>
+        
+        <createTable tableName="dim_accent">
+            <column name="code" type="text">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="display_name" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        
+        <rollback>
+            DROP TABLE IF EXISTS dim_accent;
+            DROP TABLE IF EXISTS dim_topic;
+            DROP TABLE IF EXISTS dim_emotion;
+            DROP TYPE IF EXISTS access_channel;
+            DROP TYPE IF EXISTS memory_kind;
+            DROP TYPE IF EXISTS cefr_level;
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

@@ -1,0 +1,30 @@
+## Postgres Data Layer
+
+This directory contains migrations, seeds, and tests for the English Friend data layer (Sprints 1‑3).
+
+### Layout
+
+- `migrations/postgres` — ordered SQL migrations (Flyway-compatible) to bootstrap Postgres.
+- `seed` — deterministic inserts for reference tables (`dim_emotion`, `dim_topic`, `dim_accent`).
+- `tests` — pgTAP suites and helper scripts to validate constraints, partitions, and RLS.
+
+### Running locally
+
+```bash
+docker compose up -d postgres
+psql $DATABASE_URL -f db/migrations/postgres/000_init.sql
+psql $DATABASE_URL -f db/migrations/postgres/001_reference_tables.sql
+psql $DATABASE_URL -f db/migrations/postgres/002_users.sql
+psql $DATABASE_URL -f db/migrations/postgres/003_sessions_utterances.sql
+psql $DATABASE_URL -f db/migrations/postgres/004_partition_management.sql
+psql $DATABASE_URL -f db/migrations/postgres/005_memories_learning_plan.sql
+psql $DATABASE_URL -f db/migrations/postgres/006_materialized_views.sql
+psql $DATABASE_URL -f db/seed/001_reference_seed.sql
+pg_prove db/tests/010_users_channel_identity.sql
+pg_prove db/tests/020_sessions_utterances.sql
+pg_prove db/tests/030_partition_management.sql
+pg_prove db/tests/040_memories_learning_plan.sql
+pg_prove db/tests/050_mv_weekly_summary.sql
+```
+
+> Adjust connection variables to point at your local Postgres instance. The migrations are idempotent and may be re-applied safely in dev. Tests rely on pgTAP being installed in the target database.

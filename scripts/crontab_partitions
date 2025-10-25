@@ -1,0 +1,15 @@
+# Crontab configuration for English Friend partition management
+# Add this to your crontab with: crontab -e
+# Or install with: crontab scripts/crontab_partitions
+
+# Create new partitions every month on the 1st at 2 AM
+0 2 1 * * /path/to/englishFriend/scripts/manage_partitions.sh create 3
+
+# Cleanup old partitions every month on the 1st at 3 AM (after creation)
+0 3 1 * * /path/to/englishFriend/scripts/manage_partitions.sh cleanup 12
+
+# Show partition status every week on Sunday at 1 AM
+0 1 * * 0 /path/to/englishFriend/scripts/manage_partitions.sh show
+
+# Alternative: Run both create and cleanup in sequence
+# 0 2 1 * * /path/to/englishFriend/scripts/manage_partitions.sh both 3 12

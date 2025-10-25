@@ -1,0 +1,58 @@
+services:
+  partition-manager:
+    image: postgres:15
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: englishfriend_dev
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      MONTHS_AHEAD: 3
+      RETENTION_MONTHS: 12
+    volumes:
+      - ./scripts/manage_partitions.sh:/usr/local/bin/manage_partitions.sh:ro
+      - ./scripts/cron_partitions.sh:/usr/local/bin/cron_partitions.sh:ro
+    command: >
+      bash -c "
+        apt-get update &&
+        apt-get install -y cron &&
+        chmod +x /usr/local/bin/manage_partitions.sh &&
+        chmod +x /usr/local/bin/cron_partitions.sh &&
+        cp /usr/local/bin/cron_partitions.sh /etc/cron.d/partition-management &&
+        chmod 0644 /etc/cron.d/partition-management &&
+        cron &&
+        tail -f /var/log/cron.log
+      "
+    depends_on:
+      - postgres
+    networks:
+      - englishfriend_default
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: englishfriend_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      bash -c "
+        apt-get update &&
+        apt-get install -y postgresql-15-pgtap &&
+        docker-entrypoint.sh postgres
+      "
+
+volumes:
+  postgres_data:
+
+networks:
+  englishfriend_default:
+    external: true

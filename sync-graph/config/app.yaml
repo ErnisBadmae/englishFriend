@@ -1,0 +1,22 @@
+kafka:
+  brokers:
+    - kafka:29092
+  topics:
+    - graph.public.sessions
+    - graph.public.utterances
+    - graph.public.corrections
+    - graph.public.user_interest
+  group_id: sync-graph
+  batch_size: 500
+  poll_timeout_ms: 500
+  dlq_topic: graph_failures
+
+neo4j:
+  uri: bolt://neo4j:7687
+  user: neo4j
+  password: password
+  ingest_script: /app/graph/schema/ingest.cypher
+
+observability:
+  port: 8091
+  log_level: info
