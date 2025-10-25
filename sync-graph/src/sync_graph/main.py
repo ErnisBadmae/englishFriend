@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 from confluent_kafka import Consumer
@@ -33,18 +33,48 @@ def build_consumer(cfg: Dict[str, Any]) -> Consumer:
     return consumer
 
 
+def _normalize_session_payload(value: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    source = value.get("source", {})
+    if source.get("table") != "sessions":
+        return None
+    after = value.get("after") or {}
+    session_id = after.get("id")
+    user_id = after.get("user_id")
+    started = after.get("started_at")
+    if not all([session_id, user_id, started]):
+        logger.warning(
+            "Skipping session event due to missing required fields (id/user_id/started_at): %s",
+            after,
+        )
+        return None
+    return {
+        "id": session_id,
+        "user_id": user_id,
+        "started_at": started,
+        "ended_at": after.get("ended_at"),
+        "lang_code": after.get("lang_code") or "en",
+    }
+
+
 def process_batch(records: List[Any], driver, ingest_script: str) -> None:
     if not records:
         return
     payloads = []
     for record in records:
         value = json.loads(record.value())
-        payloads.append(value)
+        logger.info("Processing event: %s", value.get("source", {}).get("table", "unknown"))
+        normalized = _normalize_session_payload(value)
+        if normalized:
+            logger.info("Normalized payload: %s", normalized)
+            payloads.append(normalized)
+        else:
+            logger.info("Skipped event (not a session)")
     with driver.session() as session:
         cypher = Path(ingest_script).read_text(encoding="utf-8")
         for payload in payloads:
+            logger.info("Executing Cypher with payload: %s", payload)
             session.run(cypher, **payload)
-    logger.info("Flushed %s events", len(records))
+    logger.info("Flushed %s session events", len(payloads))
 
 
 def run_service(config_path: str) -> None:

@@ -14,7 +14,7 @@
     "topic.creation.default.partitions": "1",
     "slot.name": "graph_slot",
     "plugin.name": "pgoutput",
-    "publication.autocreate.mode": "filtered",
+    "publication.autocreate.mode": "disabled",
     "publication.name": "graph_publication",
     "tombstones.on.delete": "true",
     "delete.handling.mode": "rewrite",

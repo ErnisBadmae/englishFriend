@@ -16,5 +16,6 @@
 
 ## Troubleshooting
 - Missing nodes: check Debezium status (`curl :8083/connectors/graph-connector/status`).
+- Sessions topic empty: rerun `db/migrations/postgres/007_publications.sql` so `graph_publication` is recreated with `publish_via_partition_root = true`, delete/recreate the `graph-connector`, then replay a write into `sessions` and verify `graph.public.sessions` via `kafka-console-consumer`.
 - Constraint errors: ensure `graph/schema/constraints.cypher` applied.
 - Performance: reduce batch size or tune Neo4j memory.

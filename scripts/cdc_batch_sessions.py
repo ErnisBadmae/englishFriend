@@ -28,6 +28,13 @@ def main() -> None:
         user_id = (i % 10) + 1
         session_id = random_uuid('00000000-0000-0000-0000-')
         started = now - timedelta(minutes=i)
+        
+        # Create user if not exists
+        cur.execute(
+            "insert into users (id, telegram_id, username, language_level, primary_channel, accent_pref) values (%s, %s, %s, %s, %s, %s) on conflict (id) do nothing",
+            (user_id, 100000000 + user_id, f'user_{user_id}', 'B1', 'telegram', 'us_general')
+        )
+        
         cur.execute(
             "insert into sessions (id, user_id, started_at) values (%s, %s, %s) on conflict do nothing",
             (session_id, user_id, started)
