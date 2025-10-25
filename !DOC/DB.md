@@ -61,6 +61,7 @@ create extension if not exists pg_trgm;      -- поиск по тексту
 ```sql
 create type cefr_level as enum ('A1','A2','B1','B2','C1','C2');
 create type memory_kind as enum ('episodic','semantic','persona','skill');
+create type access_channel as enum ('telegram','mobile_app','web');
 
 create table dim_emotion (
   code text primary key,
@@ -87,14 +88,27 @@ create table dim_accent (
 ```sql
 create table users (
   id bigserial primary key,
-  telegram_id bigint unique not null,
+  telegram_id bigint unique,
   username varchar(255),
   language_level cefr_level,
+  primary_channel access_channel not null default 'telegram',
   accent_pref text references dim_accent(code),
   pii_envelope bytea,                      -- опционально: зашифрованный PII
   created_at timestamptz default now(),
   deleted_at timestamptz
 );
+
+create table user_channel_identity (
+  id uuid primary key,
+  user_id bigint references users(id) on delete cascade,
+  channel access_channel not null,
+  external_id text not null,
+  auth_payload jsonb,
+  linked_at timestamptz default now(),
+  unique (channel, external_id),
+  unique (user_id, channel)
+);
+create index user_channel_identity_uidx on user_channel_identity (user_id, channel);
 
 create table user_interest (
   user_id bigint references users(id) on delete cascade,
