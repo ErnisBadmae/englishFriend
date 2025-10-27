@@ -73,14 +73,13 @@ class MemoryService:
         self.db = db
 
     async def create_memory(self, memory_data: MemoryCreate) -> Memory:
-        """Создать запись памяти"""
+        """Создать запись памяти (соответствует схеме 005_memories_learning_plan.sql)"""
         db_memory = Memory(
             user_id=memory_data.user_id,
-            session_id=memory_data.session_id,
-            utterance_id=memory_data.utterance_id,
             kind=memory_data.kind,
             content=memory_data.content,
-            metadata=memory_data.metadata
+            meta=memory_data.meta,
+            salience=memory_data.salience
         )
         self.db.add(db_memory)
         await self.db.commit()
@@ -105,12 +104,20 @@ class MemoryService:
         )
         return list(result.scalars().all())
 
-    async def update_memory_access(self, memory_id: str) -> Optional[Memory]:
-        """Обновить время последнего доступа к памяти"""
+    async def update_memory(self, memory_id: str, update_data: MemoryUpdate) -> Optional[Memory]:
+        """Обновить запись памяти (соответствует схеме 005_memories_learning_plan.sql)"""
+        values = {}
+        if update_data.content is not None:
+            values['content'] = update_data.content
+        if update_data.meta is not None:
+            values['meta'] = update_data.meta
+        if update_data.salience is not None:
+            values['salience'] = update_data.salience
+        
         stmt = (
             update(Memory)
             .where(Memory.id == memory_id)
-            .values(last_accessed=datetime.utcnow())
+            .values(**values)
             .returning(Memory)
         )
         result = await self.db.execute(stmt)
@@ -138,14 +145,12 @@ class LearningPlanService:
         self.db = db
 
     async def create_plan(self, plan_data: LearningPlanCreate) -> LearningPlan:
-        """Создать план обучения"""
+        """Создать план обучения (соответствует схеме 005_memories_learning_plan.sql)"""
         db_plan = LearningPlan(
             user_id=plan_data.user_id,
-            target_level=plan_data.target_level,
-            current_level=plan_data.current_level,
-            topics=plan_data.topics,
-            milestones=plan_data.milestones,
-            is_active=plan_data.is_active
+            level_target=plan_data.level_target,
+            next_review_at=plan_data.next_review_at,
+            roadmap=plan_data.roadmap
         )
         self.db.add(db_plan)
         await self.db.commit()
@@ -159,28 +164,31 @@ class LearningPlanService:
         )
         return result.scalar_one_or_none()
 
-    async def get_user_active_plan(self, user_id: int) -> Optional[LearningPlan]:
-        """Получить активный план обучения пользователя"""
+    async def get_user_plan(self, user_id: int) -> Optional[LearningPlan]:
+        """Получить план обучения пользователя (соответствует схеме 005_memories_learning_plan.sql)"""
         result = await self.db.execute(
             select(LearningPlan)
-            .where(LearningPlan.user_id == user_id, LearningPlan.is_active == True)
-            .order_by(LearningPlan.created_at.desc())
+            .where(LearningPlan.user_id == user_id)
+            .order_by(LearningPlan.updated_at.desc())
         )
         return result.scalar_one_or_none()
 
     async def update_plan(self, plan_id: str, plan_data: LearningPlanUpdate) -> Optional[LearningPlan]:
-        """Обновить план обучения"""
+        """Обновить план обучения (соответствует схеме 005_memories_learning_plan.sql)"""
+        values = {}
+        if plan_data.level_target is not None:
+            values['level_target'] = plan_data.level_target
+        if plan_data.next_review_at is not None:
+            values['next_review_at'] = plan_data.next_review_at
+        if plan_data.roadmap is not None:
+            values['roadmap'] = plan_data.roadmap
+        
+        values['updated_at'] = datetime.utcnow()
+        
         stmt = (
             update(LearningPlan)
             .where(LearningPlan.id == plan_id)
-            .values(
-                target_level=plan_data.target_level,
-                current_level=plan_data.current_level,
-                topics=plan_data.topics,
-                milestones=plan_data.milestones,
-                is_active=plan_data.is_active,
-                updated_at=datetime.utcnow()
-            )
+            .values(**values)
             .returning(LearningPlan)
         )
         result = await self.db.execute(stmt)
@@ -197,13 +205,12 @@ class XPEventService:
         self.db = db
 
     async def create_xp_event(self, event_data: XPEventCreate) -> XPEvent:
-        """Создать событие XP"""
+        """Создать событие XP (соответствует схеме 005_memories_learning_plan.sql)"""
         db_event = XPEvent(
             user_id=event_data.user_id,
             session_id=event_data.session_id,
-            event_type=event_data.event_type,
-            xp_delta=event_data.xp_delta,
-            metadata=event_data.metadata
+            kind=event_data.kind,
+            points=event_data.points
         )
         self.db.add(db_event)
         await self.db.commit()
@@ -211,20 +218,20 @@ class XPEventService:
         return db_event
 
     async def get_user_xp_events(self, user_id: int, skip: int = 0, limit: int = 100) -> List[XPEvent]:
-        """Получить события XP пользователя"""
+        """Получить события XP пользователя (соответствует схеме 005_memories_learning_plan.sql)"""
         result = await self.db.execute(
             select(XPEvent)
             .where(XPEvent.user_id == user_id)
-            .order_by(XPEvent.created_at.desc())
+            .order_by(XPEvent.happened_at.desc())
             .offset(skip)
             .limit(limit)
         )
         return list(result.scalars().all())
 
     async def get_user_total_xp(self, user_id: int) -> int:
-        """Получить общий XP пользователя"""
+        """Получить общий XP пользователя (соответствует схеме 005_memories_learning_plan.sql)"""
         result = await self.db.execute(
-            select(func.sum(XPEvent.xp_delta))
+            select(func.sum(XPEvent.points))
             .where(XPEvent.user_id == user_id)
         )
         total_xp = result.scalar() or 0

@@ -97,7 +97,7 @@ async def get_top_user_interests(
 async def update_interest_weight(
     user_id: int,
     topic_id: str,
-    weight: float = Query(..., ge=0, le=10, description="Новый вес интереса"),
+    weight: float = Query(..., ge=0, le=1, description="Новый вес интереса (0-1)"),
     db: AsyncSession = Depends(get_db)
 ):
     """
