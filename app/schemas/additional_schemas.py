@@ -59,10 +59,10 @@ class CorrectionListResponse(BaseModel):
 
 # Схемы для UserInterest
 class UserInterestBase(BaseModel):
-    """Базовая схема интереса пользователя"""
+    """Базовая схема интереса пользователя (соответствует 002_users.sql: weight check >= 0 and <= 1)"""
     user_id: int = Field(..., description="ID пользователя")
     topic_id: str = Field(..., description="ID темы")
-    weight: float = Field(1.0, ge=0, le=10, description="Вес интереса")
+    weight: float = Field(0.0, ge=0, le=1, description="Вес интереса (0-1)")
     last_mentioned: Optional[datetime] = Field(None, description="Последнее упоминание")
 
 class UserInterestCreate(UserInterestBase):
@@ -71,7 +71,7 @@ class UserInterestCreate(UserInterestBase):
 
 class UserInterestUpdate(BaseModel):
     """Схема для обновления интереса пользователя"""
-    weight: Optional[float] = Field(None, ge=0, le=10)
+    weight: Optional[float] = Field(None, ge=0, le=1)
     last_mentioned: Optional[datetime] = None
 
 class UserInterestResponse(UserInterestBase):
@@ -85,15 +85,14 @@ class UserInterestListResponse(BaseModel):
     interests: List[UserInterestResponse] = Field(..., description="Список интересов")
     total: int = Field(..., description="Общее количество интересов")
 
-# Схемы для Memory
+# Схемы для Memory (соответствует 005_memories_learning_plan.sql)
 class MemoryBase(BaseModel):
     """Базовая схема памяти"""
     user_id: int = Field(..., description="ID пользователя")
-    session_id: Optional[str] = Field(None, description="ID сессии")
-    utterance_id: Optional[str] = Field(None, description="ID реплики")
     kind: MemoryKind = Field(..., description="Тип памяти")
     content: str = Field(..., description="Содержимое памяти")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Метаданные")
+    meta: Optional[Dict[str, Any]] = Field(None, description="Метаданные (jsonb)")
+    salience: float = Field(0.5, ge=0, le=1, description="Важность памяти (0-1)")
 
 class MemoryCreate(MemoryBase):
     """Схема для создания памяти"""
@@ -102,14 +101,14 @@ class MemoryCreate(MemoryBase):
 class MemoryUpdate(BaseModel):
     """Схема для обновления памяти"""
     content: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    last_accessed: Optional[datetime] = None
+    meta: Optional[Dict[str, Any]] = None
+    salience: Optional[float] = Field(None, ge=0, le=1)
 
 class MemoryResponse(MemoryBase):
     """Схема ответа для памяти"""
     id: str = Field(..., description="UUID памяти")
     created_at: datetime = Field(..., description="Дата создания")
-    last_accessed: Optional[datetime] = Field(None, description="Последний доступ")
+    last_refreshed: datetime = Field(..., description="Последнее обновление")
     
     class Config:
         from_attributes = True
@@ -119,15 +118,13 @@ class MemoryListResponse(BaseModel):
     memories: List[MemoryResponse] = Field(..., description="Список записей памяти")
     total: int = Field(..., description="Общее количество записей")
 
-# Схемы для LearningPlan
+# Схемы для LearningPlan (соответствует 005_memories_learning_plan.sql)
 class LearningPlanBase(BaseModel):
     """Базовая схема плана обучения"""
     user_id: int = Field(..., description="ID пользователя")
-    target_level: str = Field(..., max_length=10, description="Целевой уровень")
-    current_level: str = Field(..., max_length=10, description="Текущий уровень")
-    topics: Dict[str, Any] = Field(..., description="Темы")
-    milestones: Dict[str, Any] = Field(..., description="Этапы")
-    is_active: bool = Field(True, description="Активен ли план")
+    level_target: Optional[str] = Field(None, max_length=10, description="Целевой уровень CEFR")
+    next_review_at: Optional[datetime] = Field(None, description="Дата следующего пересмотра")
+    roadmap: Optional[Dict[str, Any]] = Field(None, description="Дорожная карта обучения (jsonb)")
 
 class LearningPlanCreate(LearningPlanBase):
     """Схема для создания плана обучения"""
@@ -135,16 +132,13 @@ class LearningPlanCreate(LearningPlanBase):
 
 class LearningPlanUpdate(BaseModel):
     """Схема для обновления плана обучения"""
-    target_level: Optional[str] = Field(None, max_length=10)
-    current_level: Optional[str] = Field(None, max_length=10)
-    topics: Optional[Dict[str, Any]] = None
-    milestones: Optional[Dict[str, Any]] = None
-    is_active: Optional[bool] = None
+    level_target: Optional[str] = Field(None, max_length=10)
+    next_review_at: Optional[datetime] = None
+    roadmap: Optional[Dict[str, Any]] = None
 
 class LearningPlanResponse(LearningPlanBase):
     """Схема ответа для плана обучения"""
     id: str = Field(..., description="UUID плана")
-    created_at: datetime = Field(..., description="Дата создания")
     updated_at: datetime = Field(..., description="Дата обновления")
     
     class Config:
@@ -155,14 +149,13 @@ class LearningPlanListResponse(BaseModel):
     plans: List[LearningPlanResponse] = Field(..., description="Список планов")
     total: int = Field(..., description="Общее количество планов")
 
-# Схемы для XPEvent
+# Схемы для XPEvent (соответствует 005_memories_learning_plan.sql)
 class XPEventBase(BaseModel):
     """Базовая схема события XP"""
     user_id: int = Field(..., description="ID пользователя")
     session_id: Optional[str] = Field(None, description="ID сессии")
-    event_type: str = Field(..., max_length=50, description="Тип события")
-    xp_delta: int = Field(..., description="Изменение XP")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Метаданные")
+    kind: str = Field(..., max_length=50, description="Тип события")
+    points: int = Field(..., description="Очки XP")
 
 class XPEventCreate(XPEventBase):
     """Схема для создания события XP"""
@@ -171,7 +164,7 @@ class XPEventCreate(XPEventBase):
 class XPEventResponse(XPEventBase):
     """Схема ответа для события XP"""
     id: str = Field(..., description="UUID события")
-    created_at: datetime = Field(..., description="Дата создания")
+    happened_at: datetime = Field(..., description="Дата события")
     
     class Config:
         from_attributes = True

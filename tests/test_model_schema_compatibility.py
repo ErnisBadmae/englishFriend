@@ -5,8 +5,7 @@
 
 import pytest
 from sqlalchemy import inspect, MetaData
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from app.core.database import Base
 from app.models.core_tables import User, Session, Utterance, Feedback, Correction, UserChannelIdentity

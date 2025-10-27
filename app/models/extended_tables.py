@@ -9,15 +9,25 @@ from app.core.database import Base
 from app.models.enums_and_dimensions import MemoryKind
 
 class UserInterest(Base):
-    """Модель интересов пользователя (синхронизирована с db/migrations/postgres/002_users.sql)"""
+    """
+    Модель интересов пользователя (синхронизирована с db/migrations/postgres/002_users.sql)
+    
+    Соответствует SQL схеме:
+    - weight real not null default 0 check (weight >= 0 and weight <= 1)
+    """
     
     __tablename__ = "user_interest"
     
     # Основные поля
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     topic_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("dim_topic.id", ondelete="CASCADE"), primary_key=True)
-    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, 
+                                          comment="Weight between 0 and 1 per SQL check constraint")
     last_mentioned: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
+    __table_args__ = (
+        CheckConstraint('weight >= 0 AND weight <= 1', name='weight_check'),
+    )
     
     # Связи
     user: Mapped["User"] = relationship("User", back_populates="interests")
@@ -27,7 +37,12 @@ class UserInterest(Base):
         return f"<UserInterest(user_id={self.user_id}, topic_id={self.topic_id}, weight={self.weight})>"
 
 class Memory(Base):
-    """Модель канонических записей памяти (синхронизирована с db/migrations/postgres/005_memories_learning_plan.sql)"""
+    """
+    Модель канонических записей памяти (синхронизирована с db/migrations/postgres/005_memories_learning_plan.sql)
+    
+    Соответствует SQL схеме:
+    - salience real not null default 0.5 check (salience between 0 and 1)
+    """
     
     __tablename__ = "memories"
     
@@ -39,11 +54,16 @@ class Memory(Base):
     kind: Mapped[str] = mapped_column(String(20), nullable=False)  # MemoryKind
     content: Mapped[str] = mapped_column(Text, nullable=False)
     meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5,
+                                            comment="Salience between 0 and 1 per SQL check constraint")
     
     # Временные метки
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     last_refreshed: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    __table_args__ = (
+        CheckConstraint('salience >= 0 AND salience <= 1', name='salience_check'),
+    )
     
     # Связи
     user: Mapped["User"] = relationship("User", back_populates="memories")

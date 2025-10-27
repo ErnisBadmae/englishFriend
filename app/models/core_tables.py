@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA
 import uuid
 
 from app.core.database import Base
@@ -20,7 +20,7 @@ class User(Base):
     language_level: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # CEFR уровень
     primary_channel: Mapped[str] = mapped_column(String(20), default="telegram", nullable=False)
     accent_pref: Mapped[Optional[str]] = mapped_column(String(20), ForeignKey("dim_accent.code"), nullable=True)
-    pii_envelope: Mapped[Optional[bytes]] = mapped_column(Text, nullable=True)  # зашифрованный PII
+    pii_envelope: Mapped[Optional[bytes]] = mapped_column(BYTEA, nullable=True)  # зашифрованный PII
     
     # Временные метки
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
