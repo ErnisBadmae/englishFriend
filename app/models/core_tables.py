@@ -55,11 +55,18 @@ class UserChannelIdentity(Base):
         return f"<UserChannelIdentity(id={self.id}, user_id={self.user_id}, channel='{self.channel}')>"
 
 class Session(Base):
-    """Модель сессии в PostgreSQL (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
+    """
+    Модель сессии в PostgreSQL (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)
+    
+    ВАЖНО: Таблица партиционирована по range (started_at) в SQL миграциях.
+    SQL: PRIMARY KEY (id, started_at) - composite key для партиционирования.
+    SQLAlchemy не поддерживает composite PK напрямую для партиционированных таблиц,
+    поэтому используем только id как PK на уровне ORM.
+    """
     
     __tablename__ = "sessions"
     
-    # Основные поля
+    # Основные поля (строго по SQL схеме коллеги)
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
@@ -72,9 +79,6 @@ class Session(Base):
     # Качество связи
     call_quality: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
-    # Статус сессии (добавлено для FastAPI)
-    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
-    
     # Связи
     user: Mapped["User"] = relationship("User", back_populates="sessions")
     utterances: Mapped[List["Utterance"]] = relationship("Utterance", back_populates="session", cascade="all, delete-orphan")
@@ -86,11 +90,19 @@ class Session(Base):
         return f"<Session(id={self.id}, user_id={self.user_id}, started_at={self.started_at})>"
 
 class Utterance(Base):
-    """Модель реплики в диалоге (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
+    """
+    Модель реплики в диалоге (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)
+    
+    ВАЖНО: Таблица партиционирована по hash (session_id) в SQL миграциях.
+    SQL: PRIMARY KEY (id, session_id) - composite key для партиционирования.
+    Создано 8 хэш-партиций: utterances_p0..p7
+    SQLAlchemy не поддерживает composite PK напрямую для партиционированных таблиц,
+    поэтому используем только id как PK на уровне ORM.
+    """
     
     __tablename__ = "utterances"
     
-    # Основные поля
+    # Основные поля (строго по SQL схеме коллеги)
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     speaker: Mapped[str] = mapped_column(String(20), nullable=False)  # 'user' или 'assistant'

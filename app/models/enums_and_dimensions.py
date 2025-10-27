@@ -31,12 +31,6 @@ class AccessChannel(str, enum.Enum):
     MOBILE_APP = "mobile_app"
     WEB = "web"
 
-class SessionStatus(str, enum.Enum):
-    """Статусы сессии"""
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-
 # Справочники (синхронизированы с db/migrations/postgres/001_reference_tables.sql)
 class DimEmotion(Base):
     """Справочник эмоций"""

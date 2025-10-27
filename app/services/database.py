@@ -143,12 +143,16 @@ class SessionService:
         if not session:
             return None
         
-        # Обновляем поля
+        # Обновляем поля (только те, что есть в SQL схеме)
         update_data = {}
         if session_data.ended_at is not None:
             update_data["ended_at"] = session_data.ended_at
         if session_data.audio_url is not None:
             update_data["audio_url"] = session_data.audio_url
+        if session_data.lang_code is not None:
+            update_data["lang_code"] = session_data.lang_code
+        if session_data.call_quality is not None:
+            update_data["call_quality"] = session_data.call_quality
         
         if update_data:
             await self.db.execute(

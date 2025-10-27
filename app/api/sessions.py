@@ -24,7 +24,7 @@ async def create_session(session_data: SessionCreate, db: AsyncSession = Depends
         ended_at=session.ended_at,
         audio_url=session.audio_url,
         lang_code=session.lang_code,
-        status=session.status
+        call_quality=session.call_quality
     )
 
 @router.get("/{session_id}", response_model=SessionResponse)
@@ -46,7 +46,7 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
         ended_at=session.ended_at,
         audio_url=session.audio_url,
         lang_code=session.lang_code,
-        status=session.status
+        call_quality=session.call_quality
     )
 
 @router.get("/user/{user_id}", response_model=List[SessionResponse])
@@ -67,7 +67,7 @@ async def get_user_sessions(user_id: int, db: AsyncSession = Depends(get_db)):
             ended_at=session.ended_at,
             audio_url=session.audio_url,
             lang_code=session.lang_code,
-            status=session.status
+            call_quality=session.call_quality
         )
         for session in sessions
     ]
@@ -91,7 +91,7 @@ async def update_session(session_id: str, session_data: SessionUpdate, db: Async
         ended_at=session.ended_at,
         audio_url=session.audio_url,
         lang_code=session.lang_code,
-        status=session.status
+        call_quality=session.call_quality
     )
 
 @router.post("/{session_id}/complete", response_model=SessionResponse)
@@ -113,5 +113,5 @@ async def complete_session(session_id: str, db: AsyncSession = Depends(get_db)):
         ended_at=session.ended_at,
         audio_url=session.audio_url,
         lang_code=session.lang_code,
-        status=session.status
+        call_quality=session.call_quality
     )

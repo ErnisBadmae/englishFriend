@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from uuid import UUID
 
-from app.models.enums_and_dimensions import CEFRLevel, MemoryKind, SessionStatus
+from app.models.enums_and_dimensions import CEFRLevel, MemoryKind
 
 # Схемы для User
 class UserBase(BaseModel):
@@ -66,13 +66,11 @@ class SessionUpdate(BaseModel):
     emotion_detected: Optional[str] = Field(None, max_length=50, description="Обнаруженная эмоция")
     grammar_score: Optional[float] = Field(None, ge=0, le=10, description="Оценка грамматики")
     pronunciation_score: Optional[float] = Field(None, ge=0, le=10, description="Оценка произношения")
-    status: Optional[SessionStatus] = Field(None, description="Статус сессии")
 
 class SessionResponse(SessionBase):
     """Схема ответа для сессии"""
     id: str = Field(..., description="UUID сессии")
     ended_at: Optional[datetime] = Field(None, description="Время окончания сессии")
-    status: SessionStatus = Field(..., description="Статус сессии")
     
     class Config:
         from_attributes = True

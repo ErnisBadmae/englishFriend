@@ -95,11 +95,18 @@ class LearningPlan(Base):
         return f"<LearningPlan(id={self.id}, user_id={self.user_id}, level_target='{self.level_target}')>"
 
 class XPEvent(Base):
-    """Модель игровых событий и очков (синхронизирована с db/migrations/postgres/005_memories_learning_plan.sql)"""
+    """
+    Модель игровых событий и очков (синхронизирована с db/migrations/postgres/005_memories_learning_plan.sql)
+    
+    ВАЖНО: Таблица партиционирована по range (happened_at) в SQL миграциях.
+    SQL: PRIMARY KEY (id, happened_at) - composite key для партиционирования.
+    SQLAlchemy не поддерживает composite PK напрямую для партиционированных таблиц,
+    поэтому используем только id как PK на уровне ORM.
+    """
     
     __tablename__ = "xp_events"
     
-    # Основные поля
+    # Основные поля (строго по SQL схеме коллеги)
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     session_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True)
