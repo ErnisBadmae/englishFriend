@@ -241,8 +241,35 @@ make reset-with-data
 - SQL миграции - источник истины для схемы БД
 - SQLAlchemy модели синхронизированы с миграциями
 - FastAPI использует существующую схему БД
+- Интеграционные тесты проверяют совместимость моделей с SQL схемой
 
 Подробности: см. [INTEGRATION.md](INTEGRATION.md)
+
+## 🧪 Тестирование
+
+Проект включает полное покрытие тестами:
+
+**Unit тесты** (без БД):
+- `tests/test_config.py` - тесты конфигурации
+- `tests/test_schemas.py` - тесты Pydantic схем
+
+**Интеграционные тесты** (с БД):
+- `tests/test_integration_users.py` - Users CRUD с реальной БД
+- `tests/test_integration_sessions.py` - Sessions CRUD с реальной БД
+- `tests/test_integration_additional.py` - Utterances, Feedback, Dimensions
+- `tests/test_model_schema_compatibility.py` - проверка совместимости моделей с SQL
+
+**Запуск тестов:**
+```bash
+# Все тесты
+pytest tests/ -v
+
+# Только unit тесты
+pytest tests/test_config.py tests/test_schemas.py -v
+
+# Только интеграционные тесты (требуют PostgreSQL)
+pytest tests/test_integration_*.py tests/test_model_*.py -v
+```
 
 ## 🚀 Следующие этапы
 
