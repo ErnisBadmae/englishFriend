@@ -118,11 +118,20 @@ class Utterance(Base):
         return f"<Utterance(id={self.id}, session_id={self.session_id}, speaker='{self.speaker}')>"
 
 class Feedback(Base):
-    """Модель обратной связи по сессии (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
+    """
+    Модель обратной связи по сессии (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)
+    
+    Соответствует SQL схеме:
+    - session_id uuid primary key
+    - overall_grammar real
+    - overall_pronunciation real
+    - summary_md text
+    - tips_md text
+    """
     
     __tablename__ = "feedback"
     
-    # Основные поля
+    # Основные поля (строго по SQL схеме коллеги)
     session_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True)
     overall_grammar: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     overall_pronunciation: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

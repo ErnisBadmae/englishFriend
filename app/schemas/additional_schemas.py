@@ -5,17 +5,13 @@ from uuid import UUID
 
 from app.models.enums_and_dimensions import MemoryKind
 
-# Схемы для Feedback
+# Схемы для Feedback (соответствует db/migrations/postgres/003_sessions_utterances.sql)
 class FeedbackBase(BaseModel):
     """Базовая схема обратной связи"""
-    overall_grammar: Optional[float] = Field(None, ge=0, le=10, description="Общая оценка грамматики")
-    overall_pronunciation: Optional[float] = Field(None, ge=0, le=10, description="Общая оценка произношения")
+    overall_grammar: Optional[float] = Field(None, description="Общая оценка грамматики")
+    overall_pronunciation: Optional[float] = Field(None, description="Общая оценка произношения")
     summary_md: Optional[str] = Field(None, description="Сводка в Markdown")
     tips_md: Optional[str] = Field(None, description="Советы в Markdown")
-    corrected_phrases: Optional[Dict[str, Any]] = Field(None, description="Исправленные фразы")
-    grammar_tips: Optional[str] = Field(None, description="Советы по грамматике")
-    pronunciation_tips: Optional[str] = Field(None, description="Советы по произношению")
-    vocabulary_suggestions: Optional[Dict[str, Any]] = Field(None, description="Предложения по словарю")
 
 class FeedbackCreate(FeedbackBase):
     """Схема для создания обратной связи"""
@@ -23,14 +19,10 @@ class FeedbackCreate(FeedbackBase):
 
 class FeedbackUpdate(BaseModel):
     """Схема для обновления обратной связи"""
-    overall_grammar: Optional[float] = Field(None, ge=0, le=10)
-    overall_pronunciation: Optional[float] = Field(None, ge=0, le=10)
+    overall_grammar: Optional[float] = None
+    overall_pronunciation: Optional[float] = None
     summary_md: Optional[str] = None
     tips_md: Optional[str] = None
-    corrected_phrases: Optional[Dict[str, Any]] = None
-    grammar_tips: Optional[str] = None
-    pronunciation_tips: Optional[str] = None
-    vocabulary_suggestions: Optional[Dict[str, Any]] = None
 
 class FeedbackResponse(FeedbackBase):
     """Схема ответа для обратной связи"""
