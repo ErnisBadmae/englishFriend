@@ -74,9 +74,18 @@ class MemoryService:
 
     async def create_memory(self, memory_data: MemoryCreate) -> Memory:
         """Создать запись памяти (соответствует схеме 005_memories_learning_plan.sql)"""
+        # Конвертируем enum в строку
+        from app.models.enums_and_dimensions import MemoryKind
+        if isinstance(memory_data.kind, MemoryKind):
+            kind_str = memory_data.kind.value
+        elif isinstance(memory_data.kind, str):
+            kind_str = memory_data.kind
+        else:
+            kind_str = str(memory_data.kind)
+        
         db_memory = Memory(
             user_id=memory_data.user_id,
-            kind=memory_data.kind,
+            kind=kind_str,
             content=memory_data.content,
             meta=memory_data.meta,
             salience=memory_data.salience
@@ -137,6 +146,24 @@ class MemoryService:
             .limit(limit)
         )
         return list(result.scalars().all())
+    
+    async def update_memory_access(self, memory_id: str) -> Optional[Memory]:
+        """Обновить время доступа к памяти (вызовет триггер для last_refreshed)"""
+        # Получаем текущую запись с использованием подзапроса
+        subquery = select(Memory.salience).where(Memory.id == memory_id).scalar_subquery()
+        
+        # Обновляем запись с текущим значением salience - триггер автоматически обновит last_refreshed
+        stmt = (
+            update(Memory)
+            .where(Memory.id == memory_id)
+            .values(salience=subquery)  # dummy update to trigger the database trigger
+            .returning(Memory)
+        )
+        result = await self.db.execute(stmt)
+        updated_memory = result.scalar_one_or_none()
+        if updated_memory:
+            await self.db.commit()
+        return updated_memory
 
 class LearningPlanService:
     """Сервис для работы с планами обучения"""
@@ -146,9 +173,20 @@ class LearningPlanService:
 
     async def create_plan(self, plan_data: LearningPlanCreate) -> LearningPlan:
         """Создать план обучения (соответствует схеме 005_memories_learning_plan.sql)"""
+        # Конвертируем level_target в строку если это enum
+        from app.models.enums_and_dimensions import CEFRLevel
+        if isinstance(plan_data.level_target, CEFRLevel):
+            level_target_str = plan_data.level_target.value
+        elif isinstance(plan_data.level_target, str):
+            level_target_str = plan_data.level_target
+        elif plan_data.level_target is None:
+            level_target_str = None
+        else:
+            level_target_str = str(plan_data.level_target)
+        
         db_plan = LearningPlan(
             user_id=plan_data.user_id,
-            level_target=plan_data.level_target,
+            level_target=level_target_str,
             next_review_at=plan_data.next_review_at,
             roadmap=plan_data.roadmap
         )
@@ -172,6 +210,10 @@ class LearningPlanService:
             .order_by(LearningPlan.updated_at.desc())
         )
         return result.scalar_one_or_none()
+    
+    async def get_user_active_plan(self, user_id: int) -> Optional[LearningPlan]:
+        """Получить активный план обучения пользователя (alias для get_user_plan)"""
+        return await self.get_user_plan(user_id)
 
     async def update_plan(self, plan_id: str, plan_data: LearningPlanUpdate) -> Optional[LearningPlan]:
         """Обновить план обучения (соответствует схеме 005_memories_learning_plan.sql)"""

@@ -5,8 +5,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Настройки приложения"""
     
-    # База данных
-    database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/english_friend"
+    # База данных - Docker PostgreSQL на порту 5432
+    # Используем стандартный пароль postgres из docker-compose.cdc.yml
+    database_url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/englishfriend_dev"
     database_url_sync: str = "postgresql://postgres:password@localhost:5432/english_friend"
     
     # API настройки

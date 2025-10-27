@@ -104,9 +104,14 @@ class MemoryUpdate(BaseModel):
     meta: Optional[Dict[str, Any]] = None
     salience: Optional[float] = Field(None, ge=0, le=1)
 
-class MemoryResponse(MemoryBase):
+class MemoryResponse(BaseModel):
     """Схема ответа для памяти"""
     id: str = Field(..., description="UUID памяти")
+    user_id: int = Field(..., description="ID пользователя")
+    kind: str = Field(..., description="Тип памяти")
+    content: str = Field(..., description="Содержимое памяти")
+    meta: Optional[Dict[str, Any]] = Field(None, description="Метаданные (jsonb)")
+    salience: float = Field(..., ge=0, le=1, description="Важность памяти (0-1)")
     created_at: datetime = Field(..., description="Дата создания")
     last_refreshed: datetime = Field(..., description="Последнее обновление")
     
@@ -136,9 +141,13 @@ class LearningPlanUpdate(BaseModel):
     next_review_at: Optional[datetime] = None
     roadmap: Optional[Dict[str, Any]] = None
 
-class LearningPlanResponse(LearningPlanBase):
+class LearningPlanResponse(BaseModel):
     """Схема ответа для плана обучения"""
     id: str = Field(..., description="UUID плана")
+    user_id: int = Field(..., description="ID пользователя")
+    level_target: Optional[str] = Field(None, max_length=10, description="Целевой уровень CEFR")
+    next_review_at: Optional[datetime] = Field(None, description="Дата следующего пересмотра")
+    roadmap: Optional[Dict[str, Any]] = Field(None, description="Дорожная карта обучения (jsonb)")
     updated_at: datetime = Field(..., description="Дата обновления")
     
     class Config:
@@ -161,9 +170,13 @@ class XPEventCreate(XPEventBase):
     """Схема для создания события XP"""
     pass
 
-class XPEventResponse(XPEventBase):
+class XPEventResponse(BaseModel):
     """Схема ответа для события XP"""
     id: str = Field(..., description="UUID события")
+    user_id: int = Field(..., description="ID пользователя")
+    session_id: Optional[str] = Field(None, description="ID сессии")
+    kind: str = Field(..., max_length=50, description="Тип события")
+    points: int = Field(..., description="Очки XP")
     happened_at: datetime = Field(..., description="Дата события")
     
     class Config:
