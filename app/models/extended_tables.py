@@ -1,12 +1,16 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 import uuid
 
 from app.core.database import Base
-from app.models.enums_and_dimensions import MemoryKind
+from app.models.enums_and_dimensions import MemoryKind, CEFRLevel
+from app.models.enum_cast import PostgresEnum
+
+if TYPE_CHECKING:
+    from app.models.core_tables import User
 
 class UserInterest(Base):
     """
@@ -50,8 +54,8 @@ class Memory(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     
-    # Тип и контент памяти
-    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # MemoryKind
+    # Тип и контент памяти  
+    kind: Mapped[MemoryKind] = mapped_column(PostgresEnum('memory_kind', MemoryKind), nullable=False)  # MemoryKind
     content: Mapped[str] = mapped_column(Text, nullable=False)
     meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5,
@@ -81,7 +85,7 @@ class LearningPlan(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # План
-    level_target: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # CEFR уровень
+    level_target: Mapped[Optional[CEFRLevel]] = mapped_column(PostgresEnum('cefr_level', CEFRLevel), nullable=True)  # CEFR уровень
     next_review_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     roadmap: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     

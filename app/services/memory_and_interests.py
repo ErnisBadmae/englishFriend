@@ -9,7 +9,7 @@ from app.schemas.additional_schemas import (
     UserInterestCreate, MemoryCreate, LearningPlanCreate, XPEventCreate,
     UserInterestUpdate, MemoryUpdate, LearningPlanUpdate
 )
-from app.models.enums_and_dimensions import MemoryKind
+from app.models.enums_and_dimensions import MemoryKind, CEFRLevel
 
 class UserInterestService:
     """Сервис для работы с интересами пользователя"""
@@ -74,9 +74,15 @@ class MemoryService:
 
     async def create_memory(self, memory_data: MemoryCreate) -> Memory:
         """Создать запись памяти (соответствует схеме 005_memories_learning_plan.sql)"""
+        # Конвертируем входное значение в MemoryKind для корректного ENUM биндинга
+        if isinstance(memory_data.kind, MemoryKind):
+            kind_enum = memory_data.kind
+        else:
+            kind_enum = MemoryKind(memory_data.kind)
+        
         db_memory = Memory(
             user_id=memory_data.user_id,
-            kind=memory_data.kind,
+            kind=kind_enum,
             content=memory_data.content,
             meta=memory_data.meta,
             salience=memory_data.salience
@@ -97,7 +103,8 @@ class MemoryService:
         """Получить записи памяти пользователя"""
         query = select(Memory).where(Memory.user_id == user_id)
         if kind:
-            query = query.where(Memory.kind == kind.value)
+            kind_enum = kind if isinstance(kind, MemoryKind) else MemoryKind(kind)
+            query = query.where(Memory.kind == kind_enum)
         
         result = await self.db.execute(
             query.order_by(Memory.created_at.desc()).offset(skip).limit(limit)
@@ -137,6 +144,24 @@ class MemoryService:
             .limit(limit)
         )
         return list(result.scalars().all())
+    
+    async def update_memory_access(self, memory_id: str) -> Optional[Memory]:
+        """Обновить время доступа к памяти (вызовет триггер для last_refreshed)"""
+        # Получаем текущую запись с использованием подзапроса
+        subquery = select(Memory.salience).where(Memory.id == memory_id).scalar_subquery()
+        
+        # Обновляем запись с текущим значением salience - триггер автоматически обновит last_refreshed
+        stmt = (
+            update(Memory)
+            .where(Memory.id == memory_id)
+            .values(salience=subquery)  # dummy update to trigger the database trigger
+            .returning(Memory)
+        )
+        result = await self.db.execute(stmt)
+        updated_memory = result.scalar_one_or_none()
+        if updated_memory:
+            await self.db.commit()
+        return updated_memory
 
 class LearningPlanService:
     """Сервис для работы с планами обучения"""
@@ -146,9 +171,17 @@ class LearningPlanService:
 
     async def create_plan(self, plan_data: LearningPlanCreate) -> LearningPlan:
         """Создать план обучения (соответствует схеме 005_memories_learning_plan.sql)"""
+        # Конвертируем level_target в CEFRLevel для корректного ENUM биндинга
+        if plan_data.level_target is None:
+            level_target_enum = None
+        elif isinstance(plan_data.level_target, CEFRLevel):
+            level_target_enum = plan_data.level_target
+        else:
+            level_target_enum = CEFRLevel(plan_data.level_target)
+        
         db_plan = LearningPlan(
             user_id=plan_data.user_id,
-            level_target=plan_data.level_target,
+            level_target=level_target_enum,
             next_review_at=plan_data.next_review_at,
             roadmap=plan_data.roadmap
         )
@@ -172,12 +205,20 @@ class LearningPlanService:
             .order_by(LearningPlan.updated_at.desc())
         )
         return result.scalar_one_or_none()
+    
+    async def get_user_active_plan(self, user_id: int) -> Optional[LearningPlan]:
+        """Получить активный план обучения пользователя (alias для get_user_plan)"""
+        return await self.get_user_plan(user_id)
 
     async def update_plan(self, plan_id: str, plan_data: LearningPlanUpdate) -> Optional[LearningPlan]:
         """Обновить план обучения (соответствует схеме 005_memories_learning_plan.sql)"""
         values = {}
         if plan_data.level_target is not None:
-            values['level_target'] = plan_data.level_target
+            values['level_target'] = (
+                plan_data.level_target
+                if isinstance(plan_data.level_target, CEFRLevel)
+                else CEFRLevel(plan_data.level_target)
+            )
         if plan_data.next_review_at is not None:
             values['next_review_at'] = plan_data.next_review_at
         if plan_data.roadmap is not None:
@@ -236,4 +277,3 @@ class XPEventService:
         )
         total_xp = result.scalar() or 0
         return int(total_xp)
-
