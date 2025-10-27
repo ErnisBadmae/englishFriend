@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="005-memories-learning-plan" author="englishfriend">
+        <comment>Create memories, learning plan, xp events, and supporting policies</comment>
+
+        <createTable tableName="memories">
+            <column name="id" type="uuid" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="user_id" type="bigint">
+                <constraints nullable="false" referencedTableName="users" referencedColumnNames="id" foreignKeyName="memories_user_id_fkey" deleteCascade="true"/>
+            </column>
+            <column name="kind" type="memory_kind">
+                <constraints nullable="false"/>
+            </column>
+            <column name="content" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="meta" type="jsonb"/>
+            <column name="salience" type="real" defaultValueNumeric="0.5"/>
+            <column name="last_refreshed" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <addCheckConstraint tableName="memories" constraintName="memories_salience_check" checkCondition="salience between 0 and 1"/>
+
+        <createIndex tableName="memories" indexName="memories_user_kind_idx">
+            <column name="user_id"/>
+            <column name="kind"/>
+        </createIndex>
+
+        <createIndex tableName="memories" indexName="mem_meta_gin" indexType="gin">
+            <column name="meta" type="jsonb_path_ops"/>
+        </createIndex>
+
+        <sql><![CDATA[
+            create or replace function trg_memories_touch_last_refreshed()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+              new.last_refreshed := now();
+              return new;
+            end;
+            $$;
+
+            drop trigger if exists memories_touch_last_refreshed on memories;
+            create trigger memories_touch_last_refreshed
+            before update on memories
+            for each row
+            execute function trg_memories_touch_last_refreshed();
+        ]]></sql>
+
+        <sql><![CDATA[
+            do $$
+            begin
+              if exists (select 1 from pg_extension where extname = 'vector') then
+                begin
+                  alter table memories add column if not exists embedding vector(1536);
+                  create index if not exists mem_vec_idx on memories using ivfflat (embedding vector_cosine) with (lists = 200);
+                exception when others then
+                  raise notice 'Vector column/index already configured: %', sqlerrm;
+                end;
+              end if;
+            end;
+            $$;
+        ]]></sql>
+
+        <sql><![CDATA[
+            alter table memories enable row level security;
+            create policy if not exists memories_isolation on memories
+              using (user_id = coalesce(nullif(current_setting('app.user_id', true), '')::bigint, -1));
+        ]]></sql>
+
+        <createTable tableName="learning_plan">
+            <column name="id" type="uuid" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="user_id" type="bigint">
+                <constraints nullable="false" referencedTableName="users" referencedColumnNames="id" foreignKeyName="learning_plan_user_id_fkey" deleteCascade="true"/>
+            </column>
+            <column name="level_target" type="cefr_level"/>
+            <column name="next_review_at" type="timestamptz"/>
+            <column name="roadmap" type="jsonb"/>
+            <column name="updated_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <addUniqueConstraint tableName="learning_plan" columnNames="user_id" constraintName="learning_plan_user_idx"/>
+
+        <sql><![CDATA[
+            alter table learning_plan enable row level security;
+            create policy if not exists learning_plan_isolation on learning_plan
+              using (user_id = coalesce(nullif(current_setting('app.user_id', true), '')::bigint, -1));
+        ]]></sql>
+
+        <sql><![CDATA[
+            create table if not exists xp_events (
+              id uuid primary key default gen_random_uuid(),
+              user_id bigint not null references users(id) on delete cascade,
+              session_id uuid references sessions(id) on delete set null,
+              kind text,
+              points int not null,
+              happened_at timestamptz not null default now()
+            ) partition by range (happened_at);
+        ]]></sql>
+
+        <sql><![CDATA[
+            create table if not exists xp_events_2025_10
+              partition of xp_events
+              for values from ('2025-10-01') to ('2025-11-01');
+
+            create index if not exists xp_events_2025_10_user_idx
+              on xp_events_2025_10 (user_id, happened_at desc);
+        ]]></sql>
+
+        <sql><![CDATA[
+            alter table xp_events enable row level security;
+            create policy if not exists xp_events_isolation on xp_events
+              using (user_id = coalesce(nullif(current_setting('app.user_id', true), '')::bigint, -1));
+        ]]></sql>
+
+        <rollback>
+            DROP TABLE IF EXISTS xp_events CASCADE;
+            DROP TABLE IF EXISTS learning_plan CASCADE;
+            DROP TABLE IF EXISTS memories CASCADE;
+            DROP FUNCTION IF EXISTS trg_memories_touch_last_refreshed();
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

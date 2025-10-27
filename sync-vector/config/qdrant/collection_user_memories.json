@@ -1,0 +1,32 @@
+{
+  "name": "user_memories",
+  "vectors": {
+    "size": 1536,
+    "distance": "Cosine"
+  },
+  "hnsw_config": {
+    "m": 16,
+    "ef_construct": 128
+  },
+  "optimizers_config": {
+    "default_segment_number": 4,
+    "memmap_threshold": 150000
+  },
+  "quantization_config": {
+    "scalar": {
+      "type": "int8",
+      "always_ram": true
+    }
+  },
+  "payload_schema": {
+    "user_id": {"type": "integer"},
+    "kind": {"type": "keyword"},
+    "salience": {"type": "float"},
+    "created_at": {"type": "integer"},
+    "last_refreshed": {"type": "integer"},
+    "emotion_code": {"type": "keyword"},
+    "topic_ids": {"type": "keyword"},
+    "source_session": {"type": "uuid"},
+    "source_utterance": {"type": "uuid"}
+  }
+}

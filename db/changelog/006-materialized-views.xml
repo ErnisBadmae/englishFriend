@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="006-materialized-views" author="englishfriend">
+        <comment>Create analytics materialized view mv_weekly_user_summary</comment>
+
+        <sql><![CDATA[
+            create materialized view if not exists mv_weekly_user_summary as
+            select
+              u.id as user_id,
+              date_trunc('week', s.started_at) as week,
+              count(distinct s.id) as sessions_cnt,
+              avg(f.overall_grammar) as avg_grammar,
+              avg(f.overall_pronunciation) as avg_pron
+            from users u
+            left join sessions s on s.user_id = u.id
+            left join feedback f on f.session_id = s.id
+            where s.started_at >= now() - interval '8 weeks'
+            group by 1,2;
+        ]]></sql>
+
+        <createIndex indexName="mv_weekly_user_summary_uidx" tableName="mv_weekly_user_summary" unique="true">
+            <column name="user_id"/>
+            <column name="week"/>
+        </createIndex>
+
+        <rollback>
+            DROP MATERIALIZED VIEW IF EXISTS mv_weekly_user_summary;
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

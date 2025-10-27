@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="002-users" author="englishfriend">
+        <comment>Create core user tables and interests</comment>
+        
+        <createTable tableName="users">
+            <column name="id" type="bigserial">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="telegram_id" type="bigint">
+                <constraints unique="true"/>
+            </column>
+            <column name="username" type="varchar(255)"/>
+            <column name="language_level" type="cefr_level"/>
+            <column name="primary_channel" type="access_channel" defaultValue="telegram">
+                <constraints nullable="false"/>
+            </column>
+            <column name="accent_pref" type="text"/>
+            <column name="pii_envelope" type="bytea"/>
+            <column name="created_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="deleted_at" type="timestamptz"/>
+        </createTable>
+        
+        <addForeignKeyConstraint baseTableName="users" baseColumnNames="accent_pref" 
+                                 constraintName="users_accent_pref_fkey" 
+                                 referencedTableName="dim_accent" referencedColumnNames="code"/>
+        
+        <createTable tableName="user_channel_identity">
+            <column name="id" type="uuid" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="user_id" type="bigint">
+                <constraints nullable="false"/>
+            </column>
+            <column name="channel" type="access_channel">
+                <constraints nullable="false"/>
+            </column>
+            <column name="external_id" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="auth_payload" type="jsonb"/>
+            <column name="linked_at" type="timestamptz" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        
+        <addForeignKeyConstraint baseTableName="user_channel_identity" baseColumnNames="user_id" 
+                                 constraintName="user_channel_identity_user_id_fkey" 
+                                 referencedTableName="users" referencedColumnNames="id" 
+                                 onDelete="CASCADE"/>
+        
+        <addUniqueConstraint tableName="user_channel_identity" columnNames="channel,external_id" constraintName="user_channel_identity_channel_external_id_key"/>
+        <addUniqueConstraint tableName="user_channel_identity" columnNames="user_id,channel" constraintName="user_channel_identity_user_id_channel_key"/>
+        
+        <createIndex tableName="user_channel_identity" indexName="user_channel_identity_uidx">
+            <column name="user_id"/>
+            <column name="channel"/>
+        </createIndex>
+        
+        <createTable tableName="user_interest">
+            <column name="user_id" type="bigint">
+                <constraints nullable="false"/>
+            </column>
+            <column name="topic_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="weight" type="real" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="last_mentioned" type="timestamptz"/>
+        </createTable>
+        
+        <addPrimaryKey tableName="user_interest" columnNames="user_id,topic_id"/>
+        
+        <addForeignKeyConstraint baseTableName="user_interest" baseColumnNames="user_id" 
+                                 constraintName="user_interest_user_id_fkey" 
+                                 referencedTableName="users" referencedColumnNames="id" 
+                                 onDelete="CASCADE"/>
+        
+        <addForeignKeyConstraint baseTableName="user_interest" baseColumnNames="topic_id" 
+                                 constraintName="user_interest_topic_id_fkey" 
+                                 referencedTableName="dim_topic" referencedColumnNames="id" 
+                                 onDelete="CASCADE"/>
+        
+        <addCheckConstraint tableName="user_interest" constraintName="user_interest_weight_check" checkCondition="weight >= 0 and weight <= 1"/>
+        
+        <createIndex tableName="user_interest" indexName="user_interest_user_weight_idx">
+            <column name="user_id"/>
+            <column name="weight" descending="true"/>
+        </createIndex>
+        
+        <rollback>
+            DROP TABLE IF EXISTS user_interest;
+            DROP TABLE IF EXISTS user_channel_identity;
+            DROP TABLE IF EXISTS users;
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

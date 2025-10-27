@@ -1,5 +1,5 @@
 ### Документация проекта  
-**ИИ‑репетитор‑компаньон по английскому языку в Telegram**
+**ИИ‑репетитор‑компаньон по английскому языку в Telegram, мобильном приложении и веб-клиенте**
 
 ***
 
@@ -9,7 +9,8 @@
 Он ведёт **реальные голосовые звонки**, анализирует речь и грамматику, формирует **портрет личности и интересов пользователя**, хранящийся в векторной памяти, и развивает общение на уровне человеческих отношений.
 
 Главные свойства:  
-- Реальные звонки (через Telegram Mini App + WebRTC).  
+- Реальные звонки (через Telegram Mini App, мобильное приложение и веб-клиент на WebRTC).  
+- Мультиканальный доступ (телеграм, мобильное приложение, веб) с единым профилем.  
 - Эмоциональный голос и поддержка диалога в реальном времени.  
 - Анализ произношения и грамматики после разговора.  
 - Гибридная память (PostgreSQL + Vector DB + Graph).  
@@ -21,7 +22,7 @@
 ## 2. Общая архитектура системы
 
 ```
-[ Telegram MiniApp / Voice UI ]
+[ Telegram MiniApp / Mobile App / Web Voice UI ]
           ↓
 [ WebRTC Gateway + Realtime Session Manager ]
           ↓
@@ -59,11 +60,22 @@
 | Поле | Тип | Описание |
 |------|-----|-----------|
 | `id` | BIGSERIAL PK | Уникальный ID |
-| `telegram_id` | BIGINT UNIQUE | Telegram ID |
+| `telegram_id` | BIGINT UNIQUE | Telegram ID (если используется канал Telegram) |
 | `username` | VARCHAR (255) | Имя пользователя |
 | `language_level` | VARCHAR (10) | Уровень (A2–C1) |
+| `primary_channel` | VARCHAR (20) | Основной канал (telegram / mobile_app / web) |
 | `personality_vector_ref` | UUID | ID в VectorDB |
 | `created_at` | TIMESTAMP | регистрация |
+
+### Таблица `user_channel_identity`
+| Поле | Тип | Описание |
+|------|-----|-----------|
+| `id` | UUID PK | Идентификатор записи |
+| `user_id` | BIGINT FK → users | Пользователь |
+| `channel` | VARCHAR (20) | `telegram`, `mobile_app`, `web` |
+| `external_id` | TEXT | ID пользователя в канале |
+| `auth_payload` | JSONB | Токены, данные устройства |
+| `linked_at` | TIMESTAMP | Дата привязки |
 
 ### Таблица `sessions`
 | Поле | Тип | Описание |
@@ -151,14 +163,14 @@
 
 ## 7. Поток данных (Pipeline)
 
-1. Пользователь инициирует звонок через Mini App.  
+1. Пользователь инициирует звонок через Telegram Mini App, мобильное приложение или веб‑клиент.  
 2. WebRTC‑поток направляется в Realtime API.  
 3. Модель gpt‑4o‑realtime транскрибирует, отвечает голосом и фиксирует эмоции.  
 4. По завершении сессии создаются:  
    - транскрипт и анализ речи;  
    - векторные воспоминания;  
    - обновления в графе интересов и эмоций.  
-5. Результаты выводятся в Telegram‑чате:  
+5. Результаты выводятся в Telegram‑чате, мобильном приложении и веб‑кабинете:  
    - Your pronunciation of “work” was very clear today.  
    - You mixed up “say” and “tell”. Here’s an easy rule to remember.  
 
@@ -176,7 +188,7 @@
 
 | Компонент | Инструменты |
 |------------|-------------|
-| Бот / Клиент | Telegram Bot API, Mini Apps, WebRTC |
+| Бот / Клиент | Telegram Bot API, Mini Apps, мобильное приложение (React Native/Flutter), веб‑клиент (Next.js) |
 | Realtime модель | OpenAI gpt‑4o‑realtime |
 | Оркестрация | LangGraph / LangChain |
 | Анализ речи | Whisper API, SpeechSuper, Azure Speech |

@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="003-sessions-utterances" author="englishfriend">
+        <comment>Create partitioned storage for sessions, utterances, feedback, and corrections with RLS</comment>
+
+        <sql>
+            create table if not exists sessions (
+              id uuid primary key default gen_random_uuid(),
+              user_id bigint not null references users(id) on delete cascade,
+              started_at timestamptz not null,
+              ended_at timestamptz,
+              audio_url text,
+              lang_code text not null default 'en',
+              call_quality jsonb,
+              constraint sessions_time_check check (ended_at is null or ended_at &gt;= started_at)
+            ) partition by range (started_at);
+        </sql>
+
+        <sql>create index if not exists sessions_user_started_idx on sessions using btree (user_id, started_at desc);</sql>
+
+        <sql>
+            create table if not exists sessions_2025_10
+              partition of sessions
+              for values from ('2025-10-01') to ('2025-11-01');
+        </sql>
+
+        <sql>
+            create table if not exists utterances (
+              id uuid primary key default gen_random_uuid(),
+              session_id uuid not null references sessions(id) on delete cascade,
+              speaker text not null check (speaker in ('user','assistant')),
+              t_start_ms int not null,
+              t_end_ms int not null,
+              text text not null,
+              phonemes jsonb,
+              topics jsonb,
+              emotion_code text references dim_emotion(code),
+              emotion_score real,
+              grammar_score real,
+              pronunciation_score real,
+              constraint utterances_time_check check (t_end_ms &gt;= t_start_ms)
+            ) partition by hash (session_id);
+        </sql>
+
+        <sql>
+            do $$
+            declare
+              mod_parts int := 8;
+              i int;
+            begin
+              for i in 0..mod_parts-1 loop
+                execute format('create table if not exists utterances_p%s partition of utterances for values with (modulus %s, remainder %s);', i, mod_parts, i);
+                execute format('create index if not exists utterances_p%s_session_idx on utterances_p%s (session_id, t_start_ms);', i, i);
+                execute format('create index if not exists utterances_p%s_topics_gin_idx on utterances_p%s using gin (topics jsonb_path_ops);', i, i);
+              end loop;
+            end $$;
+        </sql>
+
+        <sql>
+            create table if not exists feedback (
+              session_id uuid primary key references sessions(id) on delete cascade,
+              overall_grammar real,
+              overall_pronunciation real,
+              summary_md text,
+              tips_md text
+            );
+        </sql>
+
+        <sql>
+            create table if not exists corrections (
+              id uuid primary key default gen_random_uuid(),
+              session_id uuid not null references sessions(id) on delete cascade,
+              utterance_id uuid references utterances(id) on delete set null,
+              user_text text not null,
+              corrected_text text not null,
+              rule_tag text,
+              explanation_md text
+            );
+        </sql>
+
+        <sql>create index if not exists corrections_session_idx on corrections (session_id);</sql>
+
+        <sql>alter table sessions enable row level security;</sql>
+        <sql>
+            create policy if not exists sessions_isolation on sessions
+              using (user_id = coalesce(nullif(current_setting('app.user_id', true), '')::bigint, -1));
+        </sql>
+
+        <sql>alter table utterances enable row level security;</sql>
+        <sql>
+            create policy if not exists utterances_isolation on utterances
+              using (
+                exists (
+                  select 1
+                  from sessions s
+                  where s.id = utterances.session_id
+                    and s.user_id = coalesce(nullif(current_setting('app.user_id', true), '')::bigint, -1)
+                )
+              );
+        </sql>
+
+        <rollback>
+            DROP TABLE IF EXISTS corrections;
+            DROP TABLE IF EXISTS feedback;
+            DROP TABLE IF EXISTS utterances CASCADE;
+            DROP TABLE IF EXISTS sessions CASCADE;
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
