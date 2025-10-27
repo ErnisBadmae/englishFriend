@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from typing import Dict, Any
 from contextlib import asynccontextmanager
 
-from app.api import users, sessions, dimensions, utterances_and_feedback, memory_and_interests
+from app.api import users, sessions, dimensions, utterances_and_feedback, memory_and_interests, chat
 from app.core.config import settings
 from app.core.database import init_db
 
@@ -42,6 +42,7 @@ app.include_router(sessions.router)
 app.include_router(dimensions.router)
 app.include_router(utterances_and_feedback.router)
 app.include_router(memory_and_interests.router)
+app.include_router(chat.router)
 
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
