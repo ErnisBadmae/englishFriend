@@ -4,11 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import JSONResponse
 
 from app.schemas.extended_schemas import (
-    UtteranceCreate, UtteranceResponse, UtteranceListResponse,
-    FeedbackCreate, FeedbackResponse, FeedbackUpdate
+    UtteranceCreate, UtteranceResponse, UtteranceListResponse
 )
 from app.schemas.additional_schemas import (
-    CorrectionCreate, CorrectionResponse, CorrectionListResponse
+    CorrectionCreate, CorrectionResponse, CorrectionListResponse,
+    FeedbackCreate, FeedbackResponse, FeedbackUpdate
 )
 from app.services.utterances_and_feedback import UtteranceService, FeedbackService, CorrectionService
 from app.core.database import get_db

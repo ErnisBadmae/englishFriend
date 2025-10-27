@@ -7,17 +7,16 @@ from app.schemas.additional_schemas import (
     UserInterestCreate, UserInterestResponse, UserInterestListResponse, UserInterestUpdate,
     MemoryCreate, MemoryResponse, MemoryListResponse, MemoryUpdate,
     LearningPlanCreate, LearningPlanResponse, LearningPlanListResponse, LearningPlanUpdate,
-    XPEventCreate, XPEventResponse, XPEventListResponse,
-    EmotionalStateLogCreate, EmotionalStateLogResponse, EmotionalStateLogListResponse
+    XPEventCreate, XPEventResponse, XPEventListResponse
 )
 from app.services.memory_and_interests import (
     UserInterestService, MemoryService, LearningPlanService, 
-    XPEventService, EmotionalStateLogService
+    XPEventService
 )
 from app.models.enums_and_dimensions import MemoryKind
 from app.core.database import get_db
 
-router = APIRouter(prefix="/api/v1", tags=["interests", "memory", "learning", "xp", "emotions"])
+router = APIRouter(prefix="/api/v1", tags=["interests", "memory", "learning", "xp"])
 
 # Endpoints для интересов пользователя
 @router.post("/users/{user_id}/interests", response_model=UserInterestResponse, status_code=201)
@@ -369,78 +368,3 @@ async def get_user_total_xp(user_id: int, db: AsyncSession = Depends(get_db)):
     total_xp = await xp_service.get_user_total_xp(user_id)
     return {"user_id": user_id, "total_xp": total_xp}
 
-# Endpoints для лога эмоций
-@router.post("/emotional-logs/", response_model=EmotionalStateLogResponse, status_code=201)
-async def create_emotional_log(log_data: EmotionalStateLogCreate, db: AsyncSession = Depends(get_db)):
-    """
-    Создать запись в логе эмоций.
-    
-    Добавляет новую запись об эмоциональном состоянии пользователя.
-    """
-    try:
-        emotion_service = EmotionalStateLogService(db)
-        log = await emotion_service.create_emotional_log(log_data)
-        return EmotionalStateLogResponse(
-            id=log.id,
-            user_id=log.user_id,
-            session_id=log.session_id,
-            emotion_code=log.emotion_code,
-            intensity=log.intensity,
-            context=log.context,
-            created_at=log.created_at
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка создания записи эмоций: {str(e)}")
-
-@router.get("/users/{user_id}/emotional-logs", response_model=EmotionalStateLogListResponse)
-async def get_user_emotional_logs(
-    user_id: int,
-    skip: int = Query(0, ge=0, description="Количество записей для пропуска"),
-    limit: int = Query(100, ge=1, le=1000, description="Максимальное количество записей"),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Получить лог эмоций пользователя.
-    
-    Возвращает список записей эмоционального состояния пользователя.
-    """
-    emotion_service = EmotionalStateLogService(db)
-    logs = await emotion_service.get_user_emotional_logs(user_id, skip=skip, limit=limit)
-    return EmotionalStateLogListResponse(
-        logs=[
-            EmotionalStateLogResponse(
-                id=log.id,
-                user_id=log.user_id,
-                session_id=log.session_id,
-                emotion_code=log.emotion_code,
-                intensity=log.intensity,
-                context=log.context,
-                created_at=log.created_at
-            ) for log in logs
-        ],
-        total=len(logs)
-    )
-
-@router.get("/sessions/{session_id}/emotional-logs", response_model=EmotionalStateLogListResponse)
-async def get_session_emotional_logs(session_id: str, db: AsyncSession = Depends(get_db)):
-    """
-    Получить лог эмоций сессии.
-    
-    Возвращает список записей эмоционального состояния для указанной сессии.
-    """
-    emotion_service = EmotionalStateLogService(db)
-    logs = await emotion_service.get_session_emotional_logs(session_id)
-    return EmotionalStateLogListResponse(
-        logs=[
-            EmotionalStateLogResponse(
-                id=log.id,
-                user_id=log.user_id,
-                session_id=log.session_id,
-                emotion_code=log.emotion_code,
-                intensity=log.intensity,
-                context=log.context,
-                created_at=log.created_at
-            ) for log in logs
-        ],
-        total=len(logs)
-    )

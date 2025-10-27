@@ -4,8 +4,8 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.orm import selectinload
 
 from app.models.core_tables import Utterance, Feedback, Correction
-from app.schemas.extended_schemas import UtteranceCreate, FeedbackCreate, CorrectionCreate
-from app.schemas.additional_schemas import FeedbackUpdate, CorrectionUpdate
+from app.schemas.extended_schemas import UtteranceCreate
+from app.schemas.additional_schemas import FeedbackCreate, FeedbackUpdate, CorrectionCreate
 
 class UtteranceService:
     """Сервис для работы с репликами"""

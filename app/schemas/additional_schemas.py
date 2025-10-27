@@ -189,28 +189,3 @@ class XPEventListResponse(BaseModel):
     events: List[XPEventResponse] = Field(..., description="Список событий")
     total: int = Field(..., description="Общее количество событий")
 
-# Схемы для EmotionalStateLog
-class EmotionalStateLogBase(BaseModel):
-    """Базовая схема лога эмоционального состояния"""
-    user_id: int = Field(..., description="ID пользователя")
-    session_id: Optional[str] = Field(None, description="ID сессии")
-    emotion_code: str = Field(..., max_length=50, description="Код эмоции")
-    intensity: float = Field(..., ge=0, le=1, description="Интенсивность эмоции")
-    context: Optional[str] = Field(None, description="Контекст")
-
-class EmotionalStateLogCreate(EmotionalStateLogBase):
-    """Схема для создания лога эмоционального состояния"""
-    pass
-
-class EmotionalStateLogResponse(EmotionalStateLogBase):
-    """Схема ответа для лога эмоционального состояния"""
-    id: str = Field(..., description="UUID лога")
-    created_at: datetime = Field(..., description="Дата создания")
-    
-    class Config:
-        from_attributes = True
-
-class EmotionalStateLogListResponse(BaseModel):
-    """Схема ответа для списка логов эмоционального состояния"""
-    logs: List[EmotionalStateLogResponse] = Field(..., description="Список логов")
-    total: int = Field(..., description="Общее количество логов")

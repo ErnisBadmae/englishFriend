@@ -4,9 +4,9 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
 from datetime import datetime
 
-from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent, EmotionalStateLog
+from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent
 from app.schemas.additional_schemas import (
-    UserInterestCreate, MemoryCreate, LearningPlanCreate, XPEventCreate, EmotionalStateLogCreate,
+    UserInterestCreate, MemoryCreate, LearningPlanCreate, XPEventCreate,
     UserInterestUpdate, MemoryUpdate, LearningPlanUpdate
 )
 from app.models.enums_and_dimensions import MemoryKind
@@ -230,42 +230,3 @@ class XPEventService:
         total_xp = result.scalar() or 0
         return int(total_xp)
 
-class EmotionalStateLogService:
-    """Сервис для работы с логом эмоционального состояния"""
-    
-    def __init__(self, db: AsyncSession):
-        self.db = db
-
-    async def create_emotional_log(self, log_data: EmotionalStateLogCreate) -> EmotionalStateLog:
-        """Создать запись в логе эмоций"""
-        db_log = EmotionalStateLog(
-            user_id=log_data.user_id,
-            session_id=log_data.session_id,
-            emotion_code=log_data.emotion_code,
-            intensity=log_data.intensity,
-            context=log_data.context
-        )
-        self.db.add(db_log)
-        await self.db.commit()
-        await self.db.refresh(db_log)
-        return db_log
-
-    async def get_user_emotional_logs(self, user_id: int, skip: int = 0, limit: int = 100) -> List[EmotionalStateLog]:
-        """Получить лог эмоций пользователя"""
-        result = await self.db.execute(
-            select(EmotionalStateLog)
-            .where(EmotionalStateLog.user_id == user_id)
-            .order_by(EmotionalStateLog.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def get_session_emotional_logs(self, session_id: str) -> List[EmotionalStateLog]:
-        """Получить лог эмоций сессии"""
-        result = await self.db.execute(
-            select(EmotionalStateLog)
-            .where(EmotionalStateLog.session_id == session_id)
-            .order_by(EmotionalStateLog.created_at)
-        )
-        return list(result.scalars().all())
