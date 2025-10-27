@@ -3,8 +3,6 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from uuid import UUID
 
-from app.models.enums_and_dimensions import MemoryKind
-
 # Схемы для Feedback (соответствует db/migrations/postgres/003_sessions_utterances.sql)
 class FeedbackBase(BaseModel):
     """Базовая схема обратной связи"""
@@ -89,7 +87,7 @@ class UserInterestListResponse(BaseModel):
 class MemoryBase(BaseModel):
     """Базовая схема памяти"""
     user_id: int = Field(..., description="ID пользователя")
-    kind: MemoryKind = Field(..., description="Тип памяти")
+    kind: str = Field(..., description="Тип памяти (episodic, semantic, persona, skill)")
     content: str = Field(..., description="Содержимое памяти")
     meta: Optional[Dict[str, Any]] = Field(None, description="Метаданные (jsonb)")
     salience: float = Field(0.5, ge=0, le=1, description="Важность памяти (0-1)")

@@ -117,15 +117,43 @@ def test_full_user_lifecycle():
         # ================================
         # 4. СОЗДАНИЕ ПАМЯТИ
         # ================================
-        print_section("4️⃣ СОЗДАНИЕ ПАМЯТИ (SKIPPED - enum casting issue)")
-        print("   ⏭️ Пропущено из-за проблем с enum типом в БД")
-        print("   Note: Можно исправить, но требует изменения схемы БД или перехода на text колонки")
+        print_section("4️⃣ СОЗДАНИЕ ПАМЯТИ")
+        
+        memory_data = {
+            "user_id": user_id,
+            "kind": "episodic",
+            "content": "Пользователь изучает английский язык",
+            "meta": {"context": "first_session", "topic": "introduction"},
+            "salience": 0.8
+        }
+        r = requests.post(f"{BASE_URL}/api/v1/memories/", json=memory_data)
+        print(f"   Status: {r.status_code}")
+        if r.status_code == 201:
+            memory = r.json()
+            memory_id = memory['id']
+            print(f"   ✅ Memory ID: {memory_id}")
+        else:
+            print(f"   ❌ Error: {r.text}")
         
         # ================================
         # 5. СОЗДАНИЕ ПЛАНА ОБУЧЕНИЯ
         # ================================
-        print_section("5️⃣ СОЗДАНИЕ ПЛАНА ОБУЧЕНИЯ (SKIPPED - enum casting issue)")
-        print("   ⏭️ Пропущено из-за проблем с enum типом в БД")
+        print_section("5️⃣ СОЗДАНИЕ ПЛАНА ОБУЧЕНИЯ")
+        
+        plan_data = {
+            "user_id": user_id,
+            "level_target": "B2",
+            "roadmap": {"topics": ["grammar", "vocabulary", "speaking"]},
+            "next_review_at": None
+        }
+        r = requests.post(f"{BASE_URL}/api/v1/learning-plans/", json=plan_data)
+        print(f"   Status: {r.status_code}")
+        if r.status_code == 201:
+            plan = r.json()
+            plan_id = plan['id']
+            print(f"   ✅ Learning Plan ID: {plan_id}")
+        else:
+            print(f"   ❌ Error: {r.text}")
         
         # ================================
         # 6. СОЗДАНИЕ XP СОБЫТИЙ

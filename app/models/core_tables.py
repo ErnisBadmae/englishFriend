@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, ENUM
@@ -7,6 +7,9 @@ import uuid
 
 from app.core.database import Base
 from app.models.enums_and_dimensions import CEFRLevel, AccessChannel
+
+if TYPE_CHECKING:
+    from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent
 
 class User(Base):
     """Модель пользователя в PostgreSQL (синхронизирована с db/migrations/postgres/002_users.sql)"""

@@ -13,8 +13,8 @@ from app.services.memory_and_interests import (
     UserInterestService, MemoryService, LearningPlanService, 
     XPEventService
 )
-from app.models.enums_and_dimensions import MemoryKind
 from app.core.database import get_db
+from app.models.enums_and_dimensions import MemoryKind
 
 router = APIRouter(prefix="/api/v1", tags=["interests", "memory", "learning", "xp"])
 
@@ -126,11 +126,6 @@ async def create_memory(memory_data: MemoryCreate, db: AsyncSession = Depends(ge
     Добавляет новую запись в память пользователя (эпизодическую, семантическую и т.д.).
     """
     try:
-        # Конвертируем enum в строку перед сохранением
-        from app.models.enums_and_dimensions import MemoryKind
-        if isinstance(memory_data.kind, MemoryKind):
-            memory_data.kind = memory_data.kind.value
-        
         memory_service = MemoryService(db)
         memory = await memory_service.create_memory(memory_data)
         return MemoryResponse(
@@ -242,11 +237,6 @@ async def create_learning_plan(plan_data: LearningPlanCreate, db: AsyncSession =
     Создает новый план обучения для пользователя с целями и этапами.
     """
     try:
-        # Конвертируем enum в строку перед сохранением
-        from app.models.enums_and_dimensions import CEFRLevel
-        if plan_data.level_target and isinstance(plan_data.level_target, CEFRLevel):
-            plan_data.level_target = plan_data.level_target.value
-        
         plan_service = LearningPlanService(db)
         plan = await plan_service.create_plan(plan_data)
         return LearningPlanResponse(
@@ -362,4 +352,3 @@ async def get_user_total_xp(user_id: int, db: AsyncSession = Depends(get_db)):
     xp_service = XPEventService(db)
     total_xp = await xp_service.get_user_total_xp(user_id)
     return {"user_id": user_id, "total_xp": total_xp}
-

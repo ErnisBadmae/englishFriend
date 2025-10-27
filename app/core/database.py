@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase
 from typing import AsyncGenerator, Optional, Any
+from sqlalchemy import event
 
 from app.core.config import settings
 
@@ -17,6 +18,28 @@ def _get_session_maker():
             echo=settings.debug,
             future=True
         )
+
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _register_enum_codecs(dbapi_connection, connection_record):
+            """Регистрируем codec для enum типов, чтобы asyncpg принимал строки."""
+            info = connection_record.info
+            if info.get("enum_codecs_registered"):
+                return
+
+            asyncpg_conn = dbapi_connection.driver_connection
+            enums = ("memory_kind", "cefr_level", "access_channel")
+            for enum_name in enums:
+                dbapi_connection.await_(
+                    asyncpg_conn.set_type_codec(
+                        enum_name,
+                        schema="public",
+                        encoder=str,
+                        decoder=str,
+                        format="text"
+                    )
+                )
+            info["enum_codecs_registered"] = True
+
         _AsyncSessionLocal = async_sessionmaker(
             _engine,
             class_=AsyncSession,
