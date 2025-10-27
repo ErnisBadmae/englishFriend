@@ -1,23 +1,24 @@
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean
+from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 import uuid
 
 from app.core.database import Base
-from app.models.enums_and_dimensions import CEFRLevel, MemoryKind, SessionStatus
+from app.models.enums_and_dimensions import CEFRLevel, AccessChannel
 
 class User(Base):
-    """Модель пользователя в PostgreSQL"""
+    """Модель пользователя в PostgreSQL (синхронизирована с db/migrations/postgres/002_users.sql)"""
     
     __tablename__ = "users"
     
     # Основные поля
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    telegram_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     language_level: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # CEFR уровень
+    primary_channel: Mapped[str] = mapped_column(String(20), default="telegram", nullable=False)
     accent_pref: Mapped[Optional[str]] = mapped_column(String(20), ForeignKey("dim_accent.code"), nullable=True)
     pii_envelope: Mapped[Optional[bytes]] = mapped_column(Text, nullable=True)  # зашифрованный PII
     
@@ -31,13 +32,30 @@ class User(Base):
     memories: Mapped[List["Memory"]] = relationship("Memory", back_populates="user", cascade="all, delete-orphan")
     learning_plans: Mapped[List["LearningPlan"]] = relationship("LearningPlan", back_populates="user", cascade="all, delete-orphan")
     xp_events: Mapped[List["XPEvent"]] = relationship("XPEvent", back_populates="user", cascade="all, delete-orphan")
-    emotional_logs: Mapped[List["EmotionalStateLog"]] = relationship("EmotionalStateLog", back_populates="user", cascade="all, delete-orphan")
+    channel_identities: Mapped[List["UserChannelIdentity"]] = relationship("UserChannelIdentity", back_populates="user", cascade="all, delete-orphan")
     
     def __repr__(self) -> str:
         return f"<User(id={self.id}, telegram_id={self.telegram_id}, username='{self.username}')>"
 
+class UserChannelIdentity(Base):
+    """Идентификаторы пользователя в разных каналах"""
+    __tablename__ = "user_channel_identity"
+    
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Связи
+    user: Mapped["User"] = relationship("User", back_populates="channel_identities")
+    
+    def __repr__(self) -> str:
+        return f"<UserChannelIdentity(id={self.id}, user_id={self.user_id}, channel='{self.channel}')>"
+
 class Session(Base):
-    """Модель сессии в PostgreSQL"""
+    """Модель сессии в PostgreSQL (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
     
     __tablename__ = "sessions"
     
@@ -51,15 +69,10 @@ class Session(Base):
     audio_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lang_code: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
     
-    # Качество связи и анализ
+    # Качество связи
     call_quality: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    transcript_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    topics_detected: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    emotion_detected: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    grammar_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    pronunciation_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
-    # Статус сессии
+    # Статус сессии (добавлено для FastAPI)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     
     # Связи
@@ -68,13 +81,12 @@ class Session(Base):
     feedback: Mapped[Optional["Feedback"]] = relationship("Feedback", back_populates="session", cascade="all, delete-orphan")
     corrections: Mapped[List["Correction"]] = relationship("Correction", back_populates="session", cascade="all, delete-orphan")
     xp_events: Mapped[List["XPEvent"]] = relationship("XPEvent", back_populates="session", cascade="all, delete-orphan")
-    emotional_logs: Mapped[List["EmotionalStateLog"]] = relationship("EmotionalStateLog", back_populates="session", cascade="all, delete-orphan")
     
     def __repr__(self) -> str:
         return f"<Session(id={self.id}, user_id={self.user_id}, started_at={self.started_at})>"
 
 class Utterance(Base):
-    """Модель реплики в диалоге"""
+    """Модель реплики в диалоге (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
     
     __tablename__ = "utterances"
     
@@ -92,7 +104,7 @@ class Utterance(Base):
     phonemes: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
     # Анализ
-    topics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)  # [{topic_id, score}]
+    topics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     emotion_code: Mapped[Optional[str]] = mapped_column(String(50), ForeignKey("dim_emotion.code"), nullable=True)
     emotion_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     grammar_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -106,7 +118,7 @@ class Utterance(Base):
         return f"<Utterance(id={self.id}, session_id={self.session_id}, speaker='{self.speaker}')>"
 
 class Feedback(Base):
-    """Модель обратной связи по сессии"""
+    """Модель обратной связи по сессии (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
     
     __tablename__ = "feedback"
     
@@ -117,12 +129,6 @@ class Feedback(Base):
     summary_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tips_md: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
-    # Детализированная обратная связь
-    corrected_phrases: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    grammar_tips: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    pronunciation_tips: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    vocabulary_suggestions: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    
     # Связи
     session: Mapped["Session"] = relationship("Session", back_populates="feedback")
     
@@ -130,7 +136,7 @@ class Feedback(Base):
         return f"<Feedback(session_id={self.session_id}, grammar={self.overall_grammar})>"
 
 class Correction(Base):
-    """Модель исправления ошибок"""
+    """Модель исправления ошибок (синхронизирована с db/migrations/postgres/003_sessions_utterances.sql)"""
     
     __tablename__ = "corrections"
     

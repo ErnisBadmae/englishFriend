@@ -4,4 +4,6 @@ from app.models.core_tables import *
 from app.models.extended_tables import *
 
 # Экспортируем основные модели для обратной совместимости
-from app.models.core_tables import User, Session
+from app.models.core_tables import User, Session, Utterance, Feedback, Correction, UserChannelIdentity
+from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent
+from app.models.enums_and_dimensions import DimEmotion, DimTopic, DimAccent, CEFRLevel, MemoryKind, AccessChannel
