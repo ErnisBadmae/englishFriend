@@ -82,6 +82,11 @@ format:
 	black app/ tests/
 	isort app/ tests/
 
+# Заполнение БД тестовыми данными (только пользователи)
+seed-users:
+	@echo "🌱 Заполнение пользователями..."
+	python scripts/seed_database.py
+
 # Полная переустановка с тестовыми данными
-reset-with-data: clean start-db seed-db
+reset-with-data: clean start-db seed-users
 	@echo "🔄 Проект переустановлен с тестовыми данными"
