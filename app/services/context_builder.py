@@ -19,7 +19,8 @@ from app.prompts.universal import (
     Memory as PromptMemory,
     RecentUtterance,
     LearningProgress,
-    SessionContext
+    SessionContext,
+    determine_prompt_mode
 )
 
 
@@ -46,13 +47,26 @@ class ContextBuilder:
         if not user:
             return None
         
+        # Получить дату последней сессии
+        last_session_date = None
+        if user.sessions:
+            last_session_stmt = (
+                select(Session.started_at)
+                .where(Session.user_id == user_id)
+                .order_by(Session.started_at.desc())
+                .limit(1)
+            )
+            last_session_result = await self.db.execute(last_session_stmt)
+            last_session_date = last_session_result.scalar_one_or_none()
+        
         return UserProfile(
             user_id=user.id,
             username=user.username,
             language_level=user.language_level or "B1",
             session_count=len(user.sessions) if user.sessions else 0,
             created_at=user.created_at,
-            accent_pref=user.accent_pref
+            accent_pref=user.accent_pref,
+            last_session_date=last_session_date
         )
     
     async def get_user_interests(self, user_id: int) -> List[PromptUserInterest]:

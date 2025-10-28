@@ -3,11 +3,22 @@
 
 Вместо множества агентов используем один мощный промпт с динамической подстановкой
 всех данных из PostgreSQL, Qdrant и Neo4j.
+
+Поддерживает два режима для оптимизации токенов:
+- Full mode: ~2,300 токенов (начало сессии)
+- Compact mode: ~1,500 токенов (продолжение диалога)
 """
 
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
+import enum
+
+
+class PromptMode(str, enum.Enum):
+    """Режимы промпта для оптимизации токенов"""
+    FULL = "full"        # ~2,300 токенов - начало сессии
+    COMPACT = "compact"  # ~1,500 токенов - продолжение диалога
 
 
 @dataclass
@@ -19,6 +30,7 @@ class UserProfile:
     session_count: int
     created_at: datetime
     accent_pref: Optional[str] = None
+    last_session_date: Optional[datetime] = None  # Для определения режима
 
 
 @dataclass
@@ -120,7 +132,8 @@ class UniversalPromptBuilder:
         memories: List[Memory],
         recent_utterances: List[RecentUtterance],
         progress: LearningProgress,
-        session_context: Optional[SessionContext] = None
+        session_context: Optional[SessionContext] = None,
+        mode: PromptMode = PromptMode.FULL
     ):
         self.user_profile = user_profile
         self.interests = interests
@@ -128,17 +141,35 @@ class UniversalPromptBuilder:
         self.recent_utterances = recent_utterances
         self.progress = progress
         self.session_context = session_context
+        self.mode = mode
         
         self.prompt_sections: List[str] = []
     
     def build(self) -> str:
         """Собрать финальный промпт"""
+        if self.mode == PromptMode.FULL:
+            return self._build_full()
+        else:
+            return self._build_compact()
+    
+    def _build_full(self) -> str:
+        """Построить полный промпт (~2,300 токенов)"""
         self._add_role_identity()
         self._add_user_context()
         self._add_session_context()
         self._add_memory_context()
         self._add_adaptive_behavior()
         self._add_output_guidelines()
+        
+        return "\n\n".join(self.prompt_sections)
+    
+    def _build_compact(self) -> str:
+        """Построить компактный промпт (~1,500 токенов)"""
+        self._add_role_identity_compact()
+        self._add_user_context_compact()
+        self._add_session_context_compact()
+        self._add_memory_context_compact()
+        self._add_behavior_compact()
         
         return "\n\n".join(self.prompt_sections)
     
@@ -367,6 +398,109 @@ Your responses should be:
             lines.append(f"{kind_emoji} **{mem.kind}** {salience_stars}: {mem.content}")
 
         return "\n".join(lines)
+    
+    # ========== COMPACT MODE METHODS ==========
+    
+    def _add_role_identity_compact(self):
+        """Компактная версия роли и идентичности"""
+        section = f"""Anna (English tutor), Level {self.user_profile.language_level}
+
+Friendly conversation companion. Help practice English naturally."""
+        self.prompt_sections.append(section)
+    
+    def _add_user_context_compact(self):
+        """Компактная версия контекста пользователя"""
+        interests_text = self._format_interests_compact()
+        memories_text = self._format_memories_compact()
+        
+        section = f"""Interests: {interests_text}
+Memories: {memories_text}"""
+        self.prompt_sections.append(section)
+    
+    def _add_session_context_compact(self):
+        """Компактная версия контекста сессии"""
+        if not self.session_context:
+            return
+        
+        utterances_text = self._format_recent_utterances_compact()
+        
+        section = f"""Recent: {utterances_text}
+Topics: {', '.join(self.session_context.topics_discussed[:2]) if self.session_context.topics_discussed else 'general'}"""
+        self.prompt_sections.append(section)
+    
+    def _add_memory_context_compact(self):
+        """Компактная версия контекста памяти - просто ссылка, т.к. уже в user context"""
+        pass
+    
+    def _add_behavior_compact(self):
+        """Компактная версия поведения"""
+        output_rules = """Continue naturally. Match user's level. Reference interests and memories organically. Be conversational, not instructional."""
+        self.prompt_sections.append(output_rules)
+    
+    def _format_interests_compact(self) -> str:
+        """Компактное форматирование интересов"""
+        if not self.interests:
+            return "none"
+        
+        sorted_interests = sorted(self.interests, key=lambda x: x.weight, reverse=True)
+        return ", ".join([int.topic_name for int in sorted_interests[:3]])
+    
+    def _format_memories_compact(self) -> str:
+        """Компактное форматирование воспоминаний"""
+        if not self.memories:
+            return "none"
+        
+        sorted_memories = sorted(self.memories, key=lambda x: x.salience, reverse=True)
+        return ", ".join([mem.content[:50] for mem in sorted_memories[:3]])
+    
+    def _format_recent_utterances_compact(self) -> str:
+        """Компактное форматирование последних реплик"""
+        if not self.recent_utterances:
+            return "new conversation"
+        
+        lines = []
+        for utt in self.recent_utterances[-3:]:  # Только последние 3
+            lines.append(f"{utt.speaker}: \"{utt.text[:100]}\"")
+        
+        return " | ".join(lines)
+
+
+def determine_prompt_mode(
+    session_context: Optional[SessionContext],
+    user_profile: UserProfile
+) -> PromptMode:
+    """
+    Определить режим промпта на основе контекста.
+    
+    Full mode используется когда:
+    - Первое сообщение в сессии (utterance_count == 0)
+    - Новая сессия (нет session_context)
+    - Давно не общались (last_session > 7 дней назад)
+    
+    Compact mode используется когда:
+    - Продолжение диалога (utterance_count > 0)
+    - Есть контекст сессии
+    - Недавнее общение
+    
+    Args:
+        session_context: Контекст текущей сессии
+        user_profile: Профиль пользователя
+    
+    Returns:
+        Режим промпта
+    """
+    # Первое сообщение или новая сессия
+    if not session_context or session_context.utterance_count == 0:
+        return PromptMode.FULL
+    
+    # Давно не общались (проверка last_session_date)
+    if user_profile.last_session_date:
+        days_since = (datetime.now() - user_profile.last_session_date).days
+        if days_since > 7:
+            return PromptMode.FULL
+    
+    # Продолжение диалога
+    return PromptMode.COMPACT
 
 
 def build_universal_prompt(
@@ -375,7 +509,8 @@ def build_universal_prompt(
     memories: List[Memory],
     recent_utterances: List[RecentUtterance],
     progress: LearningProgress,
-    session_context: Optional[SessionContext] = None
+    session_context: Optional[SessionContext] = None,
+    mode: Optional[PromptMode] = None
 ) -> str:
     """
     Построить универсальный системный промпт.
@@ -387,17 +522,23 @@ def build_universal_prompt(
         recent_utterances: Последние реплики в диалоге
         progress: Прогресс обучения
         session_context: Контекст текущей сессии (опционально)
+        mode: Режим промпта (если не указан, определяется автоматически)
     
     Returns:
         Готовый системный промпт для OpenAI API
     """
+    # Определить режим если не указан
+    if mode is None:
+        mode = determine_prompt_mode(session_context, user_profile)
+    
     builder = UniversalPromptBuilder(
         user_profile=user_profile,
         interests=interests,
         memories=memories,
         recent_utterances=recent_utterances,
         progress=progress,
-        session_context=session_context
+        session_context=session_context,
+        mode=mode
     )
     
     return builder.build()

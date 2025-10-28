@@ -5,6 +5,7 @@
 """
 
 from app.prompts.universal import (
+    PromptMode,
     UserProfile,
     UserInterest,
     Memory,
@@ -12,10 +13,12 @@ from app.prompts.universal import (
     LearningProgress,
     SessionContext,
     UniversalPromptBuilder,
+    determine_prompt_mode,
     build_universal_prompt
 )
 
 __all__ = [
+    "PromptMode",
     "UserProfile",
     "UserInterest",
     "Memory",
@@ -23,5 +26,6 @@ __all__ = [
     "LearningProgress",
     "SessionContext",
     "UniversalPromptBuilder",
+    "determine_prompt_mode",
     "build_universal_prompt",
 ]

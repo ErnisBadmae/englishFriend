@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services.context_builder import ContextBuilder
-from app.prompts.universal import build_universal_prompt
+from app.prompts.universal import build_universal_prompt, determine_prompt_mode
 from app.models.core_tables import Utterance
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
@@ -77,23 +77,30 @@ async def send_message(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     
-    # 3. Построить универсальный промпт
+    # 3. Определить режим промпта (автоматически)
+    mode = determine_prompt_mode(
+        session_context=context['session_context'],
+        user_profile=context['user_profile']
+    )
+    
+    # 4. Построить универсальный промпт с выбранным режимом
     system_prompt = build_universal_prompt(
         user_profile=context['user_profile'],
         interests=context['interests'],
         memories=context['memories'],
         recent_utterances=context['recent_utterances'],
         progress=context['progress'],
-        session_context=context['session_context']
+        session_context=context['session_context'],
+        mode=mode
     )
     
-    # 4. Вызвать OpenAI API (заглушка - реальная интеграция будет позже)
+    # 5. Вызвать OpenAI API (заглушка - реальная интеграция будет позже)
     ai_response = await generate_ai_response(
         system_prompt=system_prompt,
         user_message=request.message
     )
     
-    # 5. Сохранить ответ AI в БД
+    # 6. Сохранить ответ AI в БД
     ai_utterance = Utterance(
         session_id=request.session_id,
         speaker="assistant",
@@ -104,7 +111,7 @@ async def send_message(
     db.add(ai_utterance)
     await db.commit()
     
-    # 6. Вернуть ответ
+    # 7. Вернуть ответ
     return ChatResponse(
         response=ai_response,
         session_id=request.session_id,
