@@ -77,3 +77,7 @@ async def init_db():
         AsyncSessionLocal = _get_session_maker()
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+# Экспорт для тестов
+async_session_maker = _get_session_maker

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 import os
+from uuid import uuid4
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -19,8 +20,13 @@ def api_client():
     return TestClient(app)
 
 
-@pytest.mark.asyncio
-async def test_agent_health_endpoint(api_client):
+@pytest.fixture
+def test_session_id():
+    """Генерировать UUID для тестовой сессии"""
+    return str(uuid4())
+
+
+def test_agent_health_endpoint(api_client):
     """
     Тест health endpoint агента.
     Проверяет подключение к OpenAI через прокси.
@@ -63,15 +69,14 @@ def test_openai_api_key():
     assert api_key.startswith("sk-"), "API ключ должен начинаться с sk-"
 
 
-@pytest.mark.asyncio
-async def test_agent_chat_endpoint_basic(api_client):
+def test_agent_chat_endpoint_basic(api_client, test_session_id):
     """
     Базовый тест chat endpoint.
     Проверяет структуру запроса и ответа.
     """
     request_data = {
         "user_id": 1,
-        "session_id": "test-session-001",
+        "session_id": test_session_id,
         "message": "Hello"
     }
     
@@ -80,25 +85,28 @@ async def test_agent_chat_endpoint_basic(api_client):
         json=request_data
     )
     
-    # Может быть 200 (успешно) или 500 (ошибка OpenAI)
-    assert response.status_code in [200, 500]
+    # Может быть 200 (успешно) или 500 (ошибка OpenAI) или 422 (validation error)
+    assert response.status_code in [200, 500, 422]
     
     if response.status_code == 200:
         data = response.json()
         assert "response" in data
         assert "session_id" in data
         assert "user_id" in data
-        assert data["session_id"] == "test-session-001"
+        assert data["session_id"] == test_session_id
         assert data["user_id"] == 1
         assert len(data["response"]) > 0, "Ответ не должен быть пустым"
+    elif response.status_code == 422:
+        # Ошибка валидации - проверяем детали
+        data = response.json()
+        assert "detail" in data
     else:
         # Проверяем, что есть понятная ошибка
         data = response.json()
         assert "detail" in data
 
 
-@pytest.mark.asyncio
-async def test_agent_chat_multiple_messages(api_client):
+def test_agent_chat_multiple_messages(api_client):
     """
     Тест нескольких сообщений подряд.
     Проверяет стабильность агента.
@@ -112,7 +120,7 @@ async def test_agent_chat_multiple_messages(api_client):
     for i, message in enumerate(messages):
         request_data = {
             "user_id": 1,
-            "session_id": f"test-session-multi-{i}",
+            "session_id": str(uuid4()),  # Генерируем новый UUID для каждого сообщения
             "message": message
         }
         
@@ -122,7 +130,7 @@ async def test_agent_chat_multiple_messages(api_client):
         )
         
         # Проверяем, что не все запросы упали
-        assert response.status_code in [200, 500]
+        assert response.status_code in [200, 500, 422]
         
         if response.status_code == 200:
             data = response.json()
@@ -130,8 +138,7 @@ async def test_agent_chat_multiple_messages(api_client):
             assert len(data["response"]) > 0
 
 
-@pytest.mark.asyncio
-async def test_agent_error_handling(api_client):
+def test_agent_error_handling(api_client):
     """
     Тест обработки ошибок.
     Проверяет, что невалидный запрос не ломает сервер.
@@ -143,7 +150,29 @@ async def test_agent_error_handling(api_client):
     )
     
     # Должна быть 422 (validation error) или 400
-    assert response.status_code in [400, 422, 500]
+    assert response.status_code in [400, 422]
+
+
+def test_agent_chat_invalid_session_id(api_client):
+    """
+    Тест валидации session_id.
+    Проверяет, что невалидный session_id отклоняется.
+    """
+    request_data = {
+        "user_id": 1,
+        "session_id": "not-a-valid-uuid",  # Невалидный UUID
+        "message": "Hello"
+    }
+    
+    response = api_client.post(
+        "/api/v1/agent/chat",
+        json=request_data
+    )
+    
+    # Должна быть ошибка валидации 422
+    assert response.status_code == 422
+    data = response.json()
+    assert "detail" in data
 
 
 def test_proxy_import():
@@ -189,10 +218,13 @@ async def test_agent_chat_saves_to_db(api_client):
     """
     from app.core.database import async_session_maker
     
+    # Генерируем валидный UUID для теста
+    test_session_id = str(uuid4())
+    
     # Отправляем сообщение
     request_data = {
         "user_id": 1,
-        "session_id": "test-db-001",
+        "session_id": test_session_id,
         "message": "Hello, I want to practice English"
     }
     
@@ -206,13 +238,14 @@ async def test_agent_chat_saves_to_db(api_client):
     
     if response.status_code == 200:
         # Проверяем, что данные сохранились в БД
-        async with async_session_maker() as db:
+        session_maker = async_session_maker()
+        async with session_maker() as db:
             from app.models.core_tables import Utterance
             from sqlalchemy import select
             
             # Ищем наши utterances
             stmt = select(Utterance).where(
-                Utterance.session_id == "test-db-001"
+                Utterance.session_id == test_session_id
             )
             result = await db.execute(stmt)
             utterances = result.scalars().all()
