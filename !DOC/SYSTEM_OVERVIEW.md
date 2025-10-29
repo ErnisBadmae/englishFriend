@@ -165,9 +165,44 @@ Qdrant (семантический поиск) → Рекомендации ко
 - **Integration tests**: End-to-end тесты
 
 ### Мониторинг
-- **Health checks**: HTTP endpoints для проверки состояния
-- **Logs**: Структурированное логирование
-- **Metrics**: Метрики производительности
+
+#### Prometheus и Grafana
+- **Prometheus**: Сбор метрик временных рядов (порт 9090)
+- **Grafana**: Визуализация метрик (порт 3000)
+- **Health checks**: HTTP endpoints для проверки состояния (`/health`)
+- **Metrics endpoints**: Prometheus метрики (`/metrics`)
+
+#### Собираемые метрики
+
+**FastAPI:**
+- HTTP метрики (requests, latency, size)
+- Метрики базы данных (query duration, connections)
+- Метрики OpenAI API (calls, duration, tokens)
+
+**Sync-Vector:**
+- Upsert латентность
+- Queue lag (Kafka)
+- Failures и success rates
+- Timestamp последней обработки
+
+**Sync-Graph:**
+- Batch processing duration
+- DLQ метрики
+- Created nodes и relationships
+- Timestamp последней обработки
+
+#### Запуск мониторинга
+
+```bash
+# Запуск Prometheus и Grafana
+docker-compose -f docker-compose.monitoring.yml up -d
+
+# Доступ к интерфейсам
+# Prometheus: http://localhost:9090
+# Grafana: http://localhost:3000 (admin/admin)
+```
+
+Подробная документация: `monitoring/README.md`
 
 ## Использование
 

@@ -1,11 +1,13 @@
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 from typing import Dict, Any
 from contextlib import asynccontextmanager
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.api import users, sessions, dimensions, utterances_and_feedback, memory_and_interests
 from app.core.config import settings
 from app.core.database import init_db
+from app.core.middleware import PrometheusMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +38,9 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
+# Добавляем middleware для метрик
+app.add_middleware(PrometheusMiddleware)
 
 app.include_router(users.router)
 app.include_router(sessions.router)
@@ -100,6 +105,17 @@ async def api_status() -> Dict[str, Any]:
         },
             "current_stage": "Этап 4: Расширенная схема БД"
     }
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """
+    Endpoint для Prometheus метрик.
+    Возвращает метрики в формате Prometheus.
+    """
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 if __name__ == "__main__":
     import uvicorn

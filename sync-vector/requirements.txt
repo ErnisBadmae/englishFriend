@@ -7,7 +7,7 @@ pyyaml==6.0.1
 asyncio-mqtt==0.16.1
 
 # HTTP client for health checks
-httpx==0.25.2
+httpx==0.25.2  # Внимание: если устанавливать в одно окружение с основным проектом, нужен httpx>=0.27.1
 aiohttp==3.9.1
 
 # Metrics and observability

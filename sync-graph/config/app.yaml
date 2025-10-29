@@ -17,5 +17,5 @@ neo4j:
   ingest_script: /app/graph/schema/ingest.cypher
 
 observability:
-  port: 8091
+  metrics_port: 8091
   log_level: info
