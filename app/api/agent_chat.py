@@ -2,8 +2,9 @@
 API для текстового чата с агентом
 """
 
+import uuid
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 import os
 
@@ -18,7 +19,14 @@ class AgentChatRequest(BaseModel):
     user_id: int
     session_id: str
     message: str
-
+    @field_validator('session_id')
+    @classmethod
+    def validate_session_id(cls, v: str) -> str:
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
 
 class AgentChatResponse(BaseModel):
     response: str
