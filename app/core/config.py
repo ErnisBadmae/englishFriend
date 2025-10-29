@@ -18,9 +18,14 @@ class Settings(BaseSettings):
     # CORS настройки
     allowed_origins: list = ["*"]
     
+    # OpenAI настройки
+    proxy_url: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # Игнорировать лишние поля
 
 # Глобальный экземпляр настроек
 settings = Settings()
