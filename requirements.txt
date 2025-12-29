@@ -22,6 +22,12 @@ openai==2.6.1
 anyio>=4.5,<5  # Для mcp и openai
 mcp==1.19.0
 
+# Мониторинг и метрики
+prometheus-client==0.21.0
+
+# HTTP клиент
+urllib3>=2.0.0  # Требуется для types-requests и совместимости с современными библиотеками
+
 # Development tools
 black==23.11.0
 isort==5.12.0
