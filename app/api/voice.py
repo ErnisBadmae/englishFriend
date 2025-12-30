@@ -1,4 +1,12 @@
-"""WebSocket API для голосовых диалогов."""
+"""WebSocket API для голосовых диалогов.
+
+Архитектура Vosk + Groq + edge-tts:
+- Фронтенд (Telegram Mini App) использует Vosk для STT локально
+- Отправляет текст на бэкенд через WebSocket
+- Бэкенд генерирует ответ через Groq (Llama-70B)
+- Синтезирует речь через edge-tts
+- Отправляет аудио обратно
+"""
 
 import json
 import uuid
@@ -7,50 +15,178 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.services.ai import get_ai_provider, VoiceSession
 from app.services.database import UserService
+from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.tts_service import get_tts_service
+from app.services.ai.mentor_prompt import build_mentor_prompt, build_simple_prompt, UserContext
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
-# Системный промпт ментора
-MENTOR_PROMPT = """You are English Friend, a warm and encouraging AI English tutor.
 
-## Your Role
-- Patient, friendly English teacher for Russian speakers
-- Focus on conversation practice, not lectures
-- Correct mistakes gently without interrupting flow
-
-## Guidelines
-1. Keep responses short (2-3 sentences)
-2. Ask follow-up questions to encourage speaking
-3. Correct errors naturally: "Oh, you WENT there! That sounds fun..."
-4. Speak clearly at moderate pace
-
-## Correction Style
-- Minor errors: note and summarize at end
-- Major errors: gently rephrase in your response
-- Example: User says "I goed there" → You say "Oh, you went there! Tell me more..."
-"""
-
-
-@router.websocket("/stream")
-async def voice_stream(
+@router.websocket("/chat")
+async def voice_chat(
     websocket: WebSocket,
     user_id: int = Query(..., description="ID пользователя"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    WebSocket endpoint для голосового диалога.
+    WebSocket endpoint для голосового чата (Vosk + Groq + edge-tts).
 
     Протокол:
-    - Client -> Server: {"type": "audio", "data": "<base64 PCM16 24kHz>"}
-    - Server -> Client: {"type": "audio", "data": "<base64 PCM16 24kHz>"}
-    - Server -> Client: {"type": "transcript", "role": "user|assistant", "text": "...", "is_final": bool}
+    - Client -> Server: {"type": "text", "text": "распознанный текст от Vosk"}
+    - Server -> Client: {"type": "transcript", "role": "assistant", "text": "ответ ментора"}
+    - Server -> Client: {"type": "audio", "data": "<base64 MP3>", "format": "mp3"}
     - Server -> Client: {"type": "error", "message": "..."}
     """
     await websocket.accept()
 
-    # Проверяем пользователя
+    try:
+        # === INITIALIZATION BLOCK (может упасть) ===
+
+        # Проверяем пользователя (опционально, может работать без БД)
+        user = None
+        try:
+            user_service = UserService(db)
+            user = await user_service.get_user(user_id)
+        except Exception as e:
+            print(f"Warning: Could not fetch user from DB: {e}")
+
+        # Инициализируем сервисы
+        llm = get_llm_provider()  # vLLM по умолчанию, переключается через LLM_PROVIDER
+        tts = get_tts_service()
+
+        # История диалога для контекста
+        conversation_history: list[dict] = []
+
+        # Строим системный промпт с обработкой ошибок
+        try:
+            if user:
+                user_context = UserContext(
+                    user_id=user_id,
+                    username=user.username or f"User_{user_id}",  # Используем username из БД
+                    language_level=user.language_level or "B1",  # Берём из профиля с fallback
+                )
+                system_prompt = await build_mentor_prompt(db, user_context)
+            else:
+                system_prompt = build_simple_prompt()
+        except Exception as e:
+            print(f"Error building mentor prompt: {e}")
+            system_prompt = build_simple_prompt()
+
+        session_id = str(uuid.uuid4())
+
+        # === MESSAGE LOOP ===
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "message": "Ready to talk! Say something in English.",
+        })
+
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+
+                if message.get("type") == "text":
+                    user_text = message.get("text", "").strip()
+                    if not user_text:
+                        continue
+
+                    # Отправляем подтверждение получения текста
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": "user",
+                        "text": user_text,
+                    })
+
+                    # Генерируем ответ через LLM (vLLM/Groq/OpenAI)
+                    try:
+                        response_text = await llm.generate(
+                            user_message=user_text,
+                            system_prompt=system_prompt,
+                            conversation_history=conversation_history,
+                            max_tokens=150,  # Короткие ответы для голоса
+                        )
+                    except Exception as e:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"LLM error: {str(e)}",
+                        })
+                        continue
+
+                    # Добавляем в историю
+                    conversation_history.append({"role": "user", "content": user_text})
+                    conversation_history.append({"role": "assistant", "content": response_text})
+
+                    # Ограничиваем историю последними 10 сообщениями
+                    if len(conversation_history) > 20:
+                        conversation_history = conversation_history[-20:]
+
+                    # Отправляем текст ответа
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": "assistant",
+                        "text": response_text,
+                    })
+
+                    # Синтезируем и отправляем аудио
+                    try:
+                        audio_bytes = await tts.synthesize(response_text)
+                        await websocket.send_json({
+                            "type": "audio",
+                            "data": base64.b64encode(audio_bytes).decode(),
+                            "format": "mp3",
+                        })
+                    except Exception as e:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"TTS error: {str(e)}",
+                        })
+
+                elif message.get("type") == "end":
+                    break
+
+            except WebSocketDisconnect:
+                print(f"Client disconnected: session {session_id}")
+                break
+
+    except Exception as e:
+        # Top-level error во время инициализации или message loop
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Server error. Please refresh the page.",
+            })
+            await websocket.close(code=1011, reason="Internal server error")
+        except Exception:
+            pass  # Connection already closed
+
+    finally:
+        # Cleanup
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# Legacy endpoint для обратной совместимости с OpenAI Realtime
+@router.websocket("/stream")
+async def voice_stream_legacy(
+    websocket: WebSocket,
+    user_id: int = Query(..., description="ID пользователя"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Legacy WebSocket endpoint для потокового аудио.
+
+    Использует старые провайдеры (OpenAI Realtime, Hume EVI).
+    Для нового Vosk + Groq используйте /chat.
+    """
+    from app.services.ai import get_ai_provider, VoiceSession
+
+    await websocket.accept()
+
     user_service = UserService(db)
     user = await user_service.get_user(user_id)
     if not user:
@@ -58,14 +194,12 @@ async def voice_stream(
         await websocket.close()
         return
 
-    # Создаём сессию
     session = VoiceSession(
         session_id=str(uuid.uuid4()),
         user_id=user_id,
-        system_prompt=MENTOR_PROMPT,
+        system_prompt=build_simple_prompt(),
     )
 
-    # Подключаемся к AI провайдеру
     provider = get_ai_provider()
 
     try:
@@ -76,11 +210,9 @@ async def voice_stream(
             "message": "Ready to talk!",
         })
 
-        # Запускаем приём от AI в фоне
         import asyncio
 
         async def forward_ai_events():
-            """Пересылаем события от AI клиенту."""
             async for event in provider.receive():
                 if event["type"] == "audio":
                     await websocket.send_json({
@@ -99,7 +231,6 @@ async def voice_stream(
 
         ai_task = asyncio.create_task(forward_ai_events())
 
-        # Принимаем аудио от клиента
         try:
             while True:
                 data = await websocket.receive_text()

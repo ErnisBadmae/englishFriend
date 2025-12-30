@@ -19,11 +19,12 @@ class CEFRLevel(str, enum.Enum):
     C2 = "C2"
 
 class MemoryKind(str, enum.Enum):
-    """Типы памяти"""
-    EPISODIC = "episodic"
-    SEMANTIC = "semantic"
-    PERSONA = "persona"
-    SKILL = "skill"
+    """Типы памяти (синхронизировано с init.sql и migration 008)"""
+    FACT = "fact"                    # Факты о пользователе
+    PREFERENCE = "preference"        # Предпочтения
+    EXPERIENCE = "experience"        # Опыт и события
+    GOAL = "goal"                    # Цели обучения
+    ERROR_PATTERN = "error_pattern"  # Повторяющиеся ошибки (добавлено в миграции 008)
 
 class AccessChannel(str, enum.Enum):
     """Каналы доступа"""

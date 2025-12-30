@@ -1,12 +1,15 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA
+from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, ENUM
 import uuid
 
 from app.core.database import Base
 from app.models.enums_and_dimensions import CEFRLevel, AccessChannel
+
+if TYPE_CHECKING:
+    from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent
 
 class User(Base):
     """Модель пользователя в PostgreSQL (синхронизирована с db/migrations/postgres/002_users.sql)"""
@@ -17,8 +20,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     telegram_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    language_level: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # CEFR уровень
-    primary_channel: Mapped[str] = mapped_column(String(20), default="telegram", nullable=False)
+    language_level: Mapped[Optional[str]] = mapped_column(ENUM('A1', 'A2', 'B1', 'B2', 'C1', 'C2', name='cefr_level', create_type=False), nullable=True)  # CEFR уровень
+    primary_channel: Mapped[str] = mapped_column(ENUM('telegram', 'mobile_app', 'web', name='access_channel', create_type=False), default="telegram", nullable=False)
     accent_pref: Mapped[Optional[str]] = mapped_column(String(20), ForeignKey("dim_accent.code"), nullable=True)
     pii_envelope: Mapped[Optional[bytes]] = mapped_column(BYTEA, nullable=True)  # зашифрованный PII
     

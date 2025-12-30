@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'english-friend'
+    environment: 'development'
+
+scrape_configs:
+  # FastAPI основной API
+  - job_name: 'fastapi'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+        labels:
+          service: 'fastapi'
+          component: 'api'
+
+  # Sync-Vector сервис
+  - job_name: 'sync-vector'
+    static_configs:
+      - targets: ['host.docker.internal:8090']
+        labels:
+          service: 'sync-vector'
+          component: 'cdc'
+
+  # Sync-Graph сервис
+  - job_name: 'sync-graph'
+    static_configs:
+      - targets: ['host.docker.internal:8091']
+        labels:
+          service: 'sync-graph'
+          component: 'cdc'
+
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+

@@ -12,6 +12,18 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
+DO $$ BEGIN
+    CREATE TYPE memory_kind AS ENUM ('fact', 'preference', 'experience', 'goal');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE access_channel AS ENUM ('telegram', 'web', 'api');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
 -- Создаем базовые таблицы (они будут пересозданы SQLAlchemy, но это для примера)
 -- SQLAlchemy создаст таблицы автоматически при запуске приложения
 

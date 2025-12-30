@@ -13,8 +13,8 @@ from app.services.memory_and_interests import (
     UserInterestService, MemoryService, LearningPlanService, 
     XPEventService
 )
-from app.models.enums_and_dimensions import MemoryKind
 from app.core.database import get_db
+from app.models.enums_and_dimensions import MemoryKind
 
 router = APIRouter(prefix="/api/v1", tags=["interests", "memory", "learning", "xp"])
 
@@ -131,13 +131,12 @@ async def create_memory(memory_data: MemoryCreate, db: AsyncSession = Depends(ge
         return MemoryResponse(
             id=memory.id,
             user_id=memory.user_id,
-            session_id=memory.session_id,
-            utterance_id=memory.utterance_id,
             kind=memory.kind,
             content=memory.content,
-            metadata=memory.metadata,
+            meta=memory.meta,
+            salience=memory.salience,
             created_at=memory.created_at,
-            last_accessed=memory.last_accessed
+            last_refreshed=memory.last_refreshed
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка создания памяти: {str(e)}")
@@ -154,19 +153,18 @@ async def get_memory(memory_id: str, db: AsyncSession = Depends(get_db)):
     if not memory:
         raise HTTPException(status_code=404, detail="Запись памяти не найдена")
     
-    # Обновляем время доступа
+    # Обновляем время доступа (triggers in DB will handle last_refreshed)
     await memory_service.update_memory_access(memory_id)
     
     return MemoryResponse(
         id=memory.id,
         user_id=memory.user_id,
-        session_id=memory.session_id,
-        utterance_id=memory.utterance_id,
         kind=memory.kind,
         content=memory.content,
-        metadata=memory.metadata,
+        meta=memory.meta,
+        salience=memory.salience,
         created_at=memory.created_at,
-        last_accessed=memory.last_accessed
+        last_refreshed=memory.last_refreshed
     )
 
 @router.get("/users/{user_id}/memories", response_model=MemoryListResponse)
@@ -189,13 +187,12 @@ async def get_user_memories(
             MemoryResponse(
                 id=memory.id,
                 user_id=memory.user_id,
-                session_id=memory.session_id,
-                utterance_id=memory.utterance_id,
                 kind=memory.kind,
                 content=memory.content,
-                metadata=memory.metadata,
+                meta=memory.meta,
+                salience=memory.salience,
                 created_at=memory.created_at,
-                last_accessed=memory.last_accessed
+                last_refreshed=memory.last_refreshed
             ) for memory in memories
         ],
         total=len(memories)
@@ -220,13 +217,12 @@ async def search_user_memories(
             MemoryResponse(
                 id=memory.id,
                 user_id=memory.user_id,
-                session_id=memory.session_id,
-                utterance_id=memory.utterance_id,
                 kind=memory.kind,
                 content=memory.content,
-                metadata=memory.metadata,
+                meta=memory.meta,
+                salience=memory.salience,
                 created_at=memory.created_at,
-                last_accessed=memory.last_accessed
+                last_refreshed=memory.last_refreshed
             ) for memory in memories
         ],
         total=len(memories)
@@ -246,12 +242,9 @@ async def create_learning_plan(plan_data: LearningPlanCreate, db: AsyncSession =
         return LearningPlanResponse(
             id=plan.id,
             user_id=plan.user_id,
-            target_level=plan.target_level,
-            current_level=plan.current_level,
-            topics=plan.topics,
-            milestones=plan.milestones,
-            is_active=plan.is_active,
-            created_at=plan.created_at,
+            level_target=plan.level_target,
+            next_review_at=plan.next_review_at,
+            roadmap=plan.roadmap,
             updated_at=plan.updated_at
         )
     except Exception as e:
@@ -272,12 +265,9 @@ async def get_learning_plan(plan_id: str, db: AsyncSession = Depends(get_db)):
     return LearningPlanResponse(
         id=plan.id,
         user_id=plan.user_id,
-        target_level=plan.target_level,
-        current_level=plan.current_level,
-        topics=plan.topics,
-        milestones=plan.milestones,
-        is_active=plan.is_active,
-        created_at=plan.created_at,
+        level_target=plan.level_target,
+        next_review_at=plan.next_review_at,
+        roadmap=plan.roadmap,
         updated_at=plan.updated_at
     )
 
@@ -296,12 +286,9 @@ async def get_user_active_plan(user_id: int, db: AsyncSession = Depends(get_db))
     return LearningPlanResponse(
         id=plan.id,
         user_id=plan.user_id,
-        target_level=plan.target_level,
-        current_level=plan.current_level,
-        topics=plan.topics,
-        milestones=plan.milestones,
-        is_active=plan.is_active,
-        created_at=plan.created_at,
+        level_target=plan.level_target,
+        next_review_at=plan.next_review_at,
+        roadmap=plan.roadmap,
         updated_at=plan.updated_at
     )
 
@@ -320,10 +307,9 @@ async def create_xp_event(event_data: XPEventCreate, db: AsyncSession = Depends(
             id=event.id,
             user_id=event.user_id,
             session_id=event.session_id,
-            event_type=event.event_type,
-            xp_delta=event.xp_delta,
-            metadata=event.metadata,
-            created_at=event.created_at
+            kind=event.kind,
+            points=event.points,
+            happened_at=event.happened_at
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка создания события XP: {str(e)}")
@@ -348,10 +334,9 @@ async def get_user_xp_events(
                 id=event.id,
                 user_id=event.user_id,
                 session_id=event.session_id,
-                event_type=event.event_type,
-                xp_delta=event.xp_delta,
-                metadata=event.metadata,
-                created_at=event.created_at
+                kind=event.kind,
+                points=event.points,
+                happened_at=event.happened_at
             ) for event in events
         ],
         total=len(events)
@@ -367,4 +352,3 @@ async def get_user_total_xp(user_id: int, db: AsyncSession = Depends(get_db)):
     xp_service = XPEventService(db)
     total_xp = await xp_service.get_user_total_xp(user_id)
     return {"user_id": user_id, "total_xp": total_xp}
-
