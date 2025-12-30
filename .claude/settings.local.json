@@ -53,7 +53,8 @@
       "Bash(\"./venv/Scripts/python.exe\" -c \"\nfrom main import app\nprint\\(''App created successfully''\\)\nprint\\(f''Routes: {len\\(app.routes\\)}''\\)\nfor route in app.routes:\n    if hasattr\\(route, ''path''\\):\n        print\\(f''  {route.path}''\\)\n\")",
       "Bash(\"C:/Users/badmaev_es/englishFriend/venv/Scripts/python.exe\" -m pip install openai-agents==0.4.2 --quiet)",
       "Bash(\"C:/Users/badmaev_es/englishFriend/venv/Scripts/python.exe\" -m pip install --upgrade fastapi uvicorn --quiet)",
-      "Bash(\"./venv/Scripts/python.exe\" -c \"\nfrom main import app\nprint\\(''App OK!''\\)\nprint\\(f''Routes: {len\\(app.routes\\)}''\\)\n\")"
+      "Bash(\"./venv/Scripts/python.exe\" -c \"\nfrom main import app\nprint\\(''App OK!''\\)\nprint\\(f''Routes: {len\\(app.routes\\)}''\\)\n\")",
+      "Bash(git add:*)"
     ]
   }
 }
