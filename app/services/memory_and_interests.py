@@ -103,9 +103,10 @@ class MemoryService:
         """Получить записи памяти пользователя"""
         query = select(Memory).where(Memory.user_id == user_id)
         if kind:
-            kind_enum = kind if isinstance(kind, MemoryKind) else MemoryKind(kind)
-            query = query.where(Memory.kind == kind_enum)
-        
+            # Use .value to ensure string comparison with PostgreSQL enum
+            kind_value = kind.value if isinstance(kind, MemoryKind) else kind
+            query = query.where(Memory.kind == kind_value)
+
         result = await self.db.execute(
             query.order_by(Memory.created_at.desc()).offset(skip).limit(limit)
         )
