@@ -14,11 +14,6 @@ interface VoiceChatProps {
   wsUrl: string;
 }
 
-interface Message {
-  role: 'user' | 'assistant';
-  text: string;
-}
-
 export function VoiceChat({ userId, wsUrl }: VoiceChatProps) {
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);

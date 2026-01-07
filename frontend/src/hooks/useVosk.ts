@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createModel, Model } from 'vosk-browser';
+import type { KaldiRecognizer } from 'vosk-browser';
 
 interface UseVoskOptions {
   modelUrl?: string;
@@ -125,25 +126,29 @@ export function useVosk(options: UseVoskOptions = {}): UseVoskReturn {
       // Создаём AudioContext
       const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
-      console.log(`[Vosk] AudioContext created with sample rate: ${audioContext.sampleRate}Hz`);
+      const actualSampleRate = audioContext.sampleRate;
+      console.log(`[Vosk] AudioContext created. Requested: 16000Hz, Actual: ${actualSampleRate}Hz`);
 
-      // Создаём recognizer (модель уже инициализирована в loadModel)
-      const recognizer = new modelRef.current.KaldiRecognizer(audioContext.sampleRate);
+      // Vosk ВСЕГДА работает с 16000Hz
+      const VOSK_SAMPLE_RATE = 16000;
+
+      // Создаём recognizer с ФИКСИРОВАННЫМ sample rate 16000Hz
+      const recognizer = new modelRef.current.KaldiRecognizer(VOSK_SAMPLE_RATE);
       recognizerRef.current = recognizer;
-      console.log(`[Vosk] KaldiRecognizer created with sample rate: ${audioContext.sampleRate}Hz`);
+      console.log(`[Vosk] KaldiRecognizer created with sample rate: ${VOSK_SAMPLE_RATE}Hz`);
 
       // Обработка результатов
-      recognizer.on('result', (message: { result: { text: string } }) => {
+      recognizer.on('result', (message: any) => {
         console.log('[Vosk] Final result:', message);
-        const text = message.result.text;
+        const text = message.result?.text;
         if (text) {
           setTranscript(text);
           onResult?.(text, true);
         }
       });
 
-      recognizer.on('partialresult', (message: { result: { partial: string } }) => {
-        const partial = message.result.partial;
+      recognizer.on('partialresult', (message: any) => {
+        const partial = message.result?.partial;
         console.log('[Vosk] Partial result:', { partial, length: partial?.length, message });
         if (partial) {
           setTranscript(partial);
@@ -160,18 +165,63 @@ export function useVosk(options: UseVoskOptions = {}): UseVoskReturn {
 
       let audioChunkCount = 0;
       let maxAmplitude = 0;
+
+      // Функция для resampling аудио с actualSampleRate -> 16000Hz
+      const resampleAudio = (inputBuffer: AudioBuffer, targetSampleRate: number): Float32Array => {
+        const inputData = inputBuffer.getChannelData(0);
+        const inputSampleRate = inputBuffer.sampleRate;
+
+        if (inputSampleRate === targetSampleRate) {
+          return inputData;
+        }
+
+        const sampleRateRatio = inputSampleRate / targetSampleRate;
+        const outputLength = Math.floor(inputData.length / sampleRateRatio);
+        const output = new Float32Array(outputLength);
+
+        // Linear interpolation resampling
+        for (let i = 0; i < outputLength; i++) {
+          const srcIndex = i * sampleRateRatio;
+          const srcIndexFloor = Math.floor(srcIndex);
+          const srcIndexCeil = Math.min(srcIndexFloor + 1, inputData.length - 1);
+          const t = srcIndex - srcIndexFloor;
+
+          output[i] = inputData[srcIndexFloor] * (1 - t) + inputData[srcIndexCeil] * t;
+        }
+
+        return output;
+      };
+
       processor.onaudioprocess = (event) => {
         try {
+          const inputBuffer = event.inputBuffer;
+          const channelData = inputBuffer.getChannelData(0);
+
           // Check audio level
-          const channelData = event.inputBuffer.getChannelData(0);
           const amplitude = Math.max(...Array.from(channelData).map(Math.abs));
           maxAmplitude = Math.max(maxAmplitude, amplitude);
 
-          // Pass the full AudioBuffer (vosk-browser calls getChannelData internally)
-          const accepted = recognizer.acceptWaveform(event.inputBuffer);
+          // Resample если нужно
+          let audioData: Float32Array;
+          if (actualSampleRate !== VOSK_SAMPLE_RATE) {
+            audioData = resampleAudio(inputBuffer, VOSK_SAMPLE_RATE);
+          } else {
+            audioData = channelData;
+          }
+
+          // Создаем новый AudioBuffer с правильным sample rate для Vosk
+          const resampledBuffer = audioContext.createBuffer(
+            1, // mono
+            audioData.length,
+            VOSK_SAMPLE_RATE
+          );
+          resampledBuffer.getChannelData(0).set(audioData);
+
+          // Pass resampled buffer to Vosk
+          const accepted = recognizer.acceptWaveform(resampledBuffer);
           audioChunkCount++;
           if (audioChunkCount % 50 === 0) {
-            console.log(`[Vosk] Processed ${audioChunkCount} chunks | Max amplitude: ${maxAmplitude.toFixed(4)} | Buffer SR: ${event.inputBuffer.sampleRate}Hz | Accepted:`, accepted);
+            console.log(`[Vosk] Processed ${audioChunkCount} chunks | Max amplitude: ${maxAmplitude.toFixed(4)} | Input SR: ${actualSampleRate}Hz -> Vosk SR: ${VOSK_SAMPLE_RATE}Hz | Accepted:`, accepted);
           }
         } catch (error) {
           console.error('[Vosk] acceptWaveform failed:', error);

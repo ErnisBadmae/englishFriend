@@ -5,7 +5,7 @@ from typing import Dict, Any
 from contextlib import asynccontextmanager
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from app.api import users, sessions, dimensions, utterances_and_feedback, memory_and_interests, voice, agent_chat
+from app.api import users, sessions, dimensions, utterances_and_feedback, memory_and_interests, voice, agent_chat, gamification
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.middleware import PrometheusMiddleware
@@ -54,6 +54,7 @@ app.include_router(utterances_and_feedback.router)
 app.include_router(memory_and_interests.router)
 app.include_router(voice.router)
 app.include_router(agent_chat.router)
+app.include_router(gamification.router)
 
 
 @app.get("/health")

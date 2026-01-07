@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { VoiceChat } from './components/VoiceChat';
+import { VoiceChatV2 } from './components/VoiceChatV2';
 import './App.css';
 
 // Конфигурация
@@ -69,7 +69,7 @@ function App() {
     );
   }
 
-  return <VoiceChat userId={userId} wsUrl={WS_URL} />;
+  return <VoiceChatV2 userId={userId} wsUrl={WS_URL} />;
 }
 
 export default App;

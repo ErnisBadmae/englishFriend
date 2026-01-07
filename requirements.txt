@@ -13,7 +13,6 @@ pydantic-settings==2.11.0
 
 # AI / Voice
 websockets==12.0
-openai==1.58.1
 groq>=0.4.0  # Groq API для Llama-70B (бесплатно, ~200ms)
 edge-tts>=6.1.0  # Microsoft TTS (бесплатно)
 

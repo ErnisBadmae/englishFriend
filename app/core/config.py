@@ -35,10 +35,17 @@ class Settings(BaseSettings):
     # Groq API (бесплатно, быстро ~200ms)
     # Получить ключ: https://console.groq.com/keys
     groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_timeout: int = 30  # секунды
 
     # OpenAI
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o-mini"
+    openai_timeout: int = 30  # секунды
+
+    # ======= Общие LLM параметры =======
+    llm_temperature: float = 0.7
+    llm_max_retries: int = 3
 
     # ======= TTS настройки (edge-tts - бесплатно) =======
     # Доступные голоса: american_female, american_male, british_female, british_male, australian_female
