@@ -85,7 +85,12 @@
       "Bash(python scripts/test_rag_integration.py:*)",
       "Bash(pip show:*)",
       "WebFetch(domain:chatgpt.com)",
-      "Bash(python -m pytest:*)"
+      "Bash(python -m pytest:*)",
+      "Bash(brew list:*)",
+      "Bash(nvm install:*)",
+      "Bash(pkill:*)",
+      "Bash(pip3 install:*)",
+      "Bash(kill:*)"
     ]
   }
 }

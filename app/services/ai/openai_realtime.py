@@ -1,5 +1,7 @@
 """OpenAI Realtime API провайдер для голосовых диалогов."""
 
+from __future__ import annotations
+
 import json
 import base64
 import asyncio

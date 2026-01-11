@@ -12,6 +12,7 @@ from typing import Optional
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.extended_tables import LearningPlan
 from app.models.enums_and_dimensions import CEFRLevel
@@ -165,8 +166,10 @@ class LearningPlanService:
             "created_at": datetime.utcnow().isoformat(),
         })
 
-        # Обновляем план
-        plan.roadmap = roadmap
+        # Обновляем план - важно: создаём новый dict чтобы SQLAlchemy увидел изменение
+        plan.roadmap = dict(roadmap)  # Новый объект для отслеживания изменений
+        flag_modified(plan, 'roadmap')  # Явно помечаем как изменённое
+
         if target_level:
             plan.level_target = CEFRLevel(target_level)
         plan.updated_at = datetime.utcnow()
@@ -394,6 +397,8 @@ class LearningPlanService:
 async def detect_goal_from_message(message: str) -> Optional[str]:
     """Определить цель из сообщения пользователя.
 
+    Использует fuzzy matching для обработки STT искажений.
+
     Args:
         message: Сообщение пользователя
 
@@ -402,34 +407,54 @@ async def detect_goal_from_message(message: str) -> Optional[str]:
     """
     message_lower = message.lower()
 
-    # Паттерны для определения цели
+    print(f"[GoalDetect] Analyzing: '{message_lower[:80]}...'")
+
+    # Паттерны для определения цели (расширенные для STT искажений)
     patterns = {
         "ML/Data Science Interview": [
             "ml interview", "machine learning", "data science", "data scientist",
-            "ds interview", "ai interview",
+            "ds interview", "ai interview", "neural network", "deep learning",
+            # Fuzzy варианты для STT
+            "ml", "and ml", "for ml", "in ml",
+            "machine", "learning interview",
         ],
         "Software Engineering Interview": [
             "software interview", "developer interview", "engineer interview",
-            "coding interview", "tech interview",
+            "coding interview", "tech interview", "programmer",
+            "software engineer", "backend", "frontend", "fullstack",
         ],
         "Job Interview": [
             "job interview", "собеседование", "интервью на работу",
-            "найти работу", "find a job",
+            "найти работу", "find a job", "new job", "get a job",
+            # Расширенные паттерны для любого interview
+            "prepare for interview", "prepare to interview", "prepare interview",
+            "want to interview", "going to interview", "have an interview",
+            "interview preparation", "interview prep",
         ],
         "IELTS/TOEFL Preparation": [
-            "ielts", "toefl", "экзамен", "exam preparation",
+            "ielts", "toefl", "экзамен", "exam preparation", "english exam",
         ],
         "Business English": [
             "business english", "деловой английский", "бизнес",
+            "corporate", "meetings", "presentations",
         ],
         "General Fluency": [
             "fluency", "improve english", "улучшить английский",
-            "practice speaking", "разговорный",
+            "practice speaking", "разговорный", "speak better",
+            "improve my english", "learn english",
         ],
     }
 
+    # Сначала ищем точные совпадения
     for goal, keywords in patterns.items():
         if any(kw in message_lower for kw in keywords):
+            print(f"[GoalDetect] ✓ Matched goal: {goal}")
             return goal
 
+    # Fallback: если есть слово "interview" - это Job Interview
+    if "interview" in message_lower:
+        print(f"[GoalDetect] ✓ Fallback match: Job Interview (contains 'interview')")
+        return "Job Interview"
+
+    print(f"[GoalDetect] ✗ No goal detected")
     return None

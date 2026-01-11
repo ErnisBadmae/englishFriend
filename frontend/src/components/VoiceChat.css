@@ -355,3 +355,32 @@
     padding-bottom: calc(20px + env(safe-area-inset-bottom));
   }
 }
+
+/* End Session Button */
+.end-session-container {
+  padding: 12px 20px 20px;
+  border-top: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+  text-align: center;
+}
+
+.end-session-button {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  padding: 14px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.end-session-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+.end-session-button:active {
+  transform: translateY(0);
+}

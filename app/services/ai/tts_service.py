@@ -8,6 +8,8 @@
 Документация: https://github.com/rany2/edge-tts
 """
 
+from __future__ import annotations
+
 import io
 import edge_tts
 from typing import AsyncIterator

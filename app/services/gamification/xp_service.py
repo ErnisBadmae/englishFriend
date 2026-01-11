@@ -6,6 +6,8 @@
 - Получение статистики за день
 """
 
+from __future__ import annotations
+
 import math
 from datetime import datetime, timezone, timedelta
 from typing import Optional

@@ -7,6 +7,8 @@
 - Известных ошибок и проблем
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession

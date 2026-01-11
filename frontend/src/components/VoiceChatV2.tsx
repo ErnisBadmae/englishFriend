@@ -54,6 +54,7 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
     messages,
     sendText,
     connect,
+    disconnect,
     error: wsError,
   } = useWebSocket({
     url: wsUrl,
@@ -121,6 +122,14 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
   const handleCancel = useCallback(() => {
     cancelAndReset();
   }, [cancelAndReset]);
+
+  // Завершить сессию
+  const handleEndSession = useCallback(() => {
+    if (isListening) {
+      cancelAndReset();
+    }
+    disconnect();
+  }, [isListening, cancelAndReset, disconnect]);
 
   // Статус для отображения
   const getStatusMessage = () => {
@@ -254,6 +263,15 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
           <p>Speak naturally. I understand beginners and will help with mistakes.</p>
         )}
       </div>
+
+      {/* End Session Button */}
+      {isConnected && messages.length > 0 && (
+        <div className="end-session-container">
+          <button className="end-session-button" onClick={handleEndSession}>
+            📊 End Session & See Summary
+          </button>
+        </div>
+      )}
     </div>
   );
 }

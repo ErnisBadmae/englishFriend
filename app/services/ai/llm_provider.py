@@ -13,6 +13,8 @@
 - Защита от prompt injection
 """
 
+from __future__ import annotations
+
 import re
 import logging
 from abc import ABC, abstractmethod

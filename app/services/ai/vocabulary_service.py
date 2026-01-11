@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_
 from sqlalchemy.dialects.postgresql import insert
 
-from fsrs import Scheduler, Card, Rating, State
+from fsrs import FSRS, Card, Rating, State
 
 from app.models.extended_tables import VocabularyCard, VocabularyReview
 
@@ -44,7 +44,7 @@ class VocabularyService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.scheduler = Scheduler()
+        self.scheduler = FSRS()
 
     async def add_word(
         self,
@@ -113,6 +113,52 @@ class VocabularyService:
             )
         )
         return result.scalar_one_or_none()
+
+    async def create_card(
+        self,
+        user_id: int,
+        word: str,
+        translation: str = "",
+        example_sentence: str = "",
+        notes: Optional[str] = None,
+        source: str = "manual",
+        session_id: Optional[str] = None,
+    ) -> Optional[VocabularyCard]:
+        """Создать новую карточку (alias для add_word с расширенными параметрами).
+
+        Args:
+            user_id: ID пользователя
+            word: Слово
+            translation: Перевод
+            example_sentence: Пример использования
+            notes: Заметки
+            source: Источник (session, goal_template, manual)
+            session_id: ID сессии
+
+        Returns:
+            Созданная карточка или None если уже существует
+        """
+        # Проверяем дубликат
+        existing = await self.get_card_by_word(user_id, word)
+        if existing:
+            return None  # Не создаём дубликат
+
+        vocab_word = VocabularyWord(
+            word=word,
+            translation=translation,
+            example_sentence=example_sentence,
+        )
+
+        card = await self.add_word(user_id, vocab_word, session_id)
+
+        # Добавляем notes в отдельное поле если есть
+        if notes and card:
+            # Notes можно хранить в example_sentence если пустой
+            if not card.example_sentence:
+                card.example_sentence = notes
+            await self.db.commit()
+
+        return card
 
     async def get_due_cards(
         self,

@@ -55,6 +55,10 @@ from app.services.gamification.xp_service import XPEventKind
 # RAG и память
 from app.services.ai.memory_pipeline import create_memory_pipeline, MemoryPipeline
 
+# Post-session обработка и логирование
+from app.services.ai.post_session_service import PostSessionService, create_initial_vocabulary_cards
+from app.services.data_flow_logger import data_logger
+
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
 
@@ -209,6 +213,27 @@ async def voice_chat(
                             )
                             session_context.goal = goal_text
 
+                            # Логируем установку цели
+                            data_logger.log_goal_detected(
+                                user_id=user_id,
+                                message=f"set_goal: {goal_text}",
+                                detected_goal=goal_text,
+                            )
+                            data_logger.log_postgres_write(
+                                table="learning_plan",
+                                operation="UPDATE",
+                                data={"goal": goal_text},
+                                user_id=user_id,
+                            )
+
+                            # Создаём начальные карточки из рекомендованного словаря
+                            recommended_vocab = learning_plan_service.get_recommended_vocabulary(learning_plan)
+                            if recommended_vocab:
+                                cards_created = await create_initial_vocabulary_cards(
+                                    db, user_id, goal_text, recommended_vocab
+                                )
+                                print(f"[Pedagogy] Created {cards_created} initial vocab cards for goal")
+
                             # Перевыбираем режим под новую цель
                             current_mode = select_learning_mode(session_context)
                             focus_area = get_focus_area_for_mode(current_mode, session_context)
@@ -278,8 +303,34 @@ async def voice_chat(
                         detected_goal = await detect_goal_from_message(user_text)
                         if detected_goal:
                             try:
-                                await learning_plan_service.set_goal(user_id, detected_goal)
+                                learning_plan = await learning_plan_service.set_goal(user_id, detected_goal)
                                 session_context.goal = detected_goal
+
+                                # Логируем определение цели
+                                data_logger.log_goal_detected(
+                                    user_id=user_id,
+                                    message=user_text[:50],
+                                    detected_goal=detected_goal,
+                                )
+                                data_logger.log_postgres_write(
+                                    table="learning_plan",
+                                    operation="UPDATE",
+                                    data={"goal": detected_goal},
+                                    user_id=user_id,
+                                )
+
+                                # Создаём начальные карточки из рекомендованного словаря
+                                # Debug: проверяем roadmap после set_goal
+                                print(f"[DEBUG] learning_plan.roadmap keys: {list(learning_plan.roadmap.keys()) if learning_plan.roadmap else 'None'}")
+                                if learning_plan.roadmap:
+                                    print(f"[DEBUG] roadmap.recommended_vocabulary: {learning_plan.roadmap.get('recommended_vocabulary', 'KEY_NOT_FOUND')[:3] if learning_plan.roadmap.get('recommended_vocabulary') else 'EMPTY_OR_NONE'}")
+                                recommended_vocab = learning_plan_service.get_recommended_vocabulary(learning_plan)
+                                print(f"[DEBUG] recommended_vocab from service: {recommended_vocab[:5] if recommended_vocab else 'EMPTY'}")
+                                if recommended_vocab:
+                                    cards_created = await create_initial_vocabulary_cards(
+                                        db, user_id, detected_goal, recommended_vocab
+                                    )
+                                    print(f"[Pedagogy] Created {cards_created} initial vocab cards for detected goal")
 
                                 # Перевыбираем режим
                                 current_mode = select_learning_mode(session_context)
@@ -401,6 +452,30 @@ async def voice_chat(
                         })
 
                 elif message.get("type") == "end":
+                    # === POST-SESSION: Анализ и генерация карточек ===
+                    post_session_result = {}
+                    if conversation_history and len(conversation_history) >= 2:
+                        try:
+                            post_session = PostSessionService(db)
+                            post_session_result = await post_session.process_session_end(
+                                user_id=user_id,
+                                session_id=session_id,
+                                conversation_history=conversation_history,
+                                current_mode=current_mode.value,
+                                session_context={
+                                    "goal": session_context.goal,
+                                    "assessed_level": session_context.language_level,
+                                },
+                            )
+                            data_logger.log_postgres_write(
+                                table="post_session",
+                                operation="PROCESS",
+                                data=post_session_result,
+                                user_id=user_id,
+                            )
+                        except Exception as e:
+                            print(f"Warning: Post-session processing failed: {e}")
+
                     # Финальное извлечение памяти из всей сессии
                     if conversation_history:
                         try:
@@ -411,6 +486,11 @@ async def voice_chat(
                             )
                             if extracted:
                                 print(f"[RAG] Final extraction: {len(extracted)} memories")
+                                data_logger.log_qdrant_write(
+                                    collection="memories",
+                                    data={"count": len(extracted)},
+                                    user_id=user_id,
+                                )
                         except Exception as e:
                             print(f"Warning: Could not extract final memories: {e}")
 
@@ -420,6 +500,12 @@ async def voice_chat(
                             user_id,
                             mode=current_mode.value,
                             duration_minutes=turn_count * 2,  # Примерная оценка
+                        )
+                        data_logger.log_postgres_write(
+                            table="learning_plan",
+                            operation="UPDATE",
+                            data={"sessions_completed": "+1", "mode": current_mode.value},
+                            user_id=user_id,
                         )
                     except Exception as e:
                         print(f"Warning: Could not update session count: {e}")
