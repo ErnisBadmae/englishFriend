@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import BigInteger, String, DateTime, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
+from sqlalchemy import BigInteger, String, DateTime, Date, Text, ForeignKey, Float, Integer, Boolean, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, ENUM
 import uuid
@@ -9,7 +9,7 @@ from app.core.database import Base
 from app.models.enums_and_dimensions import CEFRLevel, AccessChannel
 
 if TYPE_CHECKING:
-    from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent
+    from app.models.extended_tables import UserInterest, Memory, LearningPlan, XPEvent, VocabularyCard
 
 class User(Base):
     """Модель пользователя в PostgreSQL (синхронизирована с db/migrations/postgres/002_users.sql)"""
@@ -24,7 +24,13 @@ class User(Base):
     primary_channel: Mapped[str] = mapped_column(ENUM('telegram', 'mobile_app', 'web', name='access_channel', create_type=False), default="telegram", nullable=False)
     accent_pref: Mapped[Optional[str]] = mapped_column(String(20), ForeignKey("dim_accent.code"), nullable=True)
     pii_envelope: Mapped[Optional[bytes]] = mapped_column(BYTEA, nullable=True)  # зашифрованный PII
-    
+
+    # Gamification fields (синхронизировано с 010_streaks_gamification.sql)
+    current_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_activity_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    total_xp: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
     # Временные метки
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -36,6 +42,7 @@ class User(Base):
     learning_plans: Mapped[List["LearningPlan"]] = relationship("LearningPlan", back_populates="user", cascade="all, delete-orphan")
     xp_events: Mapped[List["XPEvent"]] = relationship("XPEvent", back_populates="user", cascade="all, delete-orphan")
     channel_identities: Mapped[List["UserChannelIdentity"]] = relationship("UserChannelIdentity", back_populates="user", cascade="all, delete-orphan")
+    vocabulary_cards: Mapped[List["VocabularyCard"]] = relationship("VocabularyCard", back_populates="user", cascade="all, delete-orphan")
     
     def __repr__(self) -> str:
         return f"<User(id={self.id}, telegram_id={self.telegram_id}, username='{self.username}')>"

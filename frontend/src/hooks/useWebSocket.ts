@@ -61,7 +61,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
 
   // Подключение к WebSocket
@@ -157,14 +157,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
   }, [url, userId, isConnecting, onConnect, onDisconnect, onMessage, onAudio, onError]);
 
-  // Отключение
+  // Отключение с отправкой "end" сообщения для PostSessionService
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
 
-    if (wsRef.current) {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      // Отправляем "end" чтобы backend обработал сессию
+      wsRef.current.send(JSON.stringify({ type: 'end' }));
+      console.log('[WS] Sent end message for post-session processing');
+
+      // Даём время на обработку перед закрытием
+      setTimeout(() => {
+        if (wsRef.current) {
+          wsRef.current.close(1000, 'User disconnected');
+          wsRef.current = null;
+        }
+      }, 500);
+    } else if (wsRef.current) {
       wsRef.current.close(1000, 'User disconnected');
       wsRef.current = null;
     }

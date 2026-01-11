@@ -25,7 +25,6 @@ httpx>=0.27.1  # Требуется для mcp>=0.27.1, совместимо с 
 openai-agents==0.4.2
 openai==2.6.1
 anyio>=4.5,<5  # Для mcp и openai
-mcp==1.19.0
 
 # Мониторинг и метрики
 prometheus-client==0.21.0
