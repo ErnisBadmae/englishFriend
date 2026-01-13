@@ -248,15 +248,10 @@ class LearningPlanService:
         roadmap["sessions_completed"] = roadmap.get("sessions_completed", 0) + 1
         roadmap["total_practice_minutes"] = roadmap.get("total_practice_minutes", 0) + duration_minutes
 
-        # Обновляем milestone для mock interview
+        # Update milestones
         if mode == "mock_interview":
-            self._increment_milestone(roadmap, "mock_interview")
-
-        # Обновляем milestone для practice time
-        self._update_milestone(
-            roadmap, "practice",
-            minutes=roadmap.get("total_practice_minutes", 0)
-        )
+            self._update_milestone(roadmap, "mock_interview", increment=1)
+        self._update_milestone(roadmap, "practice", minutes=roadmap.get("total_practice_minutes", 0))
 
         plan.roadmap = roadmap
         plan.updated_at = datetime.utcnow()
@@ -284,8 +279,8 @@ class LearningPlanService:
 
         roadmap = plan.roadmap or {}
 
-        # Обновляем milestone
-        self._increment_milestone(roadmap, "vocabulary", increment=words_learned)
+        # Update milestone
+        self._update_milestone(roadmap, "vocabulary", increment=words_learned)
 
         plan.roadmap = roadmap
         plan.updated_at = datetime.utcnow()
@@ -359,38 +354,30 @@ class LearningPlanService:
         roadmap: dict,
         milestone_type: str,
         done: bool = False,
+        increment: Optional[int] = None,
         **kwargs,
     ):
-        """Обновить milestone в roadmap."""
+        """Update milestone in roadmap (handles both setting values and incrementing)."""
         milestones = roadmap.get("milestones", [])
         for milestone in milestones:
-            if isinstance(milestone, dict) and milestone.get("type") == milestone_type:
-                if done:
-                    milestone["done"] = True
-                for key, value in kwargs.items():
-                    milestone[key] = value
-        roadmap["milestones"] = milestones
+            if not (isinstance(milestone, dict) and milestone.get("type") == milestone_type):
+                continue
 
-    def _increment_milestone(
-        self,
-        roadmap: dict,
-        milestone_type: str,
-        field: str = "count",
-        increment: int = 1,
-    ):
-        """Увеличить счётчик milestone."""
-        milestones = roadmap.get("milestones", [])
-        for milestone in milestones:
-            if isinstance(milestone, dict) and milestone.get("type") == milestone_type:
-                # Для vocabulary используем progress
-                if milestone_type == "vocabulary":
-                    field = "progress"
-                current = milestone.get(field, 0)
-                milestone[field] = current + increment
-                # Проверяем достижение цели
+            if done:
+                milestone["done"] = True
+
+            # Handle incrementing counters
+            if increment is not None:
+                field = "progress" if milestone_type == "vocabulary" else "count"
+                milestone[field] = milestone.get(field, 0) + increment
+                # Auto-complete if target reached
                 target = milestone.get("target")
                 if target and milestone[field] >= target:
                     milestone["done"] = True
+
+            # Apply other updates
+            milestone.update(kwargs)
+
         roadmap["milestones"] = milestones
 
 

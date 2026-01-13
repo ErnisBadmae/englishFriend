@@ -4,25 +4,30 @@
 
 ## 🔍 АУДИТ LLM-АРХИТЕКТУРЫ (Январь 2026)
 
-### Общая оценка: 7/10 (Хорошая база, требует cleanup)
+### Общая оценка: 7/10
 
 ---
 
 ### ✅ Что сделано ПРАВИЛЬНО:
 
 #### 1. Чистая абстракция LLM провайдеров
+
 **Файл:** `app/services/ai/llm_provider.py`
+
 ```python
 class LLMProvider(ABC):
     async def generate(...) -> str
     async def generate_stream(...) -> AsyncIterator[str]
 ```
+
 - Три реализации: VLLMProvider, GroqProvider, OpenAIProvider
 - Factory-функция `get_llm_provider()` с кэшированием
 - Централизованный конфиг через `settings`
 
 #### 2. Отдельная абстракция для голосовых провайдеров
+
 **Файл:** `app/services/ai/base.py`
+
 ```python
 class AIProvider(ABC):
     async def connect(session) -> None
@@ -30,134 +35,32 @@ class AIProvider(ABC):
     async def receive() -> AsyncIterator[dict]
     async def disconnect() -> None
 ```
+
 - Три реализации: HumeEVIProvider, OpenAIRealtimeProvider, WhisperPipelineProvider
 - Правильное разделение: текст (LLMProvider) vs аудио (AIProvider)
 
 #### 3. TTS сервис
+
 **Файл:** `app/services/ai/tts_service.py`
+
 - Чистая абстракция с edge-tts
 - Маппинг голосов (american_female, british_male, etc.)
 - Singleton pattern
 
 #### 4. Конфигурация централизована
+
 **Файл:** `app/core/config.py`
+
 - Все API ключи и параметры в одном месте
 - Pydantic Settings с .env поддержкой
 - Типизация через Literal["vllm", "groq", "openai"]
 
----
-
-### ⚠️ КОСТЫЛИ И ПРОБЛЕМЫ:
-
-#### 1. МЁРТВЫЙ КОД: `groq_llm.py` (УДАЛИТЬ)
-**Файл:** `app/services/ai/groq_llm.py` (107 строк)
-- Класс `GroqLLMService` НИГДЕ не используется!
-- Дублирует `GroqProvider` из `llm_provider.py`
-- **Действие:** Удалить файл целиком
-
-#### 2. HARDCODED модель Groq
-**Файл:** `app/services/ai/llm_provider.py:127, 148`
-```python
-model="llama-3.3-70b-versatile"  # HARDCODED!
-```
-- **Действие:** Добавить `groq_model` в settings
-
-#### 3. HARDCODED temperature
-**Файлы:** `llm_provider.py:76,98,130,152,183,205`
-```python
-temperature=0.7  # HARDCODED везде!
-```
-- **Действие:** Добавить `llm_temperature` в settings
-
-#### 4. НЕТ RETRY логики
-- Все LLM провайдеры не имеют retry при ошибках сети
-- **Действие:** Добавить tenacity с exponential backoff
-
-#### 5. НЕТ TIMEOUT для Groq/OpenAI
-**Файл:** `app/services/ai/llm_provider.py`
-- VLLMProvider имеет timeout, другие - нет
-- **Действие:** Добавить `groq_timeout`, `openai_timeout` в settings
-
-#### 6. IMPORT внутри функции
-**Файл:** `app/api/voice.py:359`
-```python
-import re  # Внутри обработчика, не наверху!
-```
-- **Действие:** Перенести в начало файла
-
-#### 7. НЕТ ТЕСТОВ для LLM
-- Поиск `tests/**/test_*llm*.py` вернул 0 файлов
-- **Действие:** Добавить unit-тесты с мокированием
-
-#### 8. Потенциальный PROMPT INJECTION
-**Файл:** `app/api/voice.py:321`
-```python
-response_text = await llm.generate(
-    user_message=user_text,  # Напрямую от пользователя!
-    ...
-)
-```
-- Нет санитизации пользовательского ввода
-- **Действие:** Добавить базовую защиту от "ignore previous instructions"
-
----
-
-### 📋 ПЛАН РЕФАКТОРИНГА LLM - ✅ ВЫПОЛНЕНО (Январь 2026)
-
-| # | Задача | Статус | Где реализовано |
-|---|--------|--------|-----------------|
-| 1 | Удалить `groq_llm.py` | ✅ | Удалён |
-| 2 | Добавить `groq_model` | ✅ | `config.py:38` |
-| 3 | Добавить `llm_temperature` | ✅ | `config.py:47` |
-| 4 | Добавить timeouts | ✅ | `config.py:39,44` |
-| 5 | Перенести `import re` | ✅ | `voice.py:18` |
-| 6 | Добавить retry | ✅ | `llm_provider.py:23` (tenacity) |
-| 7 | Prompt injection защита | ✅ | `llm_provider.py:54` (`sanitize_user_input()`) |
-| 8 | Unit-тесты LLM | ✅ | `tests/test_llm_provider.py` |
-
----
-
-### 🏗️ РЕКОМЕНДУЕМАЯ АРХИТЕКТУРА (после рефакторинга)
-
-```
-app/services/ai/
-├── __init__.py              # Экспорты
-├── base.py                  # AIProvider (голосовые)
-├── factory.py               # get_ai_provider()
-├── llm_provider.py          # LLMProvider + все реализации (vllm, groq, openai)
-├── tts_service.py           # TTSService (edge-tts)
-├── embedding_service.py     # EmbeddingService (OpenAI)
-├── memory_pipeline.py       # RAG pipeline
-├── memory_extraction_service.py
-├── qdrant_service.py
-├── mode_prompts.py          # Промпты для режимов
-├── mode_selector.py         # Автовыбор режима
-├── mentor_prompt.py         # System prompts
-├── vocabulary_service.py    # FSRS
-├── hume_evi.py              # Legacy: Hume provider
-├── openai_realtime.py       # Legacy: OpenAI Realtime
-└── whisper_pipeline.py      # Legacy: Whisper STT
-
-# УДАЛИТЬ:
-# - groq_llm.py              # Дубликат, не используется
-```
-
----
-
 ## ✅ РЕАЛИЗОВАНО: Педагогическая архитектура AI-ментора
 
-### Статус: Готово к тестированию
-
-**Созданные файлы:**
-- `app/services/ai/mode_prompts.py` - Промпты для 4 режимов
-- `app/services/ai/mode_selector.py` - Автовыбор режима
-- `app/services/learning_plan_service.py` - Хранение целей
-- `app/api/voice.py` - Обновлён с интеграцией
-
----
-
 ### Исходная проблема
+
 Текущий агент - просто чат-бот без педагогики:
+
 - Не адаптируется под цели пользователя (ML Interview → игнорируется)
 - Нет assessment (оценки уровня)
 - Нет структуры обучения
@@ -166,169 +69,12 @@ app/services/ai/
 
 ### Решение: Режимы обучения + Goal-Driven Learning
 
-**Новые файлы:**
-
-1. **`app/services/ai/mode_prompts.py`** - Промпты для каждого режима:
-   - ASSESSMENT: "Let's check your level..."
-   - MOCK_INTERVIEW: "I'm a hiring manager at..."
-   - VOCABULARY_DRILL: "Let's review these words..."
-   - FREE_CONVERSATION: Текущий промпт
-
-2. **`app/services/ai/mode_selector.py`** - Логика выбора режима:
-   ```python
-   if no_recent_assessment: return ASSESSMENT
-   if len(due_vocabulary) >= 10: return VOCABULARY_DRILL
-   if goal == "interview": return MOCK_INTERVIEW
-   return FREE_CONVERSATION
-   ```
-
-3. **`app/services/learning_plan_service.py`** - Хранение целей:
-   ```json
-   {
-     "goal": "ML/DS Interview",
-     "milestones": ["Master 50 ML terms", "5 mock interviews"],
-     "focus_areas": ["technical_vocabulary", "behavioral_questions"]
-   }
-   ```
-
-**Изменения в `app/api/voice.py`:**
-1. При подключении: загрузить learning_plan + due_vocabulary
-2. Определить режим через mode_selector
-3. Построить режимный промпт
-4. После ответа ментора: извлечь новые слова → VocabularyService
-5. После ответа студента: анализ ошибок → save to memories
-
-**Порядок реализации:**
-1. mode_prompts.py (промпты)
-2. mode_selector.py (логика выбора)
-3. learning_plan_service.py (цели)
-4. Интеграция VocabularyService в voice.py
-5. Обновление voice.py: режимы + FSRS + ошибки
-
----
-
-## ✅ ЗАВЕРШЕНО: Фрагментация транскрипта Vosk
-
-### Проблема
-Vosk STT выдаёт несколько "final" результатов во время одной фразы, когда пользователь делает паузы для обдумывания. Текущий код **перезаписывает** каждый результат, и на LLM уходит только последний фрагмент.
-
-**Пример проблемы:**
-```
-[VoskVAD] final: "I think"
-[VoskVAD] final: "that this is"
-[VoskVAD] final: "a good idea"
-→ LLM получает только: "a good idea" (вместо полной мысли)
-```
-
-### Решение: Аккумулятор финальных результатов
-
-**Файл:** `/Users/macbook/Desktop/englishFriend/frontend/src/hooks/useVoskWithVAD.ts`
-
-**Изменения:**
-
-1. **Добавить refs для аккумуляции:**
-```typescript
-const accumulatedTextRef = useRef<string>('');
-const currentPartialRef = useRef<string>('');
-```
-
-2. **Изменить обработчик 'result':**
-```typescript
-recognizer.on('result', (message: any) => {
-  const text = message.result?.text?.trim();
-  if (text) {
-    // Аккумулируем вместо перезаписи
-    if (accumulatedTextRef.current) {
-      accumulatedTextRef.current += ' ' + text;
-    } else {
-      accumulatedTextRef.current = text;
-    }
-    currentPartialRef.current = '';
-
-    // Показываем накопленный текст
-    const fullText = accumulatedTextRef.current;
-    lastTranscriptRef.current = fullText;
-    setTranscript(fullText);
-    onFinalResult?.(fullText);
-  }
-});
-```
-
-3. **Изменить обработчик 'partialresult':**
-```typescript
-recognizer.on('partialresult', (message: any) => {
-  const partial = message.result?.partial?.trim();
-  if (partial) {
-    currentPartialRef.current = partial;
-
-    // Показываем: накопленное + текущий partial
-    const displayText = accumulatedTextRef.current
-      ? accumulatedTextRef.current + ' ' + partial
-      : partial;
-
-    lastTranscriptRef.current = displayText;
-    setTranscript(displayText);
-    onPartialResult?.(displayText);
-
-    // Сброс таймера тишины
-    hasSpokenRef.current = true;
-    silenceStartRef.current = null;
-    setVoiceStatus('listening');
-    setSilenceProgress(0);
-  }
-});
-```
-
-4. **Обновить confirmSend:**
-```typescript
-const confirmSend = useCallback((): string | null => {
-  const text = accumulatedTextRef.current.trim();
-  if (text.length >= VAD_CONFIG.minTextLength) {
-    stopListening();
-    setVoiceStatus('processing');
-    // Сброс аккумулятора
-    accumulatedTextRef.current = '';
-    currentPartialRef.current = '';
-    return text;
-  }
-  return null;
-}, [stopListening]);
-```
-
-5. **Обновить cancelAndReset:**
-```typescript
-const cancelAndReset = useCallback(() => {
-  stopListening();
-  setTranscript('');
-  lastTranscriptRef.current = '';
-  hasSpokenRef.current = false;
-  accumulatedTextRef.current = '';
-  currentPartialRef.current = '';
-}, [stopListening]);
-```
-
-6. **Сбросить аккумулятор в startListening:**
-```typescript
-// После setIsListening(true);
-accumulatedTextRef.current = '';
-currentPartialRef.current = '';
-```
-
-### Ожидаемый результат
-```
-[VoskVAD] final: "I think" → accumulated: "I think"
-[VoskVAD] final: "that this is" → accumulated: "I think that this is"
-[VoskVAD] final: "a good idea" → accumulated: "I think that this is a good idea"
-→ LLM получает: "I think that this is a good idea" ✓
-```
-
----
-
 ## 🏆 ГЛУБОКИЙ АНАЛИЗ РЫНКА AI-МЕНТОРОВ (Январь 2026)
 
 ### Топ конкуренты и их технологии
 
 #### 1. **Speak.com** ($1B valuation, $162M raised)
+
 - **Технология**: OpenAI GPT-4 + собственный "ML scaffolding"
 - **Фокус**: Разговорная практика без живого репетитора
 - **Цена**: ~$19.50/мес ($235/год)
@@ -339,6 +85,7 @@ currentPartialRef.current = '';
 - **Слабость**: Дорого, только английский для изучающих
 
 #### 2. **ELSA Speak** (Pronunciation focus)
+
 - **Технология**: Проприетарный STT + фонетический анализ
 - **Фокус**: Произношение, интонация, ритм
 - **Цена**: $12-15/мес ($70-100/год)
@@ -350,6 +97,7 @@ currentPartialRef.current = '';
 - **Слабость**: Нет свободных диалогов, только упражнения
 
 #### 3. **TalkPal** (50+ languages)
+
 - **Технология**: Voice + text conversations
 - **Фокус**: Role-play scenarios (ресторан, путешествия, врач)
 - **Цена**: Неизвестно (free tier + premium)
@@ -357,12 +105,14 @@ currentPartialRef.current = '';
 - **Слабость**: Базовый фидбек
 
 #### 4. **Langua** (LanguaTalk)
+
 - **Технология**: AI voices cloned from real native speakers
 - **Фокус**: Естественные разговоры
 - **Сильные стороны**: Самые натуральные голоса
 - **Слабость**: Меньше структурированного обучения
 
 #### 5. **Heylama**
+
 - **Технология**: Custom role-play + vocabulary
 - **Фокус**: Персонализация
 - **Сильные стороны**: Пользователь создаёт свои сценарии
@@ -380,13 +130,13 @@ currentPartialRef.current = '';
 
 #### Наша уникальная ниша:
 
-| Фактор | Конкуренты | EnglishFriend |
-|--------|------------|---------------|
-| **Целевая аудитория** | Все | Русскоязычные |
-| **Специфика ошибок** | Общие | W/V, TH, артикли, schwa |
-| **Язык поддержки** | Английский | Русский + английский |
-| **Цена** | $10-20/мес | Freemium (Telegram) |
-| **Платформа** | Мобильные приложения | Telegram Mini App |
+| Фактор                | Конкуренты           | EnglishFriend           |
+| --------------------- | -------------------- | ----------------------- |
+| **Целевая аудитория** | Все                  | Русскоязычные           |
+| **Специфика ошибок**  | Общие                | W/V, TH, артикли, schwa |
+| **Язык поддержки**    | Английский           | Русский + английский    |
+| **Цена**              | $10-20/мес           | Freemium (Telegram)     |
+| **Платформа**         | Мобильные приложения | Telegram Mini App       |
 
 ---
 
@@ -395,10 +145,12 @@ currentPartialRef.current = '';
 #### Second Language Acquisition (SLA) - что работает:
 
 1. **Extensive Processing Instruction (EPI)**:
+
    - Input processing → Fluency-building → Listening → Pronunciation → Grammar (последним!)
    - Грамматика НЕ барьер, а поддержка после практики
 
 2. **Socratic Method для ESL**:
+
    - Вопросы вместо лекций
    - Студент сам приходит к выводам
    - Формирует критическое мышление
@@ -411,27 +163,29 @@ currentPartialRef.current = '';
 
 #### Типичные ошибки русскоговорящих:
 
-| Категория | Ошибка | Примеры |
-|-----------|--------|---------|
-| **Согласные** | W→V | "where"→"vere", "water"→"vater" |
-| **Согласные** | TH→S/Z/F/D | "think"→"sink", "the"→"zee" |
-| **Согласные** | Оглушение | "bad"→"bat" |
-| **Гласные** | Long/short | "ship"="sheep" |
-| **Гласные** | Schwa | "today" /tuːˈdeɪ/ вместо /təˈdeɪ/ |
-| **Интонация** | Плоская | Вопросы без подъёма тона |
-| **Стресс** | Неправильный | Ударение на артикли, предлоги |
+| Категория     | Ошибка       | Примеры                           |
+| ------------- | ------------ | --------------------------------- |
+| **Согласные** | W→V          | "where"→"vere", "water"→"vater"   |
+| **Согласные** | TH→S/Z/F/D   | "think"→"sink", "the"→"zee"       |
+| **Согласные** | Оглушение    | "bad"→"bat"                       |
+| **Гласные**   | Long/short   | "ship"="sheep"                    |
+| **Гласные**   | Schwa        | "today" /tuːˈdeɪ/ вместо /təˈdeɪ/ |
+| **Интонация** | Плоская      | Вопросы без подъёма тона          |
+| **Стресс**    | Неправильный | Ударение на артикли, предлоги     |
 
 ---
 
 ### 🤖 Передовые технологии
 
 #### OpenAI Realtime API
+
 - **Latency**: ~500ms TTFB, цель 800ms voice-to-voice
 - **Архитектура**: Speech-to-speech в одной модели (не цепочка STT→LLM→TTS)
 - **Преимущества**: Слышит эмоции, фильтрует шум, прерывания (barge-in)
 - **Подключение**: WebRTC (браузер), WebSocket (сервер), SIP (телефония)
 
 #### Hume AI EVI (Empathic Voice Interface)
+
 - **Уникальность**: Первый AI с эмоциональным интеллектом
 - **Функции**:
   - Responds to expression (понимает тон)
@@ -440,17 +194,51 @@ currentPartialRef.current = '';
   - End-of-turn detection по тону голоса
 - **Ценность для обучения**: Детекция фрустрации → упрощение задачи
 
+#### Moshi (Kyutai) - Open Source Voice AI ⭐ NEW 2025
+
+- **Что это**: Первый open-source full-duplex voice AI от французской лаборатории Kyutai
+- **GitHub**: https://github.com/kyutai-labs/moshi
+- **Лицензия**: Apache 2.0 (код), CC-BY 4.0 (веса модели)
+
+**Технические характеристики**:
+- **Latency**: 160-200ms (лучший в классе!)
+- **Модель**: 7B параметров, Helium base model
+- **Архитектура**: Two-stream audio (user + AI одновременно)
+- **Codec**: Mimi (300x compression)
+- **Эмоции**: 92 различных интонации и стиля
+
+**Преимущества для EnglishFriend**:
+- Self-hosted = полный контроль над данными
+- Стоимость ~$0.02/мин (только GPU) vs $0.30/мин OpenAI
+- Можно fine-tune на education контент
+- Работает на consumer GPU (RTX 3090, L4)
+
+**Рекомендация**: Рассмотреть как альтернативу Ultra Tier для self-hosted deployment.
+
+#### LiveKit Agents - Orchestration Layer
+
+- **Что это**: Open-source фреймворк для voice agent orchestration
+- **Роль**: Связывает STT + LLM + TTS в единый pipeline
+- **Интеграции**: Deepgram, ElevenLabs, OpenAI, Cartesia
+- **Преимущества**:
+  - WebRTC из коробки
+  - Turn detection и interruption handling
+  - Self-hostable
+- **Стоимость**: Open-source (MIT license)
+
+**Применение**: Промежуточный вариант между текущим стеком и OpenAI Realtime.
+
 ---
 
 ### 💰 Ценообразование на рынке
 
-| Приложение | Месяц | Год | Модель |
-|------------|-------|-----|--------|
-| ELSA Speak | $12-15 | $70-100 | Фокус на произношении |
-| Speak.com | ~$19.50 | $235 | Разговоры |
-| Kippy | ~$6.70 | $80 | Бюджетный |
-| Duolingo+ | ~$7 | $84 | Геймификация |
-| **EnglishFriend** | $0 (free) | $5-10? | Telegram, русские |
+| Приложение        | Месяц     | Год     | Модель                |
+| ----------------- | --------- | ------- | --------------------- |
+| ELSA Speak        | $12-15    | $70-100 | Фокус на произношении |
+| Speak.com         | ~$19.50   | $235    | Разговоры             |
+| Kippy             | ~$6.70    | $80     | Бюджетный             |
+| Duolingo+         | ~$7       | $84     | Геймификация          |
+| **EnglishFriend** | $0 (free) | $5-10?  | Telegram, русские     |
 
 ---
 
@@ -466,13 +254,13 @@ currentPartialRef.current = '';
 
 ### Что реализовать для "best in market":
 
-| Приоритет | Функция | Почему важно |
-|-----------|---------|--------------|
-| 1 | **Socratic questioning** | Студент говорит больше, учится лучше |
-| 2 | **Фонетический фидбек** | W/V, TH детекция и коррекция |
-| 3 | **FSRS vocabulary** | Органичное повторение слов в диалоге |
-| 4 | **Эмоциональная адаптация** | Упрощать при фрустрации |
-| 5 | **Progress tracking** | Видеть улучшения мотивирует |
+| Приоритет | Функция                     | Почему важно                         |
+| --------- | --------------------------- | ------------------------------------ |
+| 1         | **Socratic questioning**    | Студент говорит больше, учится лучше |
+| 2         | **Фонетический фидбек**     | W/V, TH детекция и коррекция         |
+| 3         | **FSRS vocabulary**         | Органичное повторение слов в диалоге |
+| 4         | **Эмоциональная адаптация** | Упрощать при фрустрации              |
+| 5         | **Progress tracking**       | Видеть улучшения мотивирует          |
 
 ---
 
@@ -485,6 +273,7 @@ currentPartialRef.current = '';
 **Статус**: ⚠️ Компания Coqui закрылась в декабре 2023, сервисы отключены в 2024. Код поддерживается сообществом (Idiap Research Institute).
 
 **Ключевые характеристики**:
+
 - XTTS-v2: 17 языков, клонирование голоса с 6 сек аудио
 - Latency: ~150-200ms на GPU
 - **НЕТ браузерной/WASM версии** - только серверное решение
@@ -504,8 +293,8 @@ currentPartialRef.current = '';
 import * as tts from '@mintplex-labs/piper-tts-web';
 
 const wav = await tts.predict({
-  text: "Hello, I am your English mentor!",
-  voiceId: 'en_US-hfc_female-medium',
+  text: 'Hello, I am your English mentor!',
+  voiceId: 'en_US-hfc_female-medium'
 });
 
 const audio = new Audio();
@@ -514,6 +303,7 @@ audio.play();
 ```
 
 **Характеристики Piper TTS**:
+
 - Размер модели: ~100MB (качество medium)
 - 904+ голоса, включая английские (британские, американские)
 - Качество: x_low / low / medium / high
@@ -522,21 +312,23 @@ audio.play();
 
 ### Сравнение TTS решений для Free Tier
 
-| Решение | Локальное | Размер | Latency | Качество | Офлайн |
-|---------|-----------|--------|---------|----------|--------|
-| **edge-tts** (текущий) | ❌ Сервер MS | 0 | ~200-500ms | Хорошее | ❌ |
-| **Piper TTS WASM** | ✅ Браузер | ~100MB | ~100-300ms | Среднее | ✅ |
-| **Web Speech API** | ✅ Браузер | 0 | ~50ms | Низкое | ✅ |
+| Решение                | Локальное    | Размер | Latency    | Качество | Офлайн |
+| ---------------------- | ------------ | ------ | ---------- | -------- | ------ |
+| **edge-tts** (текущий) | ❌ Сервер MS | 0      | ~200-500ms | Хорошее  | ❌     |
+| **Piper TTS WASM**     | ✅ Браузер   | ~100MB | ~100-300ms | Среднее  | ✅     |
+| **Web Speech API**     | ✅ Браузер   | 0      | ~50ms      | Низкое   | ✅     |
 
 ### Рекомендация
 
 **Для MVP**: Оставить edge-tts (работает, бесплатно, хорошее качество)
 
 **Для "полностью локального" режима**: Добавить Piper TTS как опцию
+
 - Плюс: Vosk STT + Piper TTS = полностью офлайн (кроме LLM)
 - Минус: +100MB загрузка модели
 
 **Ссылки**:
+
 - [Piper TTS Web](https://github.com/Mintplex-Labs/piper-tts-web)
 - [Piper голоса](https://rhasspy.github.io/piper-samples/)
 - [Coqui TTS (архив)](https://github.com/coqui-ai/TTS)
@@ -546,6 +338,7 @@ audio.play();
 ## Текущее состояние (MVP готовность: 90%)
 
 ### Реализованная архитектура (Free Tier - Vosk)
+
 ```
 Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts TTS → Browser
                                          ↓
@@ -555,12 +348,14 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 **Статус**: ✅ Vosk STT успешно работает после исправления sample rate resampling (48kHz→16kHz)
 
 **Преимущества текущего MVP**:
+
 - Полностью бесплатный STT (работает офлайн в браузере)
 - Приватность речевых данных (распознавание локально)
 - Низкая стоимость эксплуатации (~$0.10-0.50/час при использовании Groq/vLLM)
 - Уже работающий прототип с базой данных
 
 **Недостатки текущего MVP**:
+
 - Высокая latency (800-1200ms end-to-end) из-за каскадной архитектуры
 - Потеря просодической информации (только текст передается между компонентами)
 - Vosk WER ~10-15% (хуже премиальных решений)
@@ -572,11 +367,13 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ## Многоуровневая модель подписок
 
 ### 🆓 **FREE TIER** (текущая архитектура)
+
 **Технологии**: Vosk + Groq/vLLM + edge-tts
 **Стоимость эксплуатации**: ~$0.10-0.50/час
 **Цена для пользователя**: Бесплатно
 
 **Ограничения**:
+
 - Задержка ответа: 800-1200ms
 - Базовая коррекция грамматики (только текст)
 - Ограниченная история сессий (7 дней)
@@ -588,11 +385,13 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ---
 
 ### 💎 **PREMIUM TIER** (каскадная архитектура, премиум компоненты)
+
 **Технологии**: Deepgram Nova-3 + GPT-4o-mini + ElevenLabs Flash
 **Стоимость эксплуатации**: ~$2-4/час
 **Цена для пользователя**: $9.99/месяц
 
 **Улучшения**:
+
 - Задержка ответа: 400-600ms (2x быстрее)
 - Точность STT: WER 5.8% (Deepgram vs 10-15% Vosk)
 - Натуральный голос с эмоциями (ElevenLabs Flash, 75ms latency)
@@ -606,11 +405,13 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ---
 
 ### 🚀 **ULTRA TIER** (нативная S2S архитектура)
+
 **Технологии**: OpenAI Realtime API (GPT-4o Realtime) + опционально ElevenLabs PVC
 **Стоимость эксплуатации**: ~$1.35-3/час (оптимизированная Realtime API)
 **Цена для пользователя**: $29.99/месяц
 
 **Уникальные возможности**:
+
 - ⚡ **Минимальная latency**: <300-500ms (естественный диалог)
 - 🎭 **Анализ просодики**: Коррекция интонации, акцента, эмоциональной окраски
 - 🧠 **Эмпатия**: ИИ "слышит" фрустрацию/радость студента и адаптирует подход
@@ -627,26 +428,31 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ## Конкурентные преимущества (что нас отличает)
 
 ### 1. **Гибридная архитектура с выбором уровня**
+
 - **Отличие**: Большинство конкурентов используют только одну технологию
 - **Наше**: Freemium модель позволяет попробовать бесплатно, затем апгрейд по мере прогресса
 - **Пример**: Duolingo использует только текст, HelloTalk - только peer-to-peer, мы - адаптивный ИИ с выбором tier
 
 ### 2. **Специализация на русскоязычных студентах**
+
 - **Отличие**: Промпты учитывают типичные ошибки русскоговорящих (артикли, "most of people", th-звуки)
 - **Наше**: База знаний интерференций (влияние русского на английский)
 - **Реализация**: System prompts с встроенными правилами коррекции для русских студентов
 
 ### 3. **Интеграция SRS + RAG в голосовом формате**
+
 - **Отличие**: Anki - карточки без контекста, ChatGPT - нет повторений
 - **Наше**: ИИ автоматически создает карточки из разговора и органично возвращается к сложным словам в будущих сессиях
 - **Пример**: Студент забыл слово "resilience" → ИИ добавляет в SRS → через 3 дня в диалоге спрашивает "How would you describe resilience?"
 
 ### 4. **Эмоциональный интеллект (Ultra Tier)**
+
 - **Отличие**: Конкуренты игнорируют эмоции
 - **Наше**: Детекция фрустрации → упрощение задач, детекция скуки → переключение на интересную тему
 - **Технология**: Hume AI EVI или OpenAI Realtime с анализом просодики
 
 ### 5. **Прогрессивная модель данных**
+
 - **Отличие**: Большинство EdTech не хранят детальную историю
 - **Наше**: PostgreSQL с партиционированием + Neo4j (граф интересов) + Qdrant (семантический поиск по памяти)
 - **Результат**: ИИ помнит, что студент любит технологии и Marvel → адаптирует примеры
@@ -656,9 +462,11 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ## Roadmap (3 фазы)
 
 ### 📍 **Фаза 1: MVP Launch (1-2 месяца)**
+
 **Цель**: Запустить Free Tier для первых пользователей
 
 **Задачи**:
+
 1. ✅ Исправить Vosk STT (уже сделано)
 2. 🔄 Решить проблему с LLM (настроить Groq API или исправить vLLM connection)
 3. Оптимизировать промпты для русскоязычных студентов:
@@ -675,6 +483,7 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
    - Кнопка экстренной остановки (если ИИ "несет чушь")
 
 **Метрики успеха**:
+
 - 100 активных пользователей Free Tier
 - Средняя сессия >10 минут
 - Retention 7 дней >30%
@@ -682,9 +491,11 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ---
 
 ### 📍 **Фаза 2: Premium Launch (3-4 месяца)**
+
 **Цель**: Монетизация через Premium Tier
 
 **Задачи**:
+
 1. Интеграция Deepgram Nova-3:
    - Переключатель STT: Vosk (Free) / Deepgram (Premium)
    - WebSocket streaming для Deepgram
@@ -706,6 +517,7 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
    - Безлимит для Premium
 
 **Метрики успеха**:
+
 - 5-10% конверсия Free → Premium
 - LTV (Lifetime Value) >$50 на пользователя
 - Churn rate <15% в месяц
@@ -713,9 +525,11 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ---
 
 ### 📍 **Фаза 3: Ultra Tier & Scale (6+ месяцев)**
+
 **Цель**: Дифференциация через эксклюзивные фичи
 
 **Задачи**:
+
 1. Миграция на OpenAI Realtime API (Ultra Tier):
    - Полная переработка WebSocket логики
    - Server VAD с настраиваемыми параметрами (silence_duration, eagerness)
@@ -739,6 +553,7 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
    - Адаптивное качество TTS (дешевый TTS для рутинных фраз, премиум для чтения)
 
 **Метрики успеха**:
+
 - 1000+ платящих пользователей (Premium + Ultra)
 - Ultra Tier >15% от Premium базы
 - NPS (Net Promoter Score) >50
@@ -747,76 +562,141 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 
 ## Технический стек (по тирам)
 
-| Компонент | Free Tier | Premium Tier | Ultra Tier |
-|-----------|-----------|--------------|------------|
-| **STT** | Vosk (browser WASM) | Deepgram Nova-3 | OpenAI Realtime (native) |
-| **LLM** | Groq/vLLM (бесплатно) | GPT-4o-mini | GPT-4o Realtime |
-| **TTS** | edge-tts | ElevenLabs Flash | Realtime API + ElevenLabs PVC |
-| **VAD** | Browser (basic) | Deepgram endpointing | Server VAD (OpenAI) |
-| **Latency** | 800-1200ms | 400-600ms | <500ms |
-| **Стоимость/час** | $0.10-0.50 | $2-4 | $1.35-3 |
-| **Цена подписки** | Free | $9.99/мес | $29.99/мес |
+| Компонент         | Free Tier             | Premium Tier         | Ultra Tier                    |
+| ----------------- | --------------------- | -------------------- | ----------------------------- |
+| **STT**           | Vosk (browser WASM)   | Deepgram Nova-3      | OpenAI Realtime (native)      |
+| **LLM**           | Groq/vLLM (бесплатно) | GPT-4o-mini          | GPT-4o Realtime               |
+| **TTS**           | edge-tts              | ElevenLabs Flash     | Realtime API + ElevenLabs PVC |
+| **VAD**           | Browser (basic)       | Deepgram endpointing | Server VAD (OpenAI)           |
+| **Latency**       | 800-1200ms            | 400-600ms            | <500ms                        |
+| **Стоимость/час** | $0.10-0.50            | $2-4                 | $1.35-3                       |
+| **Цена подписки** | Free                  | $9.99/мес            | $29.99/мес                    |
 
 ---
 
-## Анализ конкурентов
+## Анализ конкурентов (обновлено Январь 2026)
 
-| Конкурент | Технология | Цена | Недостатки vs EnglishFriend |
-|-----------|------------|------|------------------------------|
-| **Duolingo** | Текст + базовое TTS | Free + $7/мес | ❌ Нет живого диалога, роботизированный голос |
-| **ELSA Speak** | Proprietary STT + упражнения | $6/мес | ❌ Только произношение, нет свободного разговора |
-| **Speak.com** | GPT-4 + TTS | $20/мес | ❌ Дорого, нет русскоязычной специализации |
-| **HelloTalk** | Peer-to-peer | Free + $7/мес | ❌ Зависимость от людей, нет 24/7 доступности |
-| **Cambly** | Живые преподаватели | $50+/мес | ❌ Очень дорого, расписание |
+| Конкурент      | Технология                   | Цена          | Недостатки vs EnglishFriend                      |
+| -------------- | ---------------------------- | ------------- | ------------------------------------------------ |
+| **Duolingo**   | Video Call + OpenAI GPT-4    | Free + $30/мес (Max) | ⚠️ Теперь есть AI voice, но generic, не для русских |
+| **ELSA Speak** | Proprietary STT + упражнения | $6/мес        | ❌ Только произношение, нет свободного разговора |
+| **Speak.com**  | GPT-4 + TTS                  | $20/мес       | ❌ Дорого, нет русскоязычной специализации       |
+| **Gliglish**   | AI voice conversations       | Free tier     | ⚠️ +75% improvement в исследованиях, но нет персонализации |
+| **HelloTalk**  | Peer-to-peer                 | Free + $7/мес | ❌ Зависимость от людей, нет 24/7 доступности    |
+| **Cambly**     | Живые преподаватели          | $50+/мес      | ❌ Очень дорого, расписание                      |
 
-**Наша ниша**: Между бесплатным Duolingo (низкое качество) и дорогим Cambly (живые люди). Мы даем качество живого диалога по цене подписки.
+### ⚠️ Важное обновление: Duolingo Video Call (Сентябрь 2024)
+
+Duolingo запустил AI Video Call с персонажем Lily:
+- **Технология**: OpenAI-powered, адаптивная сложность
+- **Фичи**: Помнит прошлые разговоры, адаптируется под уровень
+- **Языки**: EN, ES, FR, DE, IT, PT, JP, KO
+- **Цена**: Только Duolingo Max ($30/мес)
+
+**Наше преимущество над Duolingo:**
+- Специализация на русскоязычных (типичные ошибки W/V, TH, артикли)
+- Goal-based learning (ML interview prep, IELTS, etc.)
+- FSRS spaced repetition интегрирован в диалог
+- Дешевле: $10-30/мес vs $30/мес
+- Open-source возможность self-hosting
+
+### Gliglish - Научно подтверждённая эффективность
+
+Исследование Gualán & Ramírez (2024): **+75% improvement** в speaking scores
+- Pre-test: 4.69 → Post-test: 8.24
+- Особенно улучшение fluency (темп, паузы, hesitation)
+
+**Вывод**: Voice AI для language learning работает. Вопрос в дифференциации.
+
+**Наша ниша**: Между бесплатным Duolingo (низкое качество) и дорогим Cambly (живые люди). Мы даем качество живого диалога по цене подписки + специализация на русскоязычных + goal-based подход.
 
 ---
 
-## Оценка юнит-экономики
+## Оценка юнит-экономики (обновлено Январь 2026)
+
+### ⚡ Важное изменение: OpenAI Realtime API подешевел
+
+В декабре 2024 OpenAI снизил цены:
+- **Input audio**: -60% (было $0.06/мин → ~$0.024/мин)
+- **Output audio**: -87.5% (было $0.24/мин → ~$0.03/мин)
+
+**Новый расчёт Ultra Tier:**
+- 10 мин диалога: ~$0.54 (было $3.00)
+- Час практики: ~$3.24 (было $18.00)
 
 ### Premium Tier ($9.99/мес)
+
 **Предположения**:
+
 - Средний пользователь: 10 часов/месяц практики
-- Стоимость эксплуатации: $3/час
+- Стоимость эксплуатации: $3/час (Deepgram + GPT-4o-mini + ElevenLabs)
 - Итого COGS (Cost of Goods Sold): $30/месяц
 - **Маржа**: -$20.01 😱 (УБЫТОЧНО на малых объемах!)
 
 **Оптимизация**:
+
 1. Prompt caching: -80% на input tokens → $2/час
 2. Смешанное TTS: OpenAI (дешево) для простых фраз, ElevenLabs для сложных → $1.5/час
 3. Итого: $1.5/час × 10 часов = $15/месяц
 4. **Маржа**: -$5.01 (все еще минус, но терпимо для привлечения Ultra)
 
-### Ultra Tier ($29.99/мес)
-**Предположения**:
-- Средний пользователь: 15 часов/месяц (более вовлечен)
-- Стоимость эксплуатации (оптимизированная): $2/час
-- Итого COGS: $30/месяц
-- **Маржа**: -$0.01 (break-even!)
+### Ultra Tier ($29.99/мес) - OpenAI Realtime
 
-**Вывод**:
-- Premium Tier - это инструмент привлечения (loss leader)
-- Ultra Tier - основная прибыль через апселл корпоративным клиентам (B2B)
-- Необходимо добавить B2B тариф: $99/мес за корпоративную лицензию с брендированием
+**Обновлённые предположения** (после снижения цен):
+
+- Средний пользователь: 15 часов/месяц (более вовлечен)
+- Стоимость эксплуатации: ~$3.24/час (после снижения цен)
+- Итого COGS: ~$48.60/месяц
+- **Маржа**: -$18.61 (всё ещё минус, но лучше чем было -$0.01 при 15 часах)
+
+### 🆕 Ultra Tier Alternative: Moshi Self-Hosted
+
+**Расчёт для self-hosted Moshi:**
+
+- GPU стоимость: L4 instance ~$0.50/час (при shared использовании)
+- На пользователя при 10 concurrent users: ~$0.05/час
+- 15 часов/месяц × $0.05 = **$0.75/месяц**
+- **Маржа**: +$29.24 🎉
+
+**Trade-offs Moshi vs OpenAI Realtime:**
+| Фактор | OpenAI Realtime | Moshi Self-Hosted |
+|--------|-----------------|-------------------|
+| Latency | 200-300ms | 160-200ms ✅ |
+| Quality | Best-in-class | Very good |
+| Cost/hour | $3.24 | $0.05 ✅ |
+| Setup complexity | Low ✅ | High |
+| Maintenance | None ✅ | DevOps required |
+
+**Вывод (обновлённый)**:
+
+- Premium Tier - loss leader для привлечения
+- Ultra Tier с OpenAI Realtime - для MVP и валидации (проще запустить)
+- Ultra Tier с Moshi - для scale (после 1000+ пользователей)
+- B2B тариф: $99/мес за корпоративную лицензию с Moshi self-hosted = маржа 95%+
 
 ---
 
 ## Критические риски и митигация
 
 ### Риск 1: Высокая стоимость эксплуатации
+
 **Митигация**:
+
 - Агрессивный промпт-кеширование
 - Гибридная модель TTS
 - Self-hosted vLLM для Premium (вместо GPT-4o-mini) → $0.50/час вместо $2
 
 ### Риск 2: OpenAI Realtime API может изменить pricing
+
 **Митигация**:
+
 - Держать готовую альтернативу на LiveKit + Pipecat (open source)
 - Мониторить Anthropic Claude Voice (анонсирован на 2025)
 
 ### Риск 3: Низкая конверсия Free → Paid
+
 **Митигация**:
+
 - Ограничение Free Tier до 30 мин/день (создать "голод" на продукт)
 - Trial Premium: 7 дней бесплатно для демонстрации качества
 - Геймификация: "Unlock unlimited practice for $9.99"
@@ -826,16 +706,19 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ## Следующие шаги (сразу после завершения Vosk MVP)
 
 1. **Завершить Free Tier MVP** (приоритет #1):
+
    - Решить LLM connection issue (Groq API setup)
    - Оптимизировать system prompts для русскоязычных
    - Добавить базовую аналитику (таблица в PostgreSQL уже есть)
 
 2. **Подготовить инфраструктуру для Premium**:
+
    - Создать архитектуру с переключением STT/TTS провайдеров
    - Интегрировать Stripe для подписок
    - Реализовать role-based ограничения (Free vs Premium)
 
 3. **Исследовать конкурентные преимущества**:
+
    - Собрать базу типичных ошибок русскоязычных студентов (из форумов, учебников)
    - Спроектировать алгоритм SRS интеграции в диалог
    - Создать прототип эмоциональной детекции (Hume AI trial)
@@ -853,6 +736,7 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ### Анализ текущего состояния
 
 **Что уже есть:**
+
 - ✅ `XPEvent` модель в `app/models/extended_tables.py` (партиционирована)
 - ✅ SQL миграция `005_memories_learning_plan.sql` с таблицей `xp_events`
 - ✅ Связь `User.xp_events` уже настроена
@@ -881,6 +765,7 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 ### План реализации (7 шагов)
 
 #### Шаг 1: SQL миграция для Streaks
+
 **Файл:** `db/migrations/postgres/010_streaks_gamification.sql`
 
 ```sql
@@ -897,6 +782,7 @@ CREATE TABLE IF NOT EXISTS xp_events_2026_01
 ```
 
 #### Шаг 2: Обновление User модели
+
 **Файл:** `app/models/core_tables.py`
 
 ```python
@@ -908,6 +794,7 @@ total_xp: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 ```
 
 #### Шаг 3: XPService
+
 **Файл:** `app/services/gamification/xp_service.py`
 
 ```python
@@ -929,6 +816,7 @@ class XPService:
 ```
 
 #### Шаг 4: StreakService
+
 **Файл:** `app/services/gamification/streak_service.py`
 
 ```python
@@ -949,6 +837,7 @@ class StreakService:
 ```
 
 #### Шаг 5: Интеграция в voice.py
+
 **Файл:** `app/api/voice.py`
 
 ```python
@@ -973,6 +862,7 @@ if streak_result["streak"] > 1:
 ```
 
 #### Шаг 6: API endpoints
+
 **Файл:** `app/api/gamification.py`
 
 ```python
@@ -988,12 +878,15 @@ async def get_user_stats(user_id: int):
 ```
 
 #### Шаг 7: Unit-тесты
+
 **Файлы:**
+
 - `tests/test_xp_service.py`
 - `tests/test_streak_service.py`
 - `tests/test_gamification_api.py`
 
 **Тесты:**
+
 - `test_award_xp_creates_event()`
 - `test_streak_increments_on_consecutive_days()`
 - `test_streak_resets_after_gap()`
@@ -1018,22 +911,23 @@ def get_xp_for_level(level: int) -> int:
 
 ### Файлы для создания/изменения
 
-| Действие | Файл |
-|----------|------|
-| CREATE | `db/migrations/postgres/010_streaks_gamification.sql` |
-| CREATE | `app/services/gamification/__init__.py` |
-| CREATE | `app/services/gamification/xp_service.py` |
-| CREATE | `app/services/gamification/streak_service.py` |
-| CREATE | `app/api/gamification.py` |
-| CREATE | `tests/test_xp_service.py` |
-| CREATE | `tests/test_streak_service.py` |
-| EDIT | `app/models/core_tables.py` (добавить 4 поля) |
-| EDIT | `app/api/voice.py` (интеграция при завершении сессии) |
-| EDIT | `main.py` (добавить gamification router) |
+| Действие | Файл                                                  |
+| -------- | ----------------------------------------------------- |
+| CREATE   | `db/migrations/postgres/010_streaks_gamification.sql` |
+| CREATE   | `app/services/gamification/__init__.py`               |
+| CREATE   | `app/services/gamification/xp_service.py`             |
+| CREATE   | `app/services/gamification/streak_service.py`         |
+| CREATE   | `app/api/gamification.py`                             |
+| CREATE   | `tests/test_xp_service.py`                            |
+| CREATE   | `tests/test_streak_service.py`                        |
+| EDIT     | `app/models/core_tables.py` (добавить 4 поля)         |
+| EDIT     | `app/api/voice.py` (интеграция при завершении сессии) |
+| EDIT     | `main.py` (добавить gamification router)              |
 
 ### Ожидаемый результат
 
 После реализации:
+
 - ✅ Пользователь видит свой streak при каждом входе
 - ✅ XP начисляется автоматически за активность
 - ✅ Мотивация через streak бонусы (+5 XP × день streak)
@@ -1046,12 +940,15 @@ def get_xp_for_level(level: int) -> int:
 ## 🔬 Исследование: Multi-Agent + ML Scoring (Январь 2026)
 
 ### Контекст
+
 На собеседовании в компании, разрабатывающей AI-психолога, описали перспективную архитектуру:
+
 - **LangGraph** для оркестрации параллельных субагентов
 - **Gradient Boosting** для скоринга/ранжирования ответов агентов
 - Высокая латентность (~2-3s), но значительно выше качество
 
 ### Архитектура
+
 ```
 User Input (описание проблемы)
          ↓
@@ -1070,6 +967,7 @@ User Input (описание проблемы)
 ```
 
 ### Преимущества подхода
+
 1. **Ensemble effect**: Множественные точки зрения улучшают качество ответа
 2. **Personalization**: GB модель учитывает профиль пользователя (интроверт? тревожность? стиль общения?)
 3. **Feedback loop**: Каждый thumbs up/down улучшает scorer
@@ -1077,6 +975,7 @@ User Input (описание проблемы)
 5. **Контролируемость**: ML модель можно дообучить на конкретные метрики качества
 
 ### Почему высокая латентность допустима
+
 - Для психологии/коучинга качество важнее скорости
 - Пользователь ожидает "обдуманный" ответ
 - Текстовый чат, не голосовой (нет ожидания мгновенного ответа)
@@ -1084,16 +983,19 @@ User Input (описание проблемы)
 ### Применимость к EnglishFriend
 
 **Где подходит (background processing):**
+
 - **Assessment mode**: 3 агента оценивают grammar, vocabulary, fluency параллельно
 - **Выбор контента**: Agent A предлагает упражнения, Agent B - темы, Agent C - vocabulary
 - **Анализ ошибок**: Разные агенты специализируются на типах ошибок (grammar vs pronunciation vs word choice)
 - **Post-session analysis**: После завершения сессии, глубокий анализ в фоне
 
 **Где НЕ подходит:**
+
 - **Real-time голосовой чат**: Латентность критична, пользователь ждёт <800ms
 - **Immediate feedback**: Мгновенная реакция на ошибку произношения
 
 **Гибридный подход для EnglishFriend:**
+
 ```
 Voice Chat (real-time, <800ms):
   User → Single LLM → Response
@@ -1106,11 +1008,13 @@ Voice Chat (real-time, <800ms):
 ```
 
 ### Технологии для изучения
+
 - **LangGraph**: [python.langchain.com/docs/langgraph](https://python.langchain.com/docs/langgraph)
 - **XGBoost для ранжирования**: [xgboost.readthedocs.io/en/latest/tutorials/learning_to_rank.html](https://xgboost.readthedocs.io/en/latest/tutorials/learning_to_rank.html)
 - **LightGBM LambdaRank**: Альтернатива XGBoost для ranking
 
 ### Следующие шаги (когда будет время)
+
 1. Изучить LangGraph документацию и примеры
 2. Прототип: 3 агента для assessment mode (grammar, vocabulary, fluency)
 3. Собрать датасет оценок пользователей для обучения GB scorer
@@ -1118,6 +1022,7 @@ Voice Chat (real-time, <800ms):
 5. Измерить improvement в качестве vs latency trade-off
 
 ### Потенциальные метрики качества для GB
+
 - User satisfaction (explicit feedback)
 - Engagement (продолжил ли пользователь сессию)
 - Learning outcome (улучшился ли vocabulary/grammar score)
@@ -1125,16 +1030,114 @@ Voice Chat (real-time, <800ms):
 
 ---
 
-## Заключение
+## 🔬 Исследование: JEPA и World Models (Январь 2026)
+
+### Контекст
+
+Анализ передовых AI-архитектур от Meta (Yann LeCun) и galilai-group для потенциального применения в EnglishFriend.
+
+### JEPA (Joint Embedding Predictive Architecture)
+
+**Что это**: Архитектура self-supervised learning, альтернатива генеративным моделям (GPT).
+
+**Ключевое отличие**:
+```
+Генеративные модели: Предсказывают пиксели/токены напрямую
+JEPA: Предсказывает в пространстве эмбеддингов (абстракций)
+```
+
+**Эволюция JEPA (2023-2025)**:
+| Модель | Год | Модальность | Статус |
+|--------|-----|-------------|--------|
+| I-JEPA | 2023 | Изображения | Production |
+| V-JEPA | 2024 | Видео | Production |
+| V-JEPA 2 | 2025 | Видео + Robotics | Production |
+| VL-JEPA | Dec 2025 | Vision-Language | New |
+| **LLM-JEPA** | Sep 2025 | Текст/LLM | **Применимо!** |
+
+### LLM-JEPA - Применимость к EnglishFriend
+
+**Что это**: JEPA-based fine-tuning для LLM.
+**Paper**: https://arxiv.org/abs/2509.14252
+**Repo**: https://github.com/galilai-group/llm-jepa
+
+**Преимущества**:
+- Устойчивость к overfitting (критично при малых education datasets)
+- Лучше стандартных training objectives на GSM8K, Spider, etc.
+- Работает с Llama3, Gemma2, OpenELM
+
+**Потенциальное применение в EnglishFriend**:
+1. Fine-tune модели на education диалогах
+2. Специализация на коррекции ошибок русскоязычных
+3. Улучшение Socratic questioning через обучение на примерах
+
+**Статус**: R&D направление для Фазы 3+ (6-12 месяцев)
+
+### World Models - НЕ применимо напрямую
+
+**Что это**: AI-системы для предсказания и планирования в физическом мире.
+
+**Рынок 2024-2025**:
+- $7.5B+ инвестиций в Physical AI
+- Google DeepMind (Genie 2), NVIDIA (Cosmos), World Labs ($230M)
+- Yann LeCun ушёл из Meta основывать World Models стартап
+
+**Почему НЕ подходит для EnglishFriend**:
+- Оптимизированы для robotics, autonomous vehicles, gaming
+- "World Model ученика" ≠ World Model в академическом смысле
+- Для трекинга прогресса достаточно: FSRS, Bayesian Knowledge Tracing, простой ML
+
+**Вывод**: Следить за развитием, но не инвестировать ресурсы сейчас.
+
+### Практические рекомендации
+
+| Технология | Применимость | Timeline | Действие |
+|------------|--------------|----------|----------|
+| LLM-JEPA | ✅ Высокая | 6-12 мес | R&D после MVP |
+| World Models | ❌ Низкая | N/A | Мониторинг |
+| JEPA для Audio | ⚠️ Не существует | 12-24 мес | Ждать open-source |
+
+### Ссылки
+
+- [Meta AI: I-JEPA](https://ai.meta.com/blog/yann-lecun-ai-model-i-jepa/)
+- [LLM-JEPA Paper](https://arxiv.org/abs/2509.14252)
+- [galilai-group GitHub](https://github.com/galilai-group)
+- [World Models Survey](https://arxiv.org/html/2510.16732v1)
+
+---
+
+## Заключение (обновлено Январь 2026)
 
 **Текущая позиция**: Vosk MVP почти готов, это сильная база для Free Tier.
 
-**Стратегия**: Запустить freemium с бесплатным Vosk → монетизировать через Premium (Deepgram + ElevenLabs) → дифференцироваться через Ultra (Realtime API + эмоции).
+**Стратегия**: Запустить freemium с бесплатным Vosk → монетизировать через Premium (Deepgram + ElevenLabs) → дифференцироваться через Ultra (Realtime API или Moshi).
 
-**Конкурентное преимущество**: Специализация на русскоязычных + интеграция SRS/RAG + эмоциональный интеллект.
+**Конкурентное преимущество**:
+- Специализация на русскоязычных + интеграция SRS/RAG
+- Goal-based learning (ML interview, IELTS, etc.)
+- Duolingo Video Call теперь конкурент, но мы дешевле и специализированнее
 
-**Критический путь**: Free MVP (2 мес) → Premium (4 мес) → Ultra (6+ мес).
+**Критический путь**:
+- Free MVP (2 мес)
+- Premium с LiveKit orchestration (4 мес)
+- Ultra с OpenAI Realtime или Moshi self-hosted (6+ мес)
 
-**Риски**: Высокая стоимость эксплуатации → митигация через кеширование и гибридные модели.
+**Новые возможности (2025)**:
+- Moshi для self-hosted Ultra tier = маржа 95%+ vs убыток на OpenAI
+- LLM-JEPA для fine-tuning в Фазе 3+ (устойчивость к overfitting)
+- OpenAI Realtime подешевел на 60-87%
+
+**Риски**:
+- Высокая стоимость эксплуатации → митигация через Moshi self-hosted
+- Duolingo Video Call как конкурент → дифференциация через специализацию
+
+**R&D направления** (не для MVP):
+- LLM-JEPA для education fine-tuning
+- Multi-Agent + ML Scoring для background analysis
 
 Этот анализ - живой документ. Обновлять по мере тестирования гипотез и сбора feedback от первых пользователей Free Tier.
+
+---
+
+*Последнее обновление: 2026-01-13*
+*Добавлено: Moshi, LiveKit, JEPA/World Models анализ, обновлённая юнит-экономика, Duolingo Video Call*
