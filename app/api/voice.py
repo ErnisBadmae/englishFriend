@@ -59,6 +59,13 @@ from app.services.ai.memory_pipeline import create_memory_pipeline, MemoryPipeli
 from app.services.ai.post_session_service import PostSessionService, create_initial_vocabulary_cards
 from app.services.data_flow_logger import data_logger
 
+# Voice helpers для упрощения WebSocket логики
+from app.api.voice_helpers import (
+    handle_goal_setting,
+    award_session_gamification,
+    rebuild_system_prompt,
+)
+
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
 
@@ -174,12 +181,9 @@ async def voice_chat(
         except Exception as e:
             print(f"Warning: Could not load memory context: {e}")
 
-        system_prompt = build_mode_prompt(
-            mode=current_mode,
-            username=session_context.username,
-            level=session_context.language_level,
-            goal=session_context.goal or "improve English",
-            interests="technology, career development",
+        system_prompt = rebuild_system_prompt(
+            current_mode=current_mode,
+            session_context=session_context,
             focus_area=focus_area,
             vocabulary_list=vocabulary_list,
             memory_section=memory_section,
@@ -208,53 +212,19 @@ async def voice_chat(
                     goal_text = message.get("goal", "").strip()
                     if goal_text:
                         try:
-                            learning_plan = await learning_plan_service.set_goal(
-                                user_id, goal_text
-                            )
-                            session_context.goal = goal_text
-
-                            # Логируем установку цели
-                            data_logger.log_goal_detected(
+                            new_mode, new_prompt = await handle_goal_setting(
+                                goal_text=goal_text,
                                 user_id=user_id,
-                                message=f"set_goal: {goal_text}",
-                                detected_goal=goal_text,
+                                db=db,
+                                learning_plan_service=learning_plan_service,
+                                session_context=session_context,
+                                websocket=websocket,
                             )
-                            data_logger.log_postgres_write(
-                                table="learning_plan",
-                                operation="UPDATE",
-                                data={"goal": goal_text},
-                                user_id=user_id,
-                            )
-
-                            # Создаём начальные карточки из рекомендованного словаря
-                            recommended_vocab = learning_plan_service.get_recommended_vocabulary(learning_plan)
-                            if recommended_vocab:
-                                cards_created = await create_initial_vocabulary_cards(
-                                    db, user_id, goal_text, recommended_vocab
-                                )
-                                print(f"[Pedagogy] Created {cards_created} initial vocab cards for goal")
-
-                            # Перевыбираем режим под новую цель
-                            current_mode = select_learning_mode(session_context)
-                            focus_area = get_focus_area_for_mode(current_mode, session_context)
-
-                            # Перестраиваем промпт
-                            system_prompt = build_mode_prompt(
-                                mode=current_mode,
-                                username=session_context.username,
-                                level=session_context.language_level,
-                                goal=goal_text,
-                                focus_area=focus_area,
-                                vocabulary_list=vocabulary_list,
-                            )
-
-                            await websocket.send_json({
-                                "type": "goal_set",
-                                "goal": goal_text,
-                                "mode": current_mode.value,
-                                "message": f"Great! I'll help you with {goal_text}. Let's start!",
-                            })
-                            print(f"[Pedagogy] Goal set: {goal_text}, new mode: {current_mode.value}")
+                            if new_mode:
+                                current_mode = new_mode
+                                focus_area = get_focus_area_for_mode(current_mode, session_context)
+                            if new_prompt:
+                                system_prompt = new_prompt
                         except Exception as e:
                             print(f"Error setting goal: {e}")
                     continue
@@ -267,13 +237,12 @@ async def voice_chat(
                         current_mode = new_mode
                         focus_area = get_focus_area_for_mode(current_mode, session_context)
 
-                        system_prompt = build_mode_prompt(
-                            mode=current_mode,
-                            username=session_context.username,
-                            level=session_context.language_level,
-                            goal=session_context.goal or "improve English",
+                        system_prompt = rebuild_system_prompt(
+                            current_mode=current_mode,
+                            session_context=session_context,
                             focus_area=focus_area,
                             vocabulary_list=vocabulary_list,
+                            memory_section=memory_section,
                         )
 
                         greeting = get_session_greeting(current_mode, session_context.username)
@@ -336,13 +305,12 @@ async def voice_chat(
                                 current_mode = select_learning_mode(session_context)
                                 focus_area = get_focus_area_for_mode(current_mode, session_context)
 
-                                system_prompt = build_mode_prompt(
-                                    mode=current_mode,
-                                    username=session_context.username,
-                                    level=session_context.language_level,
-                                    goal=detected_goal,
+                                system_prompt = rebuild_system_prompt(
+                                    current_mode=current_mode,
+                                    session_context=session_context,
                                     focus_area=focus_area,
                                     vocabulary_list=vocabulary_list,
+                                    memory_section=memory_section,
                                 )
                                 print(f"[Pedagogy] Detected goal: {detected_goal}")
                             except Exception as e:
@@ -353,13 +321,12 @@ async def voice_chat(
                     if requested_mode and requested_mode != current_mode:
                         current_mode = requested_mode
                         focus_area = get_focus_area_for_mode(current_mode, session_context)
-                        system_prompt = build_mode_prompt(
-                            mode=current_mode,
-                            username=session_context.username,
-                            level=session_context.language_level,
-                            goal=session_context.goal or "improve English",
+                        system_prompt = rebuild_system_prompt(
+                            current_mode=current_mode,
+                            session_context=session_context,
                             focus_area=focus_area,
                             vocabulary_list=vocabulary_list,
+                            memory_section=memory_section,
                         )
                         print(f"[Pedagogy] Mode switched by user request: {current_mode.value}")
 
@@ -511,51 +478,7 @@ async def voice_chat(
                         print(f"Warning: Could not update session count: {e}")
 
                     # === Gamification: XP и Streak ===
-                    try:
-                        xp_service = XPService(db)
-                        streak_service = StreakService(db)
-
-                        # Check-in для streak
-                        streak_result = await streak_service.check_in(user_id)
-                        print(f"[Gamification] Streak: {streak_result['streak']} (max: {streak_result['max_streak']})")
-
-                        # XP за завершение сессии
-                        await xp_service.award_xp(
-                            user_id,
-                            XPEventKind.SESSION_COMPLETE,
-                            session_id=session_id,
-                        )
-
-                        # Бонус за streak (если streak > 1)
-                        if streak_result["streak"] > 1:
-                            await xp_service.award_xp(
-                                user_id,
-                                XPEventKind.STREAK_BONUS,
-                                session_id=session_id,
-                                multiplier=streak_result["streak"],
-                            )
-                            print(f"[Gamification] Streak bonus: +{streak_result['streak'] * 5} XP")
-
-                        # Бонус за первую сессию
-                        if await xp_service.check_first_session(user_id):
-                            await xp_service.award_xp(
-                                user_id,
-                                XPEventKind.FIRST_SESSION,
-                                session_id=session_id,
-                            )
-                            print("[Gamification] First session bonus: +50 XP")
-
-                        # Бонус за comeback (после 7+ дней)
-                        if streak_result.get("is_comeback"):
-                            await xp_service.award_xp(
-                                user_id,
-                                XPEventKind.COMEBACK,
-                                session_id=session_id,
-                            )
-                            print("[Gamification] Comeback bonus: +20 XP")
-
-                    except Exception as e:
-                        print(f"Warning: Gamification error: {e}")
+                    await award_session_gamification(db, user_id, session_id)
 
                     break
 
@@ -574,12 +497,7 @@ async def voice_chat(
                 # Gamification при disconnect (если были реплики)
                 if turn_count > 0:
                     try:
-                        xp_service = XPService(db)
-                        streak_service = StreakService(db)
-                        streak_result = await streak_service.check_in(user_id)
-                        await xp_service.award_xp(user_id, XPEventKind.SESSION_COMPLETE, session_id=session_id)
-                        if streak_result["streak"] > 1:
-                            await xp_service.award_xp(user_id, XPEventKind.STREAK_BONUS, session_id=session_id, multiplier=streak_result["streak"])
+                        await award_session_gamification(db, user_id, session_id)
                     except Exception:
                         pass
 
