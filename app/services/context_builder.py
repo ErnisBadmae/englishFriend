@@ -15,6 +15,10 @@ from app.prompts.universal import (
     Memory as PromptMemory, RecentUtterance, LearningProgress,
     SessionContext
 )
+from app.services.query_helpers import (
+    get_by_id,
+    get_top_by_field,
+)
 
 
 class ContextBuilder:
@@ -50,13 +54,11 @@ class ContextBuilder:
     
     async def get_user_profile(self, user_id: int) -> Optional[UserProfile]:
         """Получить профиль пользователя"""
-        stmt = select(User).where(User.id == user_id)
-        result = await self.db.execute(stmt)
-        user = result.scalar_one_or_none()
-        
+        user = await get_by_id(self.db, User, user_id)
+
         if not user:
             return None
-        
+
         # Получаем дату последней сессии
         last_session_stmt = (
             select(func.max(Session.started_at))
@@ -64,7 +66,7 @@ class ContextBuilder:
         )
         last_session_result = await self.db.execute(last_session_stmt)
         last_session_date = last_session_result.scalar_one_or_none()
-        
+
         return UserProfile(
             id=user.id,
             telegram_id=user.telegram_id,
@@ -79,15 +81,11 @@ class ContextBuilder:
         limit: int = 10
     ) -> List[PromptUserInterest]:
         """Получить интересы пользователя"""
-        stmt = (
-            select(UserInterest)
-            .where(UserInterest.user_id == user_id)
-            .order_by(UserInterest.salience.desc())
-            .limit(limit)
+        interests = await get_top_by_field(
+            self.db, UserInterest, user_id,
+            field_name="salience", limit=limit
         )
-        result = await self.db.execute(stmt)
-        interests = result.scalars().all()
-        
+
         return [
             PromptUserInterest(topic=interest.topic, salience=interest.salience)
             for interest in interests
@@ -99,15 +97,11 @@ class ContextBuilder:
         limit: int = 10
     ) -> List[PromptMemory]:
         """Получить воспоминания о пользователе"""
-        stmt = (
-            select(Memory)
-            .where(Memory.user_id == user_id)
-            .order_by(Memory.salience.desc())
-            .limit(limit)
+        memories = await get_top_by_field(
+            self.db, Memory, user_id,
+            field_name="salience", limit=limit
         )
-        result = await self.db.execute(stmt)
-        memories = result.scalars().all()
-        
+
         return [
             PromptMemory(
                 kind=mem.kind,
@@ -159,20 +153,18 @@ class ContextBuilder:
         session_id: str
     ) -> Optional[SessionContext]:
         """Получить контекст сессии"""
-        stmt = select(Session).where(Session.id == session_id)
-        result = await self.db.execute(stmt)
-        session = result.scalar_one_or_none()
-        
+        session = await get_by_id(self.db, Session, session_id, id_field="id")
+
         if not session:
             return None
-        
+
         # Подсчитываем количество реплик
         utt_stmt = select(func.count(Utterance.id)).where(
             Utterance.session_id == session_id
         )
         utt_result = await self.db.execute(utt_stmt)
         utterance_count = utt_result.scalar_one() or 0
-        
+
         return SessionContext(
             session_id=session_id,
             utterance_count=utterance_count,
