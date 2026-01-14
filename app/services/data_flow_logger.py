@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import Any, Optional
 from functools import wraps
 
+from app.services.logger_helpers import format_user_info, format_data_preview
+
 # Создаём специальный логгер для data flow
 logger = logging.getLogger("data_flow")
 logger.setLevel(logging.INFO)
@@ -54,9 +56,9 @@ class DataFlowLogger:
         self.stats["postgres_writes"] += 1
 
         # Форматируем данные для читаемости
-        data_preview = self._format_data_preview(data)
+        data_preview = format_data_preview(data)
 
-        user_info = f" [user={user_id}]" if user_id else ""
+        user_info = format_user_info(user_id)
         logger.info(
             f"📝 POSTGRES {operation}{user_info} → {table}: {data_preview}"
         )
@@ -71,7 +73,7 @@ class DataFlowLogger:
         """Логировать чтение из PostgreSQL."""
         self.stats["postgres_reads"] += 1
 
-        user_info = f" [user={user_id}]" if user_id else ""
+        user_info = format_user_info(user_id)
         logger.info(
             f"📖 POSTGRES READ{user_info} ← {table}: {query_info} ({result_count} rows)"
         )
@@ -86,8 +88,8 @@ class DataFlowLogger:
         """Логировать запись в Qdrant."""
         self.stats["qdrant_writes"] += 1
 
-        data_preview = self._format_data_preview(data)
-        user_info = f" [user={user_id}]" if user_id else ""
+        data_preview = format_data_preview(data)
+        user_info = format_user_info(user_id)
         vector_info = f" id={vector_id}" if vector_id else ""
 
         logger.info(
@@ -104,7 +106,7 @@ class DataFlowLogger:
         """Логировать поиск в Qdrant."""
         self.stats["qdrant_reads"] += 1
 
-        user_info = f" [user={user_id}]" if user_id else ""
+        user_info = format_user_info(user_id)
         logger.info(
             f"🔍 QDRANT SEARCH{user_info} ← {collection}: '{query_preview[:50]}...' ({result_count} results)"
         )
@@ -119,8 +121,8 @@ class DataFlowLogger:
         """Логировать запись в Neo4j."""
         self.stats["neo4j_writes"] += 1
 
-        data_preview = self._format_data_preview(data)
-        user_info = f" [user={user_id}]" if user_id else ""
+        data_preview = format_data_preview(data)
+        user_info = format_user_info(user_id)
 
         logger.info(
             f"🕸️  NEO4J {operation}{user_info} → {node_type}: {data_preview}"
@@ -189,23 +191,6 @@ class DataFlowLogger:
     def get_stats(self) -> dict:
         """Получить статистику операций."""
         return self.stats.copy()
-
-    def _format_data_preview(self, data: dict, max_len: int = 100) -> str:
-        """Форматировать превью данных."""
-        # Убираем длинные поля
-        preview = {}
-        for key, value in data.items():
-            if isinstance(value, str) and len(value) > 50:
-                preview[key] = f"{value[:50]}..."
-            elif isinstance(value, (list, dict)) and len(str(value)) > 50:
-                preview[key] = f"{type(value).__name__}[{len(value)}]"
-            else:
-                preview[key] = value
-
-        result = str(preview)
-        if len(result) > max_len:
-            return result[:max_len] + "..."
-        return result
 
 
 # Глобальный экземпляр
