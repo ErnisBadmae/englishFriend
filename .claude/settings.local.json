@@ -90,7 +90,15 @@
       "Bash(nvm install:*)",
       "Bash(pkill:*)",
       "Bash(pip3 install:*)",
-      "Bash(kill:*)"
+      "Bash(kill:*)",
+      "Bash(\"c:\\\\Users\\\\badmaev_es\\\\englishFriend\\\\venv\\\\Scripts\\\\pip.exe\" list)",
+      "Bash(\"c:\\\\Users\\\\badmaev_es\\\\englishFriend\\\\venv\\\\Scripts\\\\python.exe\":*)",
+      "Bash(\"c:\\\\Users\\\\badmaev_es\\\\englishFriend\\\\venv\\\\Scripts\\\\pip.exe\" --version)",
+      "Bash(\"c:\\\\Users\\\\badmaev_es\\\\englishFriend\\\\venv\\\\Scripts\\\\python.exe\" -c \"import fastapi; print\\(''FastAPI imported successfully:'', fastapi.__version__\\)\")",
+      "Bash(venv\\\\Scripts\\\\python.exe:*)",
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Bash(timeout 5 ./venv/Scripts/python.exe:*)",
+      "Bash(timeout 10 ./venv/Scripts/python.exe:*)"
     ]
   }
 }
