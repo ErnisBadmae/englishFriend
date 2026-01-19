@@ -23,6 +23,13 @@ shutdown_event = threading.Event()
 # Инициализация метрик с проверкой дублирования
 _metrics_initialized = False
 
+# Глобальные переменные для метрик (инициализируются в _init_metrics_once)
+metrics_batch_duration = None
+metrics_dlq_total = None
+metrics_last_success_timestamp = None
+metrics_nodes_created_total = None
+metrics_relationships_created_total = None
+
 def _init_metrics_once():
     """Инициализировать метрики только один раз"""
     global _metrics_initialized, metrics_batch_duration, metrics_dlq_total
@@ -32,11 +39,16 @@ def _init_metrics_once():
         return  # Метрики уже созданы
     
     # Проверяем, не зарегистрированы ли уже метрики
-    existing_names = [m.name for m in REGISTRY._collector_to_names.keys()]
-    if 'sync_graph_batch_duration_ms' in existing_names:
-        _metrics_initialized = True
-        return
-    
+    try:
+        existing_names = set()
+        for collector, names in REGISTRY._collector_to_names.items():
+            existing_names.update(names)
+        if 'sync_graph_batch_duration_ms' in existing_names:
+            _metrics_initialized = True
+            return
+    except Exception:
+        pass  # Если не можем проверить, создадим метрики
+
     # Создаем метрики
     metrics_batch_duration = Histogram(
         'sync_graph_batch_duration_ms',
@@ -145,15 +157,20 @@ def process_batch(records: List[Any], driver, ingest_script: str) -> None:
         
         # Записываем метрики успеха
         duration_ms = (time.time() - start_time) * 1000
-        metrics_batch_duration.observe(duration_ms)
-        metrics_last_success_timestamp.set(time.time())
-        metrics_nodes_created_total.labels(label='Session').inc(nodes_created)
-        metrics_relationships_created_total.labels(type='PARTICIPATED_IN').inc(relationships_created)
+        if metrics_batch_duration is not None:
+            metrics_batch_duration.observe(duration_ms)
+        if metrics_last_success_timestamp is not None:
+            metrics_last_success_timestamp.set(time.time())
+        if metrics_nodes_created_total is not None:
+            metrics_nodes_created_total.labels(label='Session').inc(nodes_created)
+        if metrics_relationships_created_total is not None:
+            metrics_relationships_created_total.labels(type='PARTICIPATED_IN').inc(relationships_created)
         
         logger.info("Flushed %s session events in %.2fms", len(payloads), duration_ms)
     except Exception as e:
         logger.error("Error processing batch: %s", e)
-        metrics_dlq_total.labels(reason='processing_error').inc(len(records))
+        if metrics_dlq_total is not None:
+            metrics_dlq_total.labels(reason='processing_error').inc(len(records))
         raise
 
 
@@ -220,7 +237,8 @@ def run_service(config_path: str) -> None:
             continue
         if msg.error():
             logger.error("Kafka error: %s", msg.error())
-            metrics_dlq_total.labels(reason='kafka_error').inc()
+            if metrics_dlq_total is not None:
+                metrics_dlq_total.labels(reason='kafka_error').inc()
             continue
         batch.append(msg)
         if len(batch) >= batch_size:

@@ -78,6 +78,55 @@ agent_chat_messages_total = Counter(
     ['speaker']  # 'user' или 'assistant'
 )
 
+# ============ VOICE WEBSOCKET METRICS ============
+
+# Активные сессии
+voice_sessions_active = Gauge(
+    'voice_sessions_active',
+    'Количество активных WebSocket голосовых сессий'
+)
+
+voice_sessions_total = Counter(
+    'voice_sessions_total',
+    'Общее количество голосовых сессий',
+    ['mode', 'status']  # mode: FREE_CONVERSATION, status: completed/disconnected/error
+)
+
+# Latency метрики (ключевые для диагностики!)
+voice_turn_total_seconds = Histogram(
+    'voice_turn_total_seconds',
+    'Полное время обработки turn (LLM + TTS)',
+    ['mode'],
+    buckets=[0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
+)
+
+voice_llm_latency_seconds = Histogram(
+    'voice_llm_latency_seconds',
+    'Время ответа LLM (Groq)',
+    ['mode'],
+    buckets=[0.3, 0.5, 1.0, 2.0, 5.0, 10.0]
+)
+
+voice_tts_latency_seconds = Histogram(
+    'voice_tts_latency_seconds',
+    'Время синтеза TTS (edge-tts)',
+    buckets=[0.1, 0.3, 0.5, 1.0, 2.0, 5.0]
+)
+
+# Счётчики сообщений
+voice_messages_total = Counter(
+    'voice_messages_total',
+    'Количество сообщений в голосовых сессиях',
+    ['direction', 'type']  # direction: inbound/outbound, type: text/audio/error
+)
+
+# Ошибки
+voice_errors_total = Counter(
+    'voice_errors_total',
+    'Количество ошибок в голосовом pipeline',
+    ['stage']  # stage: llm/tts/db/websocket
+)
+
 def normalize_endpoint(path: str) -> str:
     """
     Нормализует endpoint путь для метрик.

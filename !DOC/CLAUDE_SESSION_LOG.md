@@ -5,38 +5,65 @@
 
 ---
 
-## Последнее обновление: 2026-01-11 02:45
+## Последнее обновление: 2026-01-19 13:15
 
 ### Текущий статус проекта
 **MVP Ready**: ~90%
 **Backend**: FastAPI на порту 8000
 **Frontend**: React/Vite на порту 5173
-**База данных**: PostgreSQL (контейнер `englishfriend-postgres-1`)
+**База данных**: PostgreSQL (Docker CDC stack)
+**Мониторинг**: Prometheus (9090) + Grafana (3000) - **РАБОТАЕТ!**
 
 ---
 
 ## Активные задачи
 
-### 1. Баг: Vocabulary cards не создаются при определении цели
-**Статус**: В процессе исправления
-**Проблема**: При автоматическом определении цели из сообщения пользователя, `recommended_vocabulary` возвращает пустой список
-**Причина**: SQLAlchemy не отслеживает изменения вложенных JSON объектов
-**Что сделано**:
-- Добавлен `flag_modified(plan, 'roadmap')` в `learning_plan_service.py:171`
-- Добавлена отладочная печать в `voice.py:323-328`
-**Что нужно сделать**:
-- Сбросить roadmap в БД: `docker exec -i englishfriend-postgres-1 psql -U postgres -d english_friend -c "UPDATE learning_plan SET roadmap = '{}' WHERE user_id = 1;"`
-- Перезапустить backend
-- Протестировать голосовой чат, сказав "I want to prepare for ML interview"
-- Проверить логи: должно быть `[DEBUG] recommended_vocabulary: ['implementation', ...]`
+### 1. Backend Monitoring - ✅ ПОЛНОСТЬЮ РАБОТАЕТ
+**Цель**: Сделать бекенд полностью прозрачным для отладки
+**Статус**: Voice метрики работают и видны в Prometheus/Grafana!
 
-### 2. Кнопка End Session
-**Статус**: Реализовано, требует тестирования
+**Проверено 2026-01-19**:
+- `curl localhost:8000/metrics | grep voice_` → показывает все метрики
+- `curl localhost:9090/api/v1/query?query=voice_sessions_total` → Prometheus видит данные
+- 1 сессия завершена успешно (mode=assessment, status=completed)
+- LLM latency: ~1.03 сек
+- TTS latency: ~1.3 сек
+- Total turn: ~2.37 сек
+
 **Что сделано**:
-- Добавлена кнопка "End Session & See Summary" в `VoiceChatV2.tsx:267-274`
-- При нажатии отправляется `{"type": "end"}` через WebSocket
-- Backend вызывает `PostSessionService` для генерации flashcards
-**CSS**: `VoiceChat.css:359-386`
+- Добавлены Voice метрики в `app/core/metrics.py`:
+  - `voice_sessions_active` - активные WebSocket сессии
+  - `voice_sessions_total` - счётчик по mode/status
+  - `voice_llm_latency_seconds` - latency Groq LLM
+  - `voice_tts_latency_seconds` - latency edge-tts
+  - `voice_turn_total_seconds` - полный turn (LLM+TTS)
+  - `voice_messages_total` - inbound/outbound счётчики
+  - `voice_errors_total` - ошибки по стадиям (llm/tts/db/websocket)
+- Инструментирован `app/api/voice.py` метриками
+- Создан Grafana dashboard `monitoring/grafana/dashboards/voice-backend.json`
+- Все `print()` заменены на `logger`
+
+**Проверка метрик**:
+```bash
+curl http://localhost:8000/metrics | grep voice_
+# Показывает: voice_sessions_total, voice_llm_latency_seconds, etc.
+```
+
+**Grafana**: http://localhost:3000 (admin/admin)
+- Dashboard: "Voice Backend Monitor"
+
+### 2. PostgreSQL Auth Issue - ✅ ИСПРАВЛЕНО
+**Было**: `password authentication failed for user "postgres"`
+**Причина**: Разные пароли в `.env` и docker-compose.cdc.yml
+**Решение**: Исправлен `.env`:
+```
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/englishfriend_dev
+```
+
+### 3. Баг: Vocabulary cards не создаются при определении цели
+**Статус**: В процессе (отложено из-за DB auth)
+**Проблема**: `recommended_vocabulary` возвращает пустой список
+**Причина**: SQLAlchemy не отслеживает изменения вложенных JSON
 
 ---
 

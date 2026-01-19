@@ -18,9 +18,23 @@ import json
 import re
 import uuid
 import base64
+import time
+import logging
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.metrics import (
+    voice_sessions_active,
+    voice_sessions_total,
+    voice_turn_total_seconds,
+    voice_llm_latency_seconds,
+    voice_tts_latency_seconds,
+    voice_messages_total,
+    voice_errors_total,
+)
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.services.database import UserService
@@ -97,6 +111,12 @@ async def voice_chat(
     """
     await websocket.accept()
 
+    # Metrics: increment active sessions
+    voice_sessions_active.inc()
+    session_start_time = time.time()
+    final_mode = "unknown"  # Will be set after mode selection
+    session_status = "disconnected"  # Default, changed on proper end
+
     try:
         # === INITIALIZATION BLOCK ===
 
@@ -106,7 +126,8 @@ async def voice_chat(
             user_service = UserService(db)
             user = await user_service.get_user(user_id)
         except Exception as e:
-            print(f"Warning: Could not fetch user from DB: {e}")
+            logger.warning(f"Could not fetch user from DB: {e}")
+            voice_errors_total.labels(stage="db").inc()
 
         # Инициализируем сервисы
         llm = get_llm_provider()
@@ -143,11 +164,12 @@ async def voice_chat(
             session_context.due_vocabulary_count = len(due_vocabulary)
             session_context.due_vocabulary_words = [card.word for card in due_vocabulary]
 
-            print(f"[Pedagogy] Loaded context: goal={session_context.goal}, "
+            logger.info(f"[Pedagogy] Loaded context: goal={session_context.goal}, "
                   f"due_vocab={session_context.due_vocabulary_count}, "
                   f"sessions={session_context.total_sessions}")
         except Exception as e:
-            print(f"Warning: Could not load learning context: {e}")
+            logger.warning(f"Could not load learning context: {e}")
+            voice_errors_total.labels(stage="db").inc()
 
         # === ОПРЕДЕЛЯЕМ РЕЖИМ СЕССИИ ===
         if mode:
@@ -162,7 +184,8 @@ async def voice_chat(
             current_mode = select_learning_mode(session_context)
 
         focus_area = get_focus_area_for_mode(current_mode, session_context)
-        print(f"[Pedagogy] Selected mode: {current_mode.value}, focus: {focus_area}")
+        logger.info(f"[Pedagogy] Selected mode: {current_mode.value}, focus: {focus_area}")
+        final_mode = current_mode.value  # Track for metrics
 
         # === СТРОИМ ПРОМПТ ДЛЯ РЕЖИМА ===
         vocabulary_list = ""
@@ -177,9 +200,9 @@ async def voice_chat(
         try:
             memory_section = await memory_pipeline.format_memory_for_prompt(user_id)
             if memory_section:
-                print(f"[RAG] Loaded memory context ({len(memory_section)} chars)")
+                logger.info(f"[RAG] Loaded memory context ({len(memory_section)} chars)")
         except Exception as e:
-            print(f"Warning: Could not load memory context: {e}")
+            logger.warning(f"Could not load memory context: {e}")
 
         system_prompt = rebuild_system_prompt(
             current_mode=current_mode,
@@ -222,11 +245,12 @@ async def voice_chat(
                             )
                             if new_mode:
                                 current_mode = new_mode
+                                final_mode = current_mode.value
                                 focus_area = get_focus_area_for_mode(current_mode, session_context)
                             if new_prompt:
                                 system_prompt = new_prompt
                         except Exception as e:
-                            print(f"Error setting goal: {e}")
+                            logger.error(f"Error setting goal: {e}")
                     continue
 
                 # === ОБРАБОТКА СМЕНЫ РЕЖИМА ===
@@ -251,7 +275,8 @@ async def voice_chat(
                             "mode": current_mode.value,
                             "greeting": greeting,
                         })
-                        print(f"[Pedagogy] Mode changed to: {current_mode.value}")
+                        final_mode = current_mode.value
+                        logger.info(f"[Pedagogy] Mode changed to: {current_mode.value}")
                     except ValueError:
                         await websocket.send_json({
                             "type": "error",
@@ -266,6 +291,8 @@ async def voice_chat(
                         continue
 
                     turn_count += 1
+                    turn_start = time.time()  # Metrics: start turn timer
+                    voice_messages_total.labels(direction="inbound", type="text").inc()
 
                     # Первое сообщение: проверяем, не указывает ли цель
                     if turn_count == 1 and not session_context.goal:
@@ -290,16 +317,16 @@ async def voice_chat(
 
                                 # Создаём начальные карточки из рекомендованного словаря
                                 # Debug: проверяем roadmap после set_goal
-                                print(f"[DEBUG] learning_plan.roadmap keys: {list(learning_plan.roadmap.keys()) if learning_plan.roadmap else 'None'}")
+                                logger.debug(f"learning_plan.roadmap keys: {list(learning_plan.roadmap.keys()) if learning_plan.roadmap else 'None'}")
                                 if learning_plan.roadmap:
-                                    print(f"[DEBUG] roadmap.recommended_vocabulary: {learning_plan.roadmap.get('recommended_vocabulary', 'KEY_NOT_FOUND')[:3] if learning_plan.roadmap.get('recommended_vocabulary') else 'EMPTY_OR_NONE'}")
+                                    logger.debug(f"roadmap.recommended_vocabulary: {learning_plan.roadmap.get('recommended_vocabulary', 'KEY_NOT_FOUND')[:3] if learning_plan.roadmap.get('recommended_vocabulary') else 'EMPTY_OR_NONE'}")
                                 recommended_vocab = learning_plan_service.get_recommended_vocabulary(learning_plan)
-                                print(f"[DEBUG] recommended_vocab from service: {recommended_vocab[:5] if recommended_vocab else 'EMPTY'}")
+                                logger.debug(f"recommended_vocab from service: {recommended_vocab[:5] if recommended_vocab else 'EMPTY'}")
                                 if recommended_vocab:
                                     cards_created = await create_initial_vocabulary_cards(
                                         db, user_id, detected_goal, recommended_vocab
                                     )
-                                    print(f"[Pedagogy] Created {cards_created} initial vocab cards for detected goal")
+                                    logger.info(f"[Pedagogy] Created {cards_created} initial vocab cards for detected goal")
 
                                 # Перевыбираем режим
                                 current_mode = select_learning_mode(session_context)
@@ -312,9 +339,10 @@ async def voice_chat(
                                     vocabulary_list=vocabulary_list,
                                     memory_section=memory_section,
                                 )
-                                print(f"[Pedagogy] Detected goal: {detected_goal}")
+                                final_mode = current_mode.value
+                                logger.info(f"[Pedagogy] Detected goal: {detected_goal}")
                             except Exception as e:
-                                print(f"Error setting detected goal: {e}")
+                                logger.error(f"Error setting detected goal: {e}")
 
                     # Проверяем запрос на смену режима в тексте
                     requested_mode = parse_user_mode_request(user_text)
@@ -328,7 +356,8 @@ async def voice_chat(
                             vocabulary_list=vocabulary_list,
                             memory_section=memory_section,
                         )
-                        print(f"[Pedagogy] Mode switched by user request: {current_mode.value}")
+                        final_mode = current_mode.value
+                        logger.info(f"[Pedagogy] Mode switched by user request: {current_mode.value}")
 
                     # Отправляем подтверждение получения текста
                     await websocket.send_json({
@@ -339,13 +368,19 @@ async def voice_chat(
 
                     # Генерируем ответ через LLM
                     try:
+                        llm_start = time.time()
                         response_text = await llm.generate(
                             user_message=user_text,
                             system_prompt=system_prompt,
                             conversation_history=conversation_history,
                             max_tokens=250,  # Больше для объяснений и feedback
                         )
+                        voice_llm_latency_seconds.labels(mode=current_mode.value).observe(
+                            time.time() - llm_start
+                        )
                     except Exception as e:
+                        voice_errors_total.labels(stage="llm").inc()
+                        voice_messages_total.labels(direction="outbound", type="error").inc()
                         await websocket.send_json({
                             "type": "error",
                             "message": f"LLM error: {str(e)}",
@@ -357,9 +392,9 @@ async def voice_chat(
                     conversation_history.append({"role": "assistant", "content": response_text})
 
                     # Логирование
-                    print(f"[Turn {turn_count}] Mode: {current_mode.value}")
-                    print(f"[Turn {turn_count}] User: {user_text[:50]}...")
-                    print(f"[Turn {turn_count}] Assistant: {response_text[:50]}...")
+                    logger.info(f"[Turn {turn_count}] Mode: {current_mode.value}")
+                    logger.debug(f"[Turn {turn_count}] User: {user_text[:50]}...")
+                    logger.debug(f"[Turn {turn_count}] Assistant: {response_text[:50]}...")
 
                     # Ограничиваем историю
                     if len(conversation_history) > 20:
@@ -388,7 +423,7 @@ async def voice_chat(
                                 session_id=session_id,
                             )
                     except Exception as e:
-                        print(f"Warning: Could not extract vocabulary: {e}")
+                        logger.warning(f"Could not extract vocabulary: {e}")
 
                     # === RAG: ИЗВЛЕКАЕМ И СОХРАНЯЕМ ВОСПОМИНАНИЯ ===
                     # Каждые 5 ходов обрабатываем диалог для извлечения памяти
@@ -400,25 +435,39 @@ async def voice_chat(
                                 session_id=session_id,
                             )
                             if extracted:
-                                print(f"[RAG] Extracted {len(extracted)} memories from conversation")
+                                logger.info(f"[RAG] Extracted {len(extracted)} memories from conversation")
                         except Exception as e:
-                            print(f"Warning: Could not extract memories: {e}")
+                            logger.warning(f"Could not extract memories: {e}")
 
                     # Синтезируем и отправляем аудио
                     try:
+                        tts_start = time.time()
                         audio_bytes = await tts.synthesize(response_text)
+                        voice_tts_latency_seconds.observe(time.time() - tts_start)
+
                         await websocket.send_json({
                             "type": "audio",
                             "data": base64.b64encode(audio_bytes).decode(),
                             "format": "mp3",
                         })
+                        voice_messages_total.labels(direction="outbound", type="audio").inc()
+
+                        # Record total turn time
+                        voice_turn_total_seconds.labels(mode=current_mode.value).observe(
+                            time.time() - turn_start
+                        )
                     except Exception as e:
+                        voice_errors_total.labels(stage="tts").inc()
+                        voice_messages_total.labels(direction="outbound", type="error").inc()
                         await websocket.send_json({
                             "type": "error",
                             "message": f"TTS error: {str(e)}",
                         })
 
                 elif message.get("type") == "end":
+                    session_status = "completed"  # Metrics: proper session end
+                    final_mode = current_mode.value
+
                     # === POST-SESSION: Анализ и генерация карточек ===
                     post_session_result = {}
                     if conversation_history and len(conversation_history) >= 2:
@@ -441,7 +490,7 @@ async def voice_chat(
                                 user_id=user_id,
                             )
                         except Exception as e:
-                            print(f"Warning: Post-session processing failed: {e}")
+                            logger.warning(f"Post-session processing failed: {e}")
 
                     # Финальное извлечение памяти из всей сессии
                     if conversation_history:
@@ -452,14 +501,14 @@ async def voice_chat(
                                 session_id=session_id,
                             )
                             if extracted:
-                                print(f"[RAG] Final extraction: {len(extracted)} memories")
+                                logger.info(f"[RAG] Final extraction: {len(extracted)} memories")
                                 data_logger.log_qdrant_write(
                                     collection="memories",
                                     data={"count": len(extracted)},
                                     user_id=user_id,
                                 )
                         except Exception as e:
-                            print(f"Warning: Could not extract final memories: {e}")
+                            logger.warning(f"Could not extract final memories: {e}")
 
                     # Обновляем счётчик сессий
                     try:
@@ -475,7 +524,7 @@ async def voice_chat(
                             user_id=user_id,
                         )
                     except Exception as e:
-                        print(f"Warning: Could not update session count: {e}")
+                        logger.warning(f"Could not update session count: {e}")
 
                     # === Gamification: XP и Streak ===
                     await award_session_gamification(db, user_id, session_id)
@@ -483,7 +532,10 @@ async def voice_chat(
                     break
 
             except WebSocketDisconnect:
-                print(f"Client disconnected: session {session_id}")
+                logger.info(f"Client disconnected: session {session_id}")
+                session_status = "disconnected"
+                final_mode = current_mode.value
+
                 # Обновляем счётчик сессий при отключении
                 try:
                     await learning_plan_service.increment_session_count(
@@ -505,7 +557,9 @@ async def voice_chat(
 
     except Exception as e:
         # Top-level error во время инициализации или message loop
-        print(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+        session_status = "error"
+        voice_errors_total.labels(stage="websocket").inc()
         try:
             await websocket.send_json({
                 "type": "error",
@@ -516,6 +570,10 @@ async def voice_chat(
             pass  # Connection already closed
 
     finally:
+        # Metrics: decrement active sessions and record total
+        voice_sessions_active.dec()
+        voice_sessions_total.labels(mode=final_mode, status=session_status).inc()
+
         # Cleanup
         try:
             await websocket.close()

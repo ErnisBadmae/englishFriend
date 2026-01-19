@@ -6,7 +6,7 @@ global:
     environment: 'development'
 
 scrape_configs:
-  # FastAPI основной API
+  # FastAPI основной API (host machine)
   - job_name: 'fastapi'
     static_configs:
       - targets: ['host.docker.internal:8000']
@@ -14,21 +14,33 @@ scrape_configs:
           service: 'fastapi'
           component: 'api'
 
-  # Sync-Vector сервис
+  # Sync-Vector сервис (docker network)
   - job_name: 'sync-vector'
     static_configs:
-      - targets: ['host.docker.internal:8090']
+      - targets: ['sync-vector:8090']
         labels:
           service: 'sync-vector'
           component: 'cdc'
+          pipeline: 'vector'
 
-  # Sync-Graph сервис
+  # Sync-Graph сервис (docker network)
   - job_name: 'sync-graph'
     static_configs:
-      - targets: ['host.docker.internal:8091']
+      - targets: ['sync-graph:8091']
         labels:
           service: 'sync-graph'
           component: 'cdc'
+          pipeline: 'graph'
+
+  # Debezium Connect (JMX metrics if available)
+  - job_name: 'debezium'
+    static_configs:
+      - targets: ['debezium:8083']
+        labels:
+          service: 'debezium'
+          component: 'cdc'
+    metrics_path: /metrics
+    # Debezium doesn't expose prometheus by default, this is a placeholder
 
   # Prometheus itself
   - job_name: 'prometheus'

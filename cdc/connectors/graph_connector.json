@@ -7,7 +7,7 @@
     "database.port": "5432",
     "database.user": "postgres",
     "database.password": "postgres",
-    "database.dbname": "englishfriend_dev",
+    "database.dbname": "english_friend",
     "database.server.name": "englishfriend",
     "topic.prefix": "graph",
     "topic.creation.default.replication.factor": "1",
