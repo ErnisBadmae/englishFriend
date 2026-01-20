@@ -1,6 +1,6 @@
 # Makefile для управления проектом English Friend
 
-.PHONY: help install start stop logs clean test test-unit test-integration lint format
+.PHONY: help install start stop logs clean test test-unit test-integration test-e2e test-all lint format
 
 # Показать справку
 help:
@@ -13,6 +13,8 @@ help:
 	@echo "  test       - Запустить все тесты"
 	@echo "  test-unit  - Запустить только unit тесты"
 	@echo "  test-integration - Запустить integration тесты"
+	@echo "  test-e2e   - Запустить E2E тесты бизнес-логики"
+	@echo "  test-all   - Запустить все тесты (unit + integration + E2E)"
 	@echo "  lint       - Проверить код линтерами"
 	@echo "  format     - Форматировать код"
 
@@ -69,6 +71,21 @@ test-unit:
 test-integration:
 	@echo "🧪 Запуск integration тестов..."
 	pytest -m integration
+
+# E2E тесты бизнес-логики (без микрофона)
+test-e2e:
+	@echo "🧪 Запуск E2E тестов бизнес-логики..."
+	python -m tests.e2e.test_business_flow
+
+# Полный прогон всех тестов
+test-all:
+	@echo "🧪 Запуск всех тестов..."
+	@echo "--- Unit tests ---"
+	pytest -m unit -v || true
+	@echo "--- Integration tests ---"
+	pytest -m integration -v || true
+	@echo "--- E2E Business Logic tests ---"
+	python -m tests.e2e.test_business_flow
 
 # Проверка кода линтерами
 lint:

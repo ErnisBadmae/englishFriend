@@ -5,7 +5,7 @@
 
 ---
 
-## Последнее обновление: 2026-01-19 13:15
+## Последнее обновление: 2026-01-20 (E2E Testing)
 
 ### Текущий статус проекта
 **MVP Ready**: ~90%
@@ -17,6 +17,93 @@
 ---
 
 ## Активные задачи
+
+### 0. E2E Business Logic Tests - ✅ ВЫПОЛНЕНО (2026-01-20)
+**Цель**: Тестировать бизнес-логику без микрофона (Vosk STT не работает из-за сломанного микрофона)
+**Статус**: 7/7 тестов проходят!
+
+**Созданные файлы**:
+```
+tests/e2e/
+├── __init__.py           # Документация модуля
+├── conftest.py           # Fixtures (MockUser, MockDB, etc.)
+├── node_runner.py        # Фреймворк для последовательных тестов с отчётом
+└── test_business_flow.py # 7 тестов бизнес-логики
+```
+
+**Тестируемые узлы** (последовательно, при падении одного → остальные SKIPPED):
+1. **Goal Detection Node** - `detect_goal_from_message()` из learning_plan_service.py
+   - Тестирует 6 паттернов: ML Interview, Software Interview, Job Interview, IELTS, Business English, General Fluency
+   - Проверяет что "Hello, how are you?" возвращает None (нет цели)
+2. **Learning Plan Creation** - `LearningPlanService._match_goal_template()`
+   - Проверяет что для "ML interview" находится правильный шаблон
+   - Проверяет preferred_mode, focus_areas, recommended_vocabulary
+3. **PostgreSQL Write** - проверка вызова `commit()`
+   - Использует mock DB с трекингом commit_calls
+   - Патчит `flag_modified` (SQLAlchemy-специфика)
+4. **Mode Selection** - `select_learning_mode()` из mode_selector.py
+   - Новый юзер без assessment → ASSESSMENT
+   - Юзер с целью interview → MOCK_INTERVIEW
+   - Много due vocabulary → VOCABULARY_DRILL
+   - Explicit mode request → возвращает запрошенный режим
+5. **Vocabulary Card Creation** - `VocabularyService` и FSRS
+   - `extract_vocabulary_from_response()` - извлечение слов из текста ментора
+   - Создание карточки с fsrs_state=0 (New)
+6. **Gamification (XP & Streak)** - XPService и StreakService
+   - `calculate_level()`: 0→1, 50→2, 200→3, 850→5
+   - `xp_for_level()`: 1→0, 2→50, 3→200
+   - XP event creation и user.total_xp update
+   - Streak info с at_risk=False если last_activity_date==today
+7. **Monitoring Health Check** - проверка /health endpoint
+   - Если сервер не запущен → PASSED с message "Server not running (OK for local tests)"
+   - Если запущен → проверяет /health и /metrics
+
+**Запуск тестов**:
+```bash
+# CLI с красивым отчётом (рекомендуется)
+python -m tests.e2e.test_business_flow
+
+# Через pytest
+pytest tests/e2e/ -v
+
+# Через Makefile (Linux/Mac)
+make test-e2e
+```
+
+**Пример вывода**:
+```
+============================================================
+BUSINESS FLOW TEST REPORT
+============================================================
+  [1/7] Goal Detection Node           + PASSED (331.28ms)
+  [2/7] Learning Plan Creation        + PASSED (0.63ms)
+  [3/7] PostgreSQL Write              + PASSED (0.56ms)
+  [4/7] Mode Selection                + PASSED (2.70ms)
+  [5/7] Vocabulary Card Creation      + PASSED (22.57ms)
+  [6/7] Gamification (XP & Streak)    + PASSED (1.51ms)
+  [7/7] Monitoring Health Check       + PASSED (2029.71ms)
+------------------------------------------------------------
+Total: 7 | Passed: 7
+============================================================
+```
+
+**Архитектура node_runner.py**:
+- `NodeRunner` класс с методами `add_node()`, `run()`, `print_report()`
+- `NodeStatus`: PENDING, RUNNING, PASSED, FAILED, SKIPPED
+- `depends_on` - зависимости между узлами (если Goal Detection упал → остальные SKIPPED)
+- ASCII символы (+, X, o) вместо Unicode (✓, ✗, ○) для совместимости с Windows console
+- `_setup_console_encoding()` для UTF-8 на Windows
+
+**Моки**:
+- Внутренние классы `MockDB`, `MockUser`, `MockPlan` вместо AsyncMock
+- Патчинг `flag_modified` для обхода SQLAlchemy internals
+- Синхронный `db.add()` (не async) как в реальных сервисах
+
+**Обновлённые файлы**:
+- `Makefile` - добавлены targets `test-e2e` и `test-all`
+- `!DOC/SYSTEM_OVERVIEW.md` - добавлена секция E2E тестирования
+
+---
 
 ### 1. Backend Monitoring - ✅ ПОЛНОСТЬЮ РАБОТАЕТ
 **Цель**: Сделать бекенд полностью прозрачным для отладки

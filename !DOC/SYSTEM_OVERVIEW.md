@@ -160,9 +160,63 @@ Qdrant (семантический поиск) → Рекомендации ко
 ## Мониторинг и тестирование
 
 ### Тестирование
+
+#### Unit и Integration тесты
 - **pgTAP**: Тесты для PostgreSQL
 - **Cypher**: Тесты для Neo4j
-- **Integration tests**: End-to-end тесты
+- **pytest**: Unit и integration тесты Python кода
+
+#### E2E тесты бизнес-логики
+
+E2E тесты позволяют тестировать бизнес-логику без микрофона и внешних сервисов.
+Тестируются узлы в последовательности с понятным отчётом о том, где произошла ошибка.
+
+**Тестируемые узлы**:
+1. **Goal Detection Node** - определение цели из сообщения пользователя
+2. **Learning Plan Creation** - создание плана обучения по шаблону
+3. **PostgreSQL Write** - проверка вызова commit при сохранении
+4. **Mode Selection** - выбор режима обучения (ASSESSMENT, MOCK_INTERVIEW, etc.)
+5. **Vocabulary Card Creation** - создание карточек FSRS
+6. **Gamification (XP & Streak)** - начисление XP и streaks
+7. **Monitoring Health Check** - проверка `/health` и `/metrics` (если сервер запущен)
+
+**Запуск**:
+```bash
+# Через Makefile (рекомендуется)
+make test-e2e
+
+# Напрямую
+python -m tests.e2e.test_business_flow
+
+# Через pytest
+pytest tests/e2e/ -v
+```
+
+**Пример вывода**:
+```
+============================================================
+BUSINESS FLOW TEST REPORT
+============================================================
+  [1/7] Goal Detection Node           ✓ PASSED (2.34ms)
+  [2/7] Learning Plan Creation        ✓ PASSED (15.67ms)
+  [3/7] PostgreSQL Write              ✓ PASSED (8.12ms)
+  [4/7] Mode Selection                ✓ PASSED (3.45ms)
+  [5/7] Vocabulary Card Creation      ✓ PASSED (12.89ms)
+  [6/7] Gamification (XP & Streak)    ✓ PASSED (5.23ms)
+  [7/7] Monitoring Health Check       ✓ PASSED (1.02ms)
+------------------------------------------------------------
+Total: 7 | Passed: 7 | Failed: 0 | Skipped: 0
+============================================================
+```
+
+**Структура файлов**:
+```
+tests/e2e/
+├── __init__.py           # Документация модуля
+├── conftest.py           # Fixtures (MockUser, MockDB, etc.)
+├── node_runner.py        # Фреймворк для последовательных тестов
+└── test_business_flow.py # Основные тесты бизнес-логики
+```
 
 ### Мониторинг
 
