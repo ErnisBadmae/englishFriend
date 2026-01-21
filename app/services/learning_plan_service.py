@@ -30,6 +30,8 @@ class GoalTemplate:
 
 # =============================================================================
 # Шаблоны целей
+# DEPRECATED: Используйте app.agent.nodes.program_build.ROADMAP_TEMPLATES
+# вместо этого. Эти шаблоны сохранены для обратной совместимости с /chat.
 # =============================================================================
 
 GOAL_TEMPLATES = {
@@ -384,6 +386,9 @@ class LearningPlanService:
 async def detect_goal_from_message(message: str) -> Optional[str]:
     """Определить цель из сообщения пользователя.
 
+    DEPRECATED: Использует hardcoded паттерны. Используйте LangGraph agent
+    (app.agent.nodes.goal_discovery) для LLM-based определения с подтверждением.
+
     Использует fuzzy matching для обработки STT искажений.
 
     Args:
@@ -392,6 +397,14 @@ async def detect_goal_from_message(message: str) -> Optional[str]:
     Returns:
         Определённая цель или None
     """
+    import warnings
+    warnings.warn(
+        "detect_goal_from_message() is deprecated. "
+        "Use LangGraph agent (app.agent.nodes.goal_discovery) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     message_lower = message.lower()
 
     print(f"[GoalDetect] Analyzing: '{message_lower[:80]}...'")

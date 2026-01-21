@@ -22,17 +22,46 @@ User → PostgreSQL → Debezium → Kafka → [sync-vector → Qdrant]
 
 ### Key Components
 1. **FastAPI Application** (`app/`): Main API service with routers for users, sessions, utterances, memories
-2. **Database Migrations** (`db/migrations/postgres/`): Flyway-compatible SQL migrations
-3. **CDC Layer** (`cdc/`): Debezium connectors and Kafka topic definitions
-4. **Sync Services**:
+2. **LangGraph Agent** (`app/agent/`): State machine for pedagogical conversations (NEW)
+3. **Database Migrations** (`db/migrations/postgres/`): Flyway-compatible SQL migrations
+4. **CDC Layer** (`cdc/`): Debezium connectors and Kafka topic definitions
+5. **Sync Services**:
    - `sync-vector/`: Syncs memories from Kafka to Qdrant
    - `sync-graph/`: Syncs sessions/utterances from Kafka to Neo4j
-5. **Graph Layer** (`graph/`): Neo4j schema, queries, and Cypher scripts
+6. **Graph Layer** (`graph/`): Neo4j schema, queries, and Cypher scripts
 
 ### Database Features
 - **Partitioning**: `sessions` (by month), `utterances` (by hash), `xp_events` (by date)
 - **Row-Level Security (RLS)**: User data isolation at PostgreSQL level
 - **Materialized Views**: For analytics queries
+
+### LangGraph Agent Architecture (NEW)
+
+The conversational AI is implemented as a LangGraph state machine with explicit phases and pedagogical logging.
+
+**Conversation Flow**:
+```
+START → GOAL_DISCOVERY (with confirmation) → INTEREST_PROBE → ASSESSMENT
+  → PROGRAM_BUILD → LEARNING_SESSION (turn_processor loop) → SESSION_END
+```
+
+**Key Nodes** (`app/agent/nodes/`):
+- `start.py`: Routes new vs returning users
+- `goal_discovery.py`: LLM-based goal extraction with user confirmation
+- `interest_probe.py`: Discovers user interests for personalization
+- `assessment.py`: 3-question CEFR level evaluation
+- `program_build.py`: Generates personalized learning roadmap
+- `mode_router.py`: Selects learning mode (mock_interview, vocab_drill, etc.)
+- `turn_processor.py`: Handles conversation turns with Socratic recast
+- `session_end.py`: Session termination and persistence
+
+**API Endpoints**:
+- `/api/v1/voice/chat`: Legacy endpoint (hardcoded logic)
+- `/api/v1/voice/chat/v2`: NEW LangGraph-based endpoint (recommended)
+
+**Logging**: All pedagogical decisions logged with `[PEDAGOGY]` prefix via `app/services/pedagogy_logger.py`
+
+**State**: `AgentState` (TypedDict) flows through nodes, loaded from PostgreSQL at session start
 
 ## Development Commands
 
@@ -98,6 +127,9 @@ pytest sync-vector/tests/test_integration.py -v
 
 # Sync-graph tests
 pytest sync-graph/tests/test_transform.py
+
+# LangGraph Agent tests (NEW)
+pytest tests/agent/ -v
 ```
 
 ### Code Quality
@@ -147,11 +179,15 @@ docker compose -f docker-compose.cdc.yml up load-postgres-demo load-neo4j-demo l
 ```
 englishFriend/
 ├── app/
+│   ├── agent/            # LangGraph state machine (NEW)
+│   │   ├── nodes/        # Conversation flow nodes
+│   │   ├── state.py      # AgentState TypedDict
+│   │   └── graph.py      # State machine assembly
 │   ├── api/              # FastAPI routers (users, sessions, utterances, etc.)
 │   ├── core/             # Config and database initialization
 │   ├── models/           # SQLAlchemy ORM models
 │   ├── schemas/          # Pydantic schemas
-│   └── services/         # Business logic
+│   └── services/         # Business logic (including pedagogy_logger.py)
 ├── db/
 │   ├── migrations/postgres/  # SQL migrations (ordered 000-007)
 │   ├── seed/                 # Reference data seeds

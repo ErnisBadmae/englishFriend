@@ -241,13 +241,44 @@ curl --noproxy localhost http://localhost:8000/health
 
 # Сброс learning_plan для тестов
 docker exec -i englishfriend-postgres-1 psql -U postgres -d english_friend -c "UPDATE learning_plan SET roadmap = '{}' WHERE user_id = 1;"
+
+# E2E тесты бизнес-логики (без микрофона!)
+python -m tests.e2e.test_business_flow  # CLI с красивым отчётом
+pytest tests/e2e/ -v                     # через pytest
+make test-e2e                            # через Makefile (Linux/Mac)
 ```
 
 ---
 
 ## История сессий
 
-### 2026-01-11 (текущая)
+### 2026-01-21 - E2E Business Logic Testing
+**Агент**: Claude Opus 4.5
+**Задача**: Создать систему E2E тестирования бизнес-логики без микрофона
+
+**Что сделано**:
+- Создана директория `tests/e2e/` с 4 файлами
+- Реализован `node_runner.py` - фреймворк для последовательных тестов с зависимостями
+- Реализовано 7 тестовых узлов в `test_business_flow.py`
+- Добавлены targets в Makefile: `test-e2e`, `test-all`
+- Обновлён SYSTEM_OVERVIEW.md с документацией
+
+**Ключевые решения**:
+1. Внутренние node-функции начинаются с `_node_` (не `test_`) чтобы pytest их не подхватывал
+2. Отдельные pytest-функции (`test_goal_detection`, etc.) вызывают `_node_*` функции
+3. ASCII символы (+, X, o) вместо Unicode для Windows console
+4. `flag_modified` патчится через `with patch()` для обхода SQLAlchemy
+5. Mock классы вместо AsyncMock (т.к. `db.add()` синхронный)
+
+**Результат**: 7/7 тестов проходят в обоих режимах (CLI и pytest)
+
+---
+
+### 2026-01-19 - Backend Monitoring
+- Voice метрики в Prometheus/Grafana
+- Исправлен PostgreSQL auth issue
+
+### 2026-01-11 (предыдущая)
 - Обнаружено что все 8 пунктов рефакторинга уже выполнены
 - Добавлена секция Multi-Agent + ML Scoring в STRATEGY.md
 - Работа над багом vocabulary cards (SQLAlchemy JSON mutation)

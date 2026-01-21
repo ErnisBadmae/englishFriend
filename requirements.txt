@@ -27,6 +27,10 @@ openai==2.6.1
 anyio>=4.5,<5  # Для mcp и openai
 mcp==1.19.0
 
+# LangGraph Agent
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
 # Мониторинг и метрики
 prometheus-client==0.21.0
 

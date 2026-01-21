@@ -12,6 +12,10 @@
 - Бэкенд генерирует ответ через Groq (Llama-70B)
 - Синтезирует речь через edge-tts
 - Отправляет аудио обратно
+
+Два эндпоинта:
+- /chat: Legacy endpoint с хардкод логикой
+- /chat/v2: Новый endpoint на LangGraph state machine
 """
 
 import json
@@ -79,6 +83,10 @@ from app.api.voice_helpers import (
     award_session_gamification,
     rebuild_system_prompt,
 )
+
+# LangGraph agent
+from app.agent import AgentState, AgentPhase, LearningModeEnum
+from app.agent.graph import run_agent_turn, initialize_session
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
@@ -575,6 +583,351 @@ async def voice_chat(
         voice_sessions_total.labels(mode=final_mode, status=session_status).inc()
 
         # Cleanup
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# =============================================================================
+# LangGraph-based endpoint (v2)
+# =============================================================================
+
+@router.websocket("/chat/v2")
+async def voice_chat_v2(
+    websocket: WebSocket,
+    user_id: int = Query(..., description="ID пользователя"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    WebSocket endpoint для голосового чата на LangGraph state machine.
+
+    Улучшения по сравнению с /chat:
+    - Цель определяется через диалог с подтверждением
+    - Интересы выясняются активно
+    - Все педагогические решения логируются
+    - Структурированный онбординг для новых пользователей
+
+    Протокол (совместим с /chat):
+    - Client -> Server: {"type": "text", "text": "..."}
+    - Client -> Server: {"type": "end"}
+    - Server -> Client: {"type": "connected", "session_id": "...", "phase": "..."}
+    - Server -> Client: {"type": "transcript", "role": "assistant", "text": "..."}
+    - Server -> Client: {"type": "audio", "data": "<base64 MP3>", "format": "mp3"}
+    - Server -> Client: {"type": "phase_changed", "phase": "...", "mode": "..."}
+    - Server -> Client: {"type": "error", "message": "..."}
+    """
+    await websocket.accept()
+
+    # Metrics: increment active sessions
+    voice_sessions_active.inc()
+    session_start_time = time.time()
+    final_mode = "unknown"
+    session_status = "disconnected"
+
+    try:
+        # === INITIALIZATION ===
+        session_id = str(uuid.uuid4())
+
+        # Load user data
+        user = None
+        is_new_user = True
+        username = "Student"
+        language_level = "B1"
+
+        try:
+            user_service = UserService(db)
+            user = await user_service.get_user(user_id)
+            if user:
+                username = user.username or "Student"
+                language_level = user.language_level or "B1"
+        except Exception as e:
+            logger.warning(f"Could not fetch user from DB: {e}")
+            voice_errors_total.labels(stage="db").inc()
+
+        # Load learning context
+        learning_plan_service = LearningPlanService(db)
+        vocabulary_service = VocabularyService(db)
+        memory_pipeline = create_memory_pipeline(db)
+
+        confirmed_goal = None
+        confirmed_interests = None
+        roadmap = None
+        due_vocabulary_count = 0
+        due_vocabulary_words = []
+        memory_section = ""
+
+        try:
+            learning_plan = await learning_plan_service.get_or_create_plan(user_id)
+            confirmed_goal = learning_plan_service.get_goal(learning_plan)
+            roadmap = learning_plan.roadmap
+
+            # Determine if new user
+            total_sessions = learning_plan_service.get_session_count(learning_plan)
+            is_new_user = total_sessions == 0 and not confirmed_goal
+
+            # Load vocabulary due
+            due_vocabulary = await vocabulary_service.get_due_cards(user_id, limit=10)
+            due_vocabulary_count = len(due_vocabulary)
+            due_vocabulary_words = [card.word for card in due_vocabulary]
+
+            # Load memory context
+            memory_section = await memory_pipeline.format_memory_for_prompt(user_id)
+
+            logger.info(f"[AgentV2] User {user_id}: is_new={is_new_user}, "
+                       f"goal={confirmed_goal}, due_vocab={due_vocabulary_count}")
+
+        except Exception as e:
+            logger.warning(f"Could not load learning context: {e}")
+            voice_errors_total.labels(stage="db").inc()
+
+        # Initialize agent state
+        agent_state = await initialize_session(
+            user_id=user_id,
+            session_id=session_id,
+            username=username,
+            is_new_user=is_new_user,
+            language_level=language_level,
+            confirmed_goal=confirmed_goal,
+            confirmed_interests=confirmed_interests,
+            roadmap=roadmap,
+            due_vocabulary_count=due_vocabulary_count,
+            due_vocabulary_words=due_vocabulary_words,
+            memory_section=memory_section,
+        )
+
+        # Initialize TTS service
+        tts = get_tts_service()
+
+        # Run initial agent turn (greeting/first question)
+        agent_state = await run_agent_turn(agent_state, user_message=None)
+
+        # Get initial response
+        initial_response = agent_state.get("pending_response", "")
+        current_phase = agent_state.get("current_phase", AgentPhase.START)
+        current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
+
+        final_mode = current_mode.value
+
+        # Send connected message
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "phase": current_phase.value,
+            "mode": current_mode.value,
+            "is_new_user": is_new_user,
+            "goal": confirmed_goal,
+            "due_vocabulary_count": due_vocabulary_count,
+        })
+
+        # Send initial greeting/question
+        if initial_response:
+            await websocket.send_json({
+                "type": "transcript",
+                "role": "assistant",
+                "text": initial_response,
+                "phase": current_phase.value,
+            })
+
+            # Synthesize audio
+            try:
+                tts_start = time.time()
+                audio_bytes = await tts.synthesize(initial_response)
+                voice_tts_latency_seconds.observe(time.time() - tts_start)
+
+                await websocket.send_json({
+                    "type": "audio",
+                    "data": base64.b64encode(audio_bytes).decode(),
+                    "format": "mp3",
+                })
+                voice_messages_total.labels(direction="outbound", type="audio").inc()
+            except Exception as e:
+                logger.warning(f"TTS error for greeting: {e}")
+                voice_errors_total.labels(stage="tts").inc()
+
+        # === MESSAGE LOOP ===
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+
+                if message.get("type") == "text":
+                    user_text = message.get("text", "").strip()
+                    if not user_text:
+                        continue
+
+                    turn_start = time.time()
+                    voice_messages_total.labels(direction="inbound", type="text").inc()
+
+                    # Send user transcript
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": "user",
+                        "text": user_text,
+                    })
+
+                    # Run agent turn
+                    old_phase = agent_state.get("current_phase", AgentPhase.START)
+                    agent_state = await run_agent_turn(agent_state, user_message=user_text)
+
+                    # Get response
+                    response_text = agent_state.get("pending_response", "")
+                    current_phase = agent_state.get("current_phase", AgentPhase.START)
+                    current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
+                    turn_count = agent_state.get("turn_count", 0)
+
+                    final_mode = current_mode.value
+
+                    # Check for phase change
+                    if old_phase != current_phase:
+                        await websocket.send_json({
+                            "type": "phase_changed",
+                            "phase": current_phase.value,
+                            "mode": current_mode.value,
+                        })
+
+                    if response_text:
+                        # Send transcript
+                        await websocket.send_json({
+                            "type": "transcript",
+                            "role": "assistant",
+                            "text": response_text,
+                            "phase": current_phase.value,
+                            "mode": current_mode.value,
+                            "turn": turn_count,
+                        })
+
+                        # Synthesize audio
+                        try:
+                            tts_start = time.time()
+                            audio_bytes = await tts.synthesize(response_text)
+                            voice_tts_latency_seconds.observe(time.time() - tts_start)
+
+                            await websocket.send_json({
+                                "type": "audio",
+                                "data": base64.b64encode(audio_bytes).decode(),
+                                "format": "mp3",
+                            })
+                            voice_messages_total.labels(direction="outbound", type="audio").inc()
+
+                            voice_turn_total_seconds.labels(mode=current_mode.value).observe(
+                                time.time() - turn_start
+                            )
+                        except Exception as e:
+                            logger.warning(f"TTS error: {e}")
+                            voice_errors_total.labels(stage="tts").inc()
+
+                    # Check for session end
+                    if agent_state.get("should_end_session"):
+                        session_status = "completed"
+                        break
+
+                elif message.get("type") == "end":
+                    session_status = "completed"
+
+                    # Process session end
+                    agent_state["should_end_session"] = True
+                    agent_state = await run_agent_turn(agent_state, user_message=None)
+
+                    # Send farewell if generated
+                    farewell = agent_state.get("pending_response", "")
+                    if farewell:
+                        await websocket.send_json({
+                            "type": "transcript",
+                            "role": "assistant",
+                            "text": farewell,
+                            "phase": "session_end",
+                        })
+
+                        try:
+                            audio_bytes = await tts.synthesize(farewell)
+                            await websocket.send_json({
+                                "type": "audio",
+                                "data": base64.b64encode(audio_bytes).decode(),
+                                "format": "mp3",
+                            })
+                        except Exception as e:
+                            logger.warning(f"TTS error for farewell: {e}")
+
+                    # Persist session data
+                    try:
+                        # Save goal if confirmed
+                        if agent_state.get("confirmed_goal") and not confirmed_goal:
+                            await learning_plan_service.set_goal(
+                                user_id, agent_state["confirmed_goal"]
+                            )
+
+                        # Update session count
+                        await learning_plan_service.increment_session_count(
+                            user_id,
+                            mode=current_mode.value,
+                            duration_minutes=agent_state.get("turn_count", 0) * 2,
+                        )
+
+                        # Record assessment if done
+                        if agent_state.get("assessed_level"):
+                            await learning_plan_service.record_assessment(
+                                user_id,
+                                assessed_level=agent_state["assessed_level"],
+                                scores=agent_state.get("assessment_scores"),
+                            )
+
+                        # Process memories
+                        conversation_history = agent_state.get("conversation_history", [])
+                        if conversation_history:
+                            await memory_pipeline.process_conversation(
+                                user_id=user_id,
+                                messages=conversation_history,
+                                session_id=session_id,
+                            )
+
+                        # Gamification
+                        await award_session_gamification(db, user_id, session_id)
+
+                    except Exception as e:
+                        logger.warning(f"Error persisting session data: {e}")
+
+                    break
+
+            except WebSocketDisconnect:
+                logger.info(f"Client disconnected: session {session_id}")
+                session_status = "disconnected"
+
+                # Try to persist on disconnect
+                try:
+                    if agent_state.get("confirmed_goal") and not confirmed_goal:
+                        await learning_plan_service.set_goal(
+                            user_id, agent_state["confirmed_goal"]
+                        )
+                    await learning_plan_service.increment_session_count(
+                        user_id,
+                        mode=current_mode.value,
+                        duration_minutes=agent_state.get("turn_count", 0) * 2,
+                    )
+                    if agent_state.get("turn_count", 0) > 0:
+                        await award_session_gamification(db, user_id, session_id)
+                except Exception:
+                    pass
+
+                break
+
+    except Exception as e:
+        logger.error(f"WebSocket error (v2): {e}", exc_info=True)
+        session_status = "error"
+        voice_errors_total.labels(stage="websocket").inc()
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Server error. Please refresh the page.",
+            })
+            await websocket.close(code=1011, reason="Internal server error")
+        except Exception:
+            pass
+
+    finally:
+        voice_sessions_active.dec()
+        voice_sessions_total.labels(mode=final_mode, status=session_status).inc()
+
         try:
             await websocket.close()
         except Exception:
