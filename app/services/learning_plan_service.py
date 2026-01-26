@@ -7,6 +7,7 @@
 - Обновление roadmap
 """
 
+import logging
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.extended_tables import LearningPlan
 from app.models.enums_and_dimensions import CEFRLevel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -407,7 +410,7 @@ async def detect_goal_from_message(message: str) -> Optional[str]:
 
     message_lower = message.lower()
 
-    print(f"[GoalDetect] Analyzing: '{message_lower[:80]}...'")
+    logger.debug(f"GoalDetect analyzing: '{message_lower[:80]}...'")
 
     # Паттерны для определения цели (расширенные для STT искажений)
     patterns = {
@@ -448,13 +451,13 @@ async def detect_goal_from_message(message: str) -> Optional[str]:
     # Сначала ищем точные совпадения
     for goal, keywords in patterns.items():
         if any(kw in message_lower for kw in keywords):
-            print(f"[GoalDetect] ✓ Matched goal: {goal}")
+            logger.debug(f"GoalDetect matched: {goal}")
             return goal
 
     # Fallback: если есть слово "interview" - это Job Interview
     if "interview" in message_lower:
-        print(f"[GoalDetect] ✓ Fallback match: Job Interview (contains 'interview')")
+        logger.debug("GoalDetect fallback: Job Interview")
         return "Job Interview"
 
-    print(f"[GoalDetect] ✗ No goal detected")
+    logger.debug("GoalDetect: no goal detected")
     return None

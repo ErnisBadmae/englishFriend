@@ -1,5 +1,6 @@
 """Helper functions to simplify voice.py and reduce code duplication."""
 
+import logging
 from typing import Optional, Tuple
 from fastapi import WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,8 @@ from app.services.ai.post_session_service import create_initial_vocabulary_cards
 from app.services.gamification import XPService, StreakService
 from app.services.gamification.xp_service import XPEventKind
 from app.services.data_flow_logger import data_logger
+
+logger = logging.getLogger(__name__)
 
 
 async def handle_goal_setting(
@@ -53,7 +56,7 @@ async def handle_goal_setting(
             cards_created = await create_initial_vocabulary_cards(
                 db, user_id, goal_text, recommended_vocab
             )
-            print(f"[Pedagogy] Created {cards_created} initial vocab cards for goal")
+            logger.info(f"Created {cards_created} initial vocab cards for goal")
 
         # Select new mode
         current_mode = select_learning_mode(session_context)
@@ -65,10 +68,10 @@ async def handle_goal_setting(
             "mode": current_mode.value,
             "message": f"Great! I'll help you with {goal_text}. Let's start!",
         })
-        print(f"[Pedagogy] Goal set: {goal_text}, new mode: {current_mode.value}")
+        logger.info(f"Goal set: {goal_text}, mode: {current_mode.value}")
         return current_mode, focus_area
     except Exception as e:
-        print(f"Error setting goal: {e}")
+        logger.error(f"Error setting goal: {e}")
         return None, None
 
 
@@ -118,7 +121,7 @@ async def award_session_gamification(
 
         # Check-in for streak
         streak_result = await streak_service.check_in(user_id)
-        print(f"[Gamification] Streak: {streak_result['streak']} (max: {streak_result['max_streak']})")
+        logger.info(f"Streak: {streak_result['streak']} (max: {streak_result['max_streak']})")
 
         # XP for session completion
         await xp_service.award_xp(user_id, XPEventKind.SESSION_COMPLETE, session_id=session_id)
@@ -131,17 +134,17 @@ async def award_session_gamification(
                 session_id=session_id,
                 multiplier=streak_result["streak"],
             )
-            print(f"[Gamification] Streak bonus: +{streak_result['streak'] * 5} XP")
+            logger.info(f"Streak bonus: +{streak_result['streak'] * 5} XP")
 
         # First session bonus
         if await xp_service.check_first_session(user_id):
             await xp_service.award_xp(user_id, XPEventKind.FIRST_SESSION, session_id=session_id)
-            print("[Gamification] First session bonus: +50 XP")
+            logger.info("First session bonus: +50 XP")
 
         # Comeback bonus
         if streak_result.get("is_comeback"):
             await xp_service.award_xp(user_id, XPEventKind.COMEBACK, session_id=session_id)
-            print("[Gamification] Comeback bonus: +20 XP")
+            logger.info("Comeback bonus: +20 XP")
 
     except Exception as e:
-        print(f"Warning: Gamification error: {e}")
+        logger.warning(f"Gamification error: {e}")

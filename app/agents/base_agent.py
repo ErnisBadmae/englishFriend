@@ -2,6 +2,8 @@
 Базовый агент English Friend для текстового чата
 """
 
+import logging
+
 from agents import Agent, Runner
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +12,8 @@ from app.agents import proxy  # noqa: F401
 
 from app.services.context_builder import ContextBuilder
 from app.prompts.universal import build_universal_prompt, determine_prompt_mode
+
+logger = logging.getLogger(__name__)
 
 
 async def create_simple_agent() -> Agent:
@@ -90,6 +94,6 @@ async def create_english_friend_agent(
         
     except Exception as e:
         # Если что-то пошло не так - возвращаем простого агента
-        print(f"Warning: Failed to build universal prompt: {e}")
+        logger.warning(f"Failed to build universal prompt: {e}")
         return await create_simple_agent()
 

@@ -286,6 +286,83 @@ Relationships: `PARTICIPATED_IN`, `INTEREST_IN`, `EXPRESSES`, `RELATED_TO`
 3. **Database Tests**: pgTAP for PostgreSQL, Cypher for Neo4j
 4. **CDC Tests**: Generate events with `cdc_batch_sessions.py`, verify sync
 
+## Observability & Logging
+
+### Log Levels Strategy
+
+| Level | Что логируем | Пример |
+|-------|-------------|--------|
+| DEBUG | Детали для отладки | State dumps, raw responses |
+| INFO | Бизнес-события | router → onboarding, LLM=1123ms |
+| WARNING | Recoverable issues | Parse failed, using fallback |
+| ERROR | Критические ошибки | WebSocketDisconnect |
+
+### Log Format
+
+Логи форматируются с Request ID для корреляции:
+
+```
+HH:MM:SS [request_id] LEVEL [logger] message
+22:16:31 [a1b2c3d4] INFO  [app.agent] router → onboarding (new_user)
+22:16:32 [a1b2c3d4] INFO  [app.agent] onboarding LLM=1123ms action=ask_goal
+```
+
+### Где смотреть логи
+
+**Console (development):**
+```bash
+python main.py
+# Логи идут в stdout с Request ID
+```
+
+**Langfuse (LLM tracing):**
+1. Настроить в `.env`:
+   ```
+   LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+   LANGFUSE_SECRET_KEY=sk-lf-xxx
+   LANGFUSE_HOST=https://cloud.langfuse.com
+   ```
+2. Открыть https://cloud.langfuse.com
+3. Видны traces: prompts, responses, tokens, latency
+
+### Silenced Loggers
+
+Следующие loggers установлены на WARNING для снижения шума:
+- `sqlalchemy.engine` - SQL queries (echo=False в database.py)
+- `httpx`, `httpcore` - HTTP client internals
+- `websockets`, `asyncio` - WebSocket/async internals
+- `langgraph`, `langchain`, `langchain_core` - LangGraph/LangChain internals
+- `groq`, `openai` - LLM provider logs
+- `langfuse` - Observability client logs
+- `urllib3` - HTTP connection logs
+
+### Как включить verbose логи
+
+```bash
+# В .env:
+DEBUG=true  # Включает DEBUG level для app.agent
+
+# Или в коде:
+import logging
+logging.getLogger("app.agent").setLevel(logging.DEBUG)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # SQL queries
+```
+
+### Request ID
+
+Каждый HTTP запрос получает уникальный ID (8 символов):
+- Виден в логах: `[a1b2c3d4]`
+- Виден в response headers: `X-Request-ID: a1b2c3d4`
+- Используется для корреляции в Langfuse
+
+### Prometheus Metrics
+
+Доступны на `/metrics`:
+- `voice_sessions_active` - Активные WebSocket сессии
+- `voice_llm_latency_seconds` - Latency LLM запросов
+- `voice_tts_latency_seconds` - Latency TTS синтеза
+- `voice_errors_total` - Счётчик ошибок по stage
+
 ## Health Check Endpoints
 
 - FastAPI: `http://localhost:8000/health`
@@ -325,9 +402,25 @@ pytest sync-graph/tests/test_transform.py::TestEventMapping
 
 ## Documentation References
 
+- **Session Progress Log**: `!DOC/CLAUDE_SESSION_LOG.md` ← **READ THIS FIRST** for context between sessions
 - System Overview: `SYSTEM_OVERVIEW.md`
 - Database: `db/README.md`, `db/PARTITION_MANAGEMENT.md`, `db/CI_INTEGRATION.md`
 - CDC: `cdc/README.md`
 - Graph Layer: `graph/README.md`, `graph/docs/RUNBOOK.md`
 - Sync Vector: `sync-vector/README.md`, `sync-vector/docs/`
 - Sync Graph: `sync-graph/README.md`, `sync-graph/docs/`
+
+## Session Continuity
+
+При начале новой сессии:
+1. Читай `!DOC/CLAUDE_SESSION_LOG.md` для контекста
+2. В конце сессии обновляй этот файл с прогрессом
+
+Формат записи:
+```markdown
+### YYYY-MM-DD - Краткое описание
+**Агент**: Claude Model
+**Задача**: Что делали
+**Что сделано**: Список изменений
+**Результат**: Итог
+```

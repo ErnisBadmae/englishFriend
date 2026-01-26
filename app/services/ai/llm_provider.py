@@ -11,14 +11,16 @@
 - Конфигурируемые модели, temperature, timeout
 - Retry с exponential backoff (tenacity)
 - Защита от prompt injection
+- Langfuse tracing for observability
 """
 
 from __future__ import annotations
 
 import re
 import logging
+import time
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import httpx
 from openai import AsyncOpenAI
@@ -30,6 +32,7 @@ from tenacity import (
 )
 
 from app.core.config import settings
+from app.core.observability import get_langfuse, get_request_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,69 @@ def create_retry_decorator(max_retries: int = None):
     )
 
 
+# ============== Langfuse Tracing ==============
+
+
+def trace_llm_generation(
+    model: str,
+    messages: list[dict],
+    output: str,
+    latency_ms: float,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    trace_name: str = "llm_generate",
+):
+    """Log LLM generation to Langfuse.
+
+    Args:
+        model: Model name (e.g., "groq/llama-3.3-70b")
+        messages: Input messages
+        output: LLM output text
+        latency_ms: Latency in milliseconds
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+        trace_name: Name for the trace
+    """
+    langfuse = get_langfuse()
+    if langfuse is None:
+        return
+
+    request_id = get_request_id()
+    user_id = get_user_id()
+
+    try:
+        # Create trace for this generation
+        trace = langfuse.trace(
+            name=trace_name,
+            id=f"{request_id}-llm" if request_id else None,
+            user_id=str(user_id) if user_id else None,
+            metadata={"request_id": request_id},
+        )
+
+        # Log the generation
+        usage = {}
+        if input_tokens is not None:
+            usage["input"] = input_tokens
+        if output_tokens is not None:
+            usage["output"] = output_tokens
+
+        trace.generation(
+            name="completion",
+            model=model,
+            input=messages,
+            output=output,
+            usage=usage if usage else None,
+            metadata={"latency_ms": round(latency_ms, 2)},
+        )
+
+        logger.debug(
+            f"Langfuse trace: model={model} latency={latency_ms:.0f}ms "
+            f"tokens={input_tokens}/{output_tokens}"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to log to Langfuse: {e}")
+
+
 # ============== Base Provider ==============
 
 class LLMProvider(ABC):
@@ -175,6 +241,7 @@ class VLLMProvider(LLMProvider):
         max_tokens: int = 150,
     ) -> str:
         messages = self._build_messages(user_message, system_prompt, conversation_history)
+        start_time = time.time()
 
         @self._retry
         async def _call():
@@ -184,9 +251,24 @@ class VLLMProvider(LLMProvider):
                 max_tokens=max_tokens,
                 temperature=settings.llm_temperature,
             )
-            return response.choices[0].message.content or ""
+            return response
 
-        return await _call()
+        response = await _call()
+        output = response.choices[0].message.content or ""
+        latency_ms = (time.time() - start_time) * 1000
+
+        # Log to Langfuse
+        usage = response.usage
+        trace_llm_generation(
+            model=f"vllm/{settings.vllm_model}",
+            messages=messages,
+            output=output,
+            latency_ms=latency_ms,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+        return output
 
     async def generate_stream(
         self,
@@ -231,6 +313,7 @@ class GroqProvider(LLMProvider):
         max_tokens: int = 150,
     ) -> str:
         messages = self._build_messages(user_message, system_prompt, conversation_history)
+        start_time = time.time()
 
         @self._retry
         async def _call():
@@ -240,9 +323,24 @@ class GroqProvider(LLMProvider):
                 max_tokens=max_tokens,
                 temperature=settings.llm_temperature,
             )
-            return response.choices[0].message.content or ""
+            return response
 
-        return await _call()
+        response = await _call()
+        output = response.choices[0].message.content or ""
+        latency_ms = (time.time() - start_time) * 1000
+
+        # Log to Langfuse
+        usage = response.usage
+        trace_llm_generation(
+            model=f"groq/{settings.groq_model}",
+            messages=messages,
+            output=output,
+            latency_ms=latency_ms,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+        return output
 
     async def generate_stream(
         self,
@@ -289,6 +387,7 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int = 150,
     ) -> str:
         messages = self._build_messages(user_message, system_prompt, conversation_history)
+        start_time = time.time()
 
         @self._retry
         async def _call():
@@ -298,9 +397,24 @@ class OpenAIProvider(LLMProvider):
                 max_tokens=max_tokens,
                 temperature=settings.llm_temperature,
             )
-            return response.choices[0].message.content or ""
+            return response
 
-        return await _call()
+        response = await _call()
+        output = response.choices[0].message.content or ""
+        latency_ms = (time.time() - start_time) * 1000
+
+        # Log to Langfuse
+        usage = response.usage
+        trace_llm_generation(
+            model=f"openai/{settings.openai_chat_model}",
+            messages=messages,
+            output=output,
+            latency_ms=latency_ms,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+        return output
 
     async def generate_stream(
         self,

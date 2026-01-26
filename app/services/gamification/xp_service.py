@@ -120,12 +120,13 @@ class XPService:
         points = custom_points if custom_points is not None else base_points * multiplier
 
         # Создаём событие
+        # Use naive datetime for TIMESTAMP WITHOUT TIME ZONE column
         event = XPEvent(
             user_id=user_id,
             session_id=session_id,
             kind=kind_str,
             points=points,
-            happened_at=datetime.now(timezone.utc),
+            happened_at=datetime.utcnow(),
         )
 
         self.db.add(event)

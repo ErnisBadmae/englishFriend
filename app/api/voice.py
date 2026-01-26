@@ -36,12 +36,16 @@ from app.core.metrics import (
     voice_tts_latency_seconds,
     voice_messages_total,
     voice_errors_total,
+    agent_version_sessions,
+    agent_version_errors,
+    agent_version_onboarding_complete,
 )
 
 logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.services.database import UserService
+from app.schemas.user import UserCreate
 from app.services.ai.llm_provider import get_llm_provider
 from app.services.ai.tts_service import get_tts_service
 from app.services.ai.mentor_prompt import build_mentor_prompt, build_simple_prompt, UserContext
@@ -84,9 +88,16 @@ from app.api.voice_helpers import (
     rebuild_system_prompt,
 )
 
-# LangGraph agent
+# LangGraph agent (v1 - original 11-node architecture)
 from app.agent import AgentState, AgentPhase, LearningModeEnum
 from app.agent.graph import run_agent_turn, initialize_session
+
+# LangGraph agent v2 (simplified 4-node LLM-driven architecture)
+from app.agent.graph_v2 import (
+    initialize_session_v2,
+    run_agent_turn_v2,
+    USE_AGENT_V2,
+)
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
@@ -99,13 +110,30 @@ async def voice_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    WebSocket endpoint для голосового чата с педагогической архитектурой.
+    WebSocket endpoint для голосового чата.
 
-    Режимы обучения:
-    - assessment: Оценка уровня
-    - mock_interview: Симуляция собеседования
-    - vocabulary_drill: Повторение слов через FSRS
-    - free_conversation: Свободный разговор с коррекцией
+    DEPRECATED: Этот эндпоинт теперь использует LangGraph agent (v2).
+    Для обратной совместимости оставлен тот же URL.
+
+    Используйте /chat/v2 для явного вызова LangGraph версии.
+    """
+    # Redirect to v2 (LangGraph) implementation
+    logger.info(f"[Voice] /chat redirecting to v2 (LangGraph) for user {user_id}")
+    await voice_chat_v2(websocket, user_id, db)
+
+
+@router.websocket("/chat-legacy")
+async def voice_chat_legacy(
+    websocket: WebSocket,
+    user_id: int = Query(..., description="ID пользователя"),
+    mode: Optional[str] = Query(None, description="Режим обучения"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Legacy WebSocket endpoint с хардкод логикой (без LangGraph).
+
+    Сохранён для отладки и сравнения с v2.
+    Для продакшена используйте /chat или /chat/v2.
 
     Протокол:
     - Client -> Server: {"type": "text", "text": "распознанный текст от Vosk"}
@@ -128,13 +156,23 @@ async def voice_chat(
     try:
         # === INITIALIZATION BLOCK ===
 
-        # Проверяем пользователя
+        # Проверяем пользователя (автосоздание если не существует)
         user = None
         try:
             user_service = UserService(db)
             user = await user_service.get_user(user_id)
+
+            # Auto-create user if doesn't exist (fixes FK violation)
+            if not user:
+                logger.info(f"[Voice] User {user_id} not found, auto-creating...")
+                user = await user_service.create_user(UserCreate(
+                    telegram_id=user_id,
+                    username=f"User_{user_id}",
+                    language_level="B1"
+                ))
+                logger.info(f"[Voice] Auto-created user {user_id}")
         except Exception as e:
-            logger.warning(f"Could not fetch user from DB: {e}")
+            logger.warning(f"Could not fetch/create user from DB: {e}")
             voice_errors_total.labels(stage="db").inc()
 
         # Инициализируем сервисы
@@ -324,12 +362,7 @@ async def voice_chat(
                                 )
 
                                 # Создаём начальные карточки из рекомендованного словаря
-                                # Debug: проверяем roadmap после set_goal
-                                logger.debug(f"learning_plan.roadmap keys: {list(learning_plan.roadmap.keys()) if learning_plan.roadmap else 'None'}")
-                                if learning_plan.roadmap:
-                                    logger.debug(f"roadmap.recommended_vocabulary: {learning_plan.roadmap.get('recommended_vocabulary', 'KEY_NOT_FOUND')[:3] if learning_plan.roadmap.get('recommended_vocabulary') else 'EMPTY_OR_NONE'}")
                                 recommended_vocab = learning_plan_service.get_recommended_vocabulary(learning_plan)
-                                logger.debug(f"recommended_vocab from service: {recommended_vocab[:5] if recommended_vocab else 'EMPTY'}")
                                 if recommended_vocab:
                                     cards_created = await create_initial_vocabulary_cards(
                                         db, user_id, detected_goal, recommended_vocab
@@ -399,10 +432,8 @@ async def voice_chat(
                     conversation_history.append({"role": "user", "content": user_text})
                     conversation_history.append({"role": "assistant", "content": response_text})
 
-                    # Логирование
+                    # Логирование (INFO level only, DEBUG removed for noise reduction)
                     logger.info(f"[Turn {turn_count}] Mode: {current_mode.value}")
-                    logger.debug(f"[Turn {turn_count}] User: {user_text[:50]}...")
-                    logger.debug(f"[Turn {turn_count}] Assistant: {response_text[:50]}...")
 
                     # Ограничиваем историю
                     if len(conversation_history) > 20:
@@ -638,11 +669,22 @@ async def voice_chat_v2(
         try:
             user_service = UserService(db)
             user = await user_service.get_user(user_id)
+
+            # Auto-create user if doesn't exist (fixes FK violation)
+            if not user:
+                logger.info(f"[Voice] User {user_id} not found, auto-creating...")
+                user = await user_service.create_user(UserCreate(
+                    telegram_id=user_id,
+                    username=f"User_{user_id}",
+                    language_level="B1"
+                ))
+                logger.info(f"[Voice] Auto-created user {user_id}")
+
             if user:
                 username = user.username or "Student"
                 language_level = user.language_level or "B1"
         except Exception as e:
-            logger.warning(f"Could not fetch user from DB: {e}")
+            logger.warning(f"Could not fetch/create user from DB: {e}")
             voice_errors_total.labels(stage="db").inc()
 
         # Load learning context
@@ -681,26 +723,52 @@ async def voice_chat_v2(
             logger.warning(f"Could not load learning context: {e}")
             voice_errors_total.labels(stage="db").inc()
 
-        # Initialize agent state
-        agent_state = await initialize_session(
-            user_id=user_id,
-            session_id=session_id,
-            username=username,
-            is_new_user=is_new_user,
-            language_level=language_level,
-            confirmed_goal=confirmed_goal,
-            confirmed_interests=confirmed_interests,
-            roadmap=roadmap,
-            due_vocabulary_count=due_vocabulary_count,
-            due_vocabulary_words=due_vocabulary_words,
-            memory_section=memory_section,
-        )
+        # Determine agent version based on feature flag
+        use_v2 = USE_AGENT_V2
+        agent_version = "v2" if use_v2 else "v1"
+        logger.info(f"[Voice] Using agent {agent_version} for user {user_id}")
+
+        # Track version usage
+        agent_version_sessions.labels(version=agent_version).inc()
+
+        # Initialize agent state (v1 or v2)
+        if use_v2:
+            agent_state = await initialize_session_v2(
+                user_id=user_id,
+                session_id=session_id,
+                username=username,
+                is_new_user=is_new_user,
+                language_level=language_level,
+                confirmed_goal=confirmed_goal,
+                confirmed_interests=confirmed_interests,
+                roadmap=roadmap,
+                due_vocabulary_count=due_vocabulary_count,
+                due_vocabulary_words=due_vocabulary_words,
+                memory_section=memory_section,
+            )
+        else:
+            agent_state = await initialize_session(
+                user_id=user_id,
+                session_id=session_id,
+                username=username,
+                is_new_user=is_new_user,
+                language_level=language_level,
+                confirmed_goal=confirmed_goal,
+                confirmed_interests=confirmed_interests,
+                roadmap=roadmap,
+                due_vocabulary_count=due_vocabulary_count,
+                due_vocabulary_words=due_vocabulary_words,
+                memory_section=memory_section,
+            )
 
         # Initialize TTS service
         tts = get_tts_service()
 
         # Run initial agent turn (greeting/first question)
-        agent_state = await run_agent_turn(agent_state, user_message=None)
+        if use_v2:
+            agent_state = await run_agent_turn_v2(agent_state, user_message=None)
+        else:
+            agent_state = await run_agent_turn(agent_state, user_message=None)
 
         # Get initial response
         initial_response = agent_state.get("pending_response", "")
@@ -766,9 +834,12 @@ async def voice_chat_v2(
                         "text": user_text,
                     })
 
-                    # Run agent turn
+                    # Run agent turn (v1 or v2)
                     old_phase = agent_state.get("current_phase", AgentPhase.START)
-                    agent_state = await run_agent_turn(agent_state, user_message=user_text)
+                    if use_v2:
+                        agent_state = await run_agent_turn_v2(agent_state, user_message=user_text)
+                    else:
+                        agent_state = await run_agent_turn(agent_state, user_message=user_text)
 
                     # Get response
                     response_text = agent_state.get("pending_response", "")
@@ -785,6 +856,12 @@ async def voice_chat_v2(
                             "phase": current_phase.value,
                             "mode": current_mode.value,
                         })
+
+                        # Track onboarding completion (transition to learning)
+                        if current_phase == AgentPhase.LEARNING_SESSION:
+                            agent_version_onboarding_complete.labels(
+                                version=agent_version
+                            ).inc()
 
                     if response_text:
                         # Send transcript
@@ -825,9 +902,12 @@ async def voice_chat_v2(
                 elif message.get("type") == "end":
                     session_status = "completed"
 
-                    # Process session end
+                    # Process session end (v1 or v2)
                     agent_state["should_end_session"] = True
-                    agent_state = await run_agent_turn(agent_state, user_message=None)
+                    if use_v2:
+                        agent_state = await run_agent_turn_v2(agent_state, user_message=None)
+                    else:
+                        agent_state = await run_agent_turn(agent_state, user_message=None)
 
                     # Send farewell if generated
                     farewell = agent_state.get("pending_response", "")

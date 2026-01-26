@@ -15,7 +15,7 @@ def _get_session_maker():
     if _engine is None:
         _engine = create_async_engine(
             settings.database_url,
-            echo=settings.debug,
+            echo=False,  # Always off - use sqlalchemy.engine logger at WARNING
             future=True
         )
 
@@ -81,3 +81,18 @@ async def init_db():
 
 # Экспорт для тестов
 async_session_maker = _get_session_maker
+
+
+def get_async_session():
+    """
+    Получить контекстный менеджер для создания async сессии.
+
+    Используется в сервисах для прямого создания сессий:
+
+    async with get_async_session()() as session:
+        result = await session.execute(...)
+
+    Returns:
+        Фабрика async_sessionmaker
+    """
+    return _get_session_maker()

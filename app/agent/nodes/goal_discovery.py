@@ -71,9 +71,9 @@ async def goal_discovery_node(state: AgentState) -> AgentState:
     """Node that discovers user's learning goal through conversation.
 
     This node has multiple sub-states:
-    1. Initial ask (no detected_goal)
-    2. Waiting for confirmation (goal_needs_confirmation=True)
-    3. Processing confirmation/rejection
+    1. User responded - extract goal from message (checked FIRST)
+    2. Initial ask - send greeting (only if no user message yet)
+    3. Waiting for confirmation (goal_needs_confirmation=True)
 
     Args:
         state: Current agent state
@@ -86,32 +86,8 @@ async def goal_discovery_node(state: AgentState) -> AgentState:
 
     user_message = state.get("last_user_message", "")
 
-    # Sub-state 1: Initial greeting - ask about goal
-    if not state.get("detected_goal") and not state.get("goal_needs_confirmation"):
-        # First interaction - greet and ask about goal
-        username = state.get("username", "there")
-        greeting = (
-            f"Hi {username}! Welcome to English Friend. "
-            "I'm here to help you practice and improve your English through conversation. "
-            "What brings you here today? What's your main goal for learning English?"
-        )
-
-        state["pending_response"] = greeting
-        state["current_phase"] = AgentPhase.GOAL_DISCOVERY
-        state["needs_user_input"] = True
-
-        add_decision_log(
-            state,
-            node="goal_discovery",
-            action="ask_initial_goal",
-            reason="First interaction, asking about learning goal",
-        )
-
-        logger.info(f"[GoalDiscovery] Asking user {state['user_id']} about their goal")
-        return state
-
-    # Sub-state 2: User responded, extract goal
-    if user_message and not state.get("goal_needs_confirmation"):
+    # Sub-state 1: User responded, extract goal (check FIRST before greeting)
+    if user_message and not state.get("detected_goal") and not state.get("goal_needs_confirmation"):
         # Try to extract goal from user's message
         detected_goal = await _extract_goal_from_message(llm, user_message)
 
@@ -172,6 +148,30 @@ async def goal_discovery_node(state: AgentState) -> AgentState:
 
             logger.info(f"[GoalDiscovery] Could not extract goal, asking for clarification")
             return state
+
+    # Sub-state 2: No user message yet - send initial greeting
+    elif not state.get("detected_goal") and not state.get("goal_needs_confirmation"):
+        # First interaction - greet and ask about goal
+        username = state.get("username", "there")
+        greeting = (
+            f"Hi {username}! Welcome to English Friend. "
+            "I'm here to help you practice and improve your English through conversation. "
+            "What brings you here today? What's your main goal for learning English?"
+        )
+
+        state["pending_response"] = greeting
+        state["current_phase"] = AgentPhase.GOAL_DISCOVERY
+        state["needs_user_input"] = True
+
+        add_decision_log(
+            state,
+            node="goal_discovery",
+            action="ask_initial_goal",
+            reason="First interaction, asking about learning goal",
+        )
+
+        logger.info(f"[GoalDiscovery] Asking user {state['user_id']} about their goal")
+        return state
 
     # Sub-state 3: Waiting for confirmation response
     if state.get("goal_needs_confirmation") and user_message:

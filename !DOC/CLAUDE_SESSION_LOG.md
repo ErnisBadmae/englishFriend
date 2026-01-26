@@ -5,20 +5,210 @@
 
 ---
 
-## Последнее обновление: 2026-01-20 (E2E Testing)
+## Последнее обновление: 2026-01-26 (Agent V2 Router Fix - _route Field)
+
+### 2026-01-26 - Router Fix: _route Field
+**Агент**: Claude Sonnet 4.5
+**Задача**: Исправить Router bug - _route field терялся, из-за чего Router говорил "onboarding" но запускался learning node
+
+**Проблема**:
+Router node устанавливал `state["_route"]`, но это поле отсутствовало в AgentState TypedDict, что вызывало:
+- Router logs: `route=onboarding`
+- Но graph запускал learning node вместо onboarding
+- Reason: `_route` key терялся между router_node() и route_after_router()
+
+**Что сделано**:
+1. **state.py:121-125** - Добавлены control fields в AgentState:
+   ```python
+   _route: Optional[str]  # Router decision
+   _skip_goal: bool       # Skip goal discovery
+   _skip_interests: bool  # Skip interest probe
+   _skip_assessment: bool # Skip assessment
+   ```
+
+2. **state.py:210-213** - Инициализация в `create_initial_state()`:
+   ```python
+   _route=None,
+   _skip_goal=False,
+   _skip_interests=False,
+   _skip_assessment=False,
+   ```
+
+3. **graph_v2.py:234-237** - Инициализация в `initialize_session_v2()`:
+   ```python
+   "_route": None,
+   "_skip_goal": False,
+   "_skip_interests": False,
+   "_skip_assessment": False,
+   ```
+
+4. **scripts/test_router_fix.py** - Создан unit test с 3 сценариями:
+   - New user → onboarding (full flow)
+   - Returning user → learning
+   - User with goal but no assessment → onboarding (assessment only)
+
+**Файлы изменены**:
+- `app/agent/state.py` (lines 121-125, 210-213)
+- `app/agent/graph_v2.py` (lines 234-237)
+- `scripts/test_router_fix.py` (NEW)
+
+**Тесты**: ✅ 3/3 PASSED
+```bash
+python3 scripts/test_router_fix.py
+# ✅ Test 1: New user → onboarding
+# ✅ Test 2: Returning user → learning
+# ✅ Test 3: Goal but no assessment → onboarding (assessment only)
+```
+
+**Результат**: Router bug исправлен, ready for live testing!
+
+**Следующий шаг**: Live WebSocket test с `USE_AGENT_V2=true`
+
+---
+
+### 2026-01-25 - Bug Fixes Round 2
+**Агент**: Claude Opus 4.5
+**Задача**: Исправить оставшиеся баги из живого теста Agent V2
+
+**Что сделано**:
+1. **router.py**: Добавлен debug logging в `route_after_router()`:
+   ```python
+   logger.info(f"[route_after_router] _route={route}, is_new_user=..., has_goal=...")
+   ```
+   Это поможет диагностировать почему router возвращает "onboarding" но запускается learning node.
+
+2. **xp_service.py**: Исправлен timezone mismatch:
+   - **Было**: `happened_at=datetime.now(timezone.utc)` (offset-aware)
+   - **Стало**: `happened_at=datetime.utcnow()` (naive)
+   - **Причина**: Колонка `xp_events.happened_at` имеет тип `TIMESTAMP WITHOUT TIME ZONE`
+
+**Файлы изменены**:
+- `app/agent/nodes_v2/router.py:113-128`
+- `app/services/gamification/xp_service.py:122-130`
+
+**Результат**: Готово к тестированию с `python3 scripts/test_agent_e2e.py`
+
+---
 
 ### Текущий статус проекта
-**MVP Ready**: ~90%
+**MVP Ready**: ~95%
 **Backend**: FastAPI на порту 8000
 **Frontend**: React/Vite на порту 5173
 **База данных**: PostgreSQL (Docker CDC stack)
 **Мониторинг**: Prometheus (9090) + Grafana (3000) - **РАБОТАЕТ!**
+**Agent**: V2 (4-node LLM-driven) с guardrails - **ИСПРАВЛЕНЫ КРИТИЧЕСКИЕ БАГИ**
 
 ---
 
 ## Активные задачи
 
-### 0. E2E Business Logic Tests - ✅ ВЫПОЛНЕНО (2026-01-20)
+### 0. Agent V2 + LLM Control Mechanisms - ✅ РЕАЛИЗОВАНО (2026-01-24)
+**Цель**: Упростить агента с 11 узлов до 4, добавить LLM-driven решения и guardrails
+
+**Архитектура V2** (вместо 11 узлов):
+```
+router → onboarding → learning → session_end
+```
+
+**Созданные файлы**:
+```
+app/agent/
+├── graph_v2.py           # Новый 4-node граф
+├── response_parser.py    # JSON парсинг с 5 fallback стратегиями
+├── guardrails.py         # Валидация и безопасность LLM ✨ NEW
+└── nodes_v2/
+    ├── __init__.py
+    ├── router.py         # Entry point routing
+    ├── onboarding.py     # Goal + interests + assessment (unified)
+    ├── learning.py       # Conversation с corrections
+    └── session_end.py    # Farewell + XP
+
+db/migrations/postgres/
+└── 011_goal_prompts_ab.sql  # Schema для целей и A/B тестов
+
+db/seed/
+└── 002_prompt_templates.sql # 9 целей + 3 шаблона промптов
+
+app/models/
+└── prompt_models.py      # SQLAlchemy модели для промптов
+
+app/services/
+└── prompt_service.py     # A/B testing + Jinja2 рендеринг
+```
+
+**Guardrails (LLM Control)**:
+- `MAX_RESPONSE_LENGTH = 500` - ограничение длины
+- `FORBIDDEN_PATTERNS` - запрещённый контент (passwords, etc.)
+- `VALID_ACTIONS` - whitelist действий per node
+- `CONFIDENCE_THRESHOLDS` - пороги уверенности (goal: 0.7, assessment: 0.6)
+- `MAX_TURNS_PER_SESSION = 100` - rate limiting
+- Safe fallback responses при ошибках
+
+**Feature Flag**:
+```bash
+# V2 (default)
+export USE_AGENT_V2=true
+
+# Откат на V1
+export USE_AGENT_V2=false
+```
+
+**Новые метрики** (для сравнения V1 vs V2):
+- `agent_version_sessions_total{version="v1|v2"}`
+- `agent_version_onboarding_complete_total{version}`
+- `agent_v2_llm_latency_seconds{node}`
+- `agent_v2_parse_success_total{node,success}`
+- `agent_guardrail_violations_total{node,violation_type}`
+- `agent_guardrail_fallbacks_total{node}`
+
+**Prometheus запросы для сравнения**:
+```promql
+# Parse success rate
+sum(rate(agent_v2_parse_success_total{success="true"}[5m])) / sum(rate(agent_v2_parse_success_total[5m]))
+
+# Guardrail fallback rate
+sum(rate(agent_guardrail_fallbacks_total[5m])) by (node)
+```
+
+**Тестирование**:
+```bash
+# Миграция и seed (ОБЯЗАТЕЛЬНО для V2!)
+# 1. Добавить недостающие defaults (если таблицы уже существуют):
+docker exec englishfriend-postgres-1 psql -U postgres -d englishfriend_dev -c "
+ALTER TABLE dim_learning_goal ALTER COLUMN id SET DEFAULT gen_random_uuid();
+ALTER TABLE dim_learning_goal ALTER COLUMN is_active SET DEFAULT true;
+ALTER TABLE dim_learning_goal ALTER COLUMN created_at SET DEFAULT now();
+ALTER TABLE dim_learning_goal ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE prompt_template ALTER COLUMN id SET DEFAULT gen_random_uuid();
+CREATE UNIQUE INDEX IF NOT EXISTS ix_prompt_template_name_variant ON prompt_template (name, variant);
+"
+
+# 2. Загрузить seed данные:
+docker exec -i englishfriend-postgres-1 psql -U postgres -d englishfriend_dev < db/seed/002_prompt_templates.sql
+
+# Или если таблиц нет совсем:
+psql $DATABASE_URL -f db/migrations/postgres/011_goal_prompts_ab.sql
+psql $DATABASE_URL -f db/seed/002_prompt_templates.sql
+
+# Запустить с V2
+export USE_AGENT_V2=true
+python main.py
+
+# E2E тест
+python3 scripts/test_agent_e2e.py
+```
+
+**Следующие шаги**:
+1. [x] Исправить критические баги (session_end, learning, onboarding, graph loop) - **2026-01-25**
+2. [ ] Дождаться сброса Groq rate limit
+3. [ ] Провести E2E тест: `python3 scripts/test_agent_e2e.py`
+4. [ ] Провести A/B тест V1 vs V2
+5. [ ] Сравнить метрики (latency, parse success, goal detection)
+6. [ ] Если V2 лучше → удалить V1 код
+
+---
+
+### 1. E2E Business Logic Tests - ✅ ВЫПОЛНЕНО (2026-01-20)
 **Цель**: Тестировать бизнес-логику без микрофона (Vosk STT не работает из-за сломанного микрофона)
 **Статус**: 7/7 тестов проходят!
 
@@ -251,6 +441,92 @@ make test-e2e                            # через Makefile (Linux/Mac)
 ---
 
 ## История сессий
+
+### 2026-01-25 - Agent V2 Critical Bug Fixes
+**Агент**: Claude Opus 4.5
+**Задача**: Исправить критические баги, из-за которых Agent V2 не отвечал
+
+**Диагностика проблем**:
+1. `AttributeError: 'PedagogyLogger' object has no attribute 'log_session_end'`
+2. Groq Rate Limit 429 (100k tokens exhausted)
+3. Graph loop - turn_count достигает 100 (infinite loop)
+
+**Исправления**:
+
+1. **session_end.py (line 125)** - Fix method name typo:
+   - `pedagogy.log_session_end(...)` → `pedagogy.log_session_ended(...)`
+   - Исправлены параметры: `turns` → `turn_count`, добавлены `duration_minutes`, `mode`
+
+2. **learning.py** - Fix missing method calls:
+   - `pedagogy.log_correction(...)` → `pedagogy.log_error_corrected(...)`
+   - `pedagogy.log_mode_change(...)` → `pedagogy.log_mode_changed(...)`
+   - Исправлен порядок логики: old_mode сохраняется ДО изменения state
+
+3. **onboarding.py** - Fix missing method calls:
+   - `pedagogy.log_interest_detected(...)` → `pedagogy.log_interests_detected(...)`
+   - `pedagogy.log_assessment_complete(...)` → `pedagogy.log_level_assessed(...)`
+
+4. **graph_v2.py + routing functions** - Fix infinite loop:
+   - **Проблема**: `ainvoke()` runs until END, but `onboarding → onboarding` loop never reached END
+   - **Решение**: Добавлен `"wait_for_input"` route который маппится на `END`
+   - `route_after_onboarding()`: возвращает `"wait_for_input"` когда `needs_user_input=True`
+   - `route_after_learning()`: возвращает `"wait_for_input"` вместо бесконечного loop
+   - Граф теперь паузится после каждого LLM response, ждёт следующий user message
+
+**Изменённые файлы**:
+- `app/agent/nodes_v2/session_end.py` - method name + parameters
+- `app/agent/nodes_v2/learning.py` - method names + logic order
+- `app/agent/nodes_v2/onboarding.py` - method names
+- `app/agent/graph_v2.py` - added `wait_for_input → END` routing
+
+**Архитектура графа после исправления**:
+```
+router → onboarding → wait_for_input → END (pause)
+                   ↘ learning → wait_for_input → END (pause)
+                   ↘ session_end → END (terminate)
+```
+
+**Результат**: Agent V2 должен корректно останавливаться после каждого ответа LLM
+
+**Следующие шаги**:
+1. [ ] Дождаться сброса Groq rate limit (~6 min)
+2. [ ] Провести E2E тест: `python3 scripts/test_agent_e2e.py`
+3. [ ] Проверить логи: `[Agent V2]`, `[Router]`, `[Onboarding]`
+
+---
+
+### 2026-01-24 - Agent V2 + LLM Guardrails
+**Агент**: Claude Opus 4.5
+**Задача**: Интегрировать Agent V2, добавить guardrails для контроля LLM
+
+**Что сделано**:
+1. Исправлен баг goal discovery loop (условия в неправильном порядке)
+2. Добавлено автосоздание пользователя в voice.py (FK violation fix)
+3. Создан `app/agent/guardrails.py`:
+   - Response length validation (max 500 chars)
+   - Forbidden content patterns (passwords, sensitive data)
+   - Action whitelist per node type
+   - Confidence thresholds for goal detection
+   - Rate limiting (100 turns/session)
+   - Safe fallback responses
+4. Интегрированы guardrails в nodes_v2 (onboarding, learning, session_end)
+5. Добавлен feature flag `USE_AGENT_V2` в voice.py
+6. Добавлены метрики сравнения V1 vs V2:
+   - `agent_version_sessions_total`
+   - `agent_version_onboarding_complete_total`
+   - `agent_guardrail_violations_total`
+   - `agent_guardrail_fallbacks_total`
+7. Все тесты guardrails прошли успешно
+
+**Ключевые файлы**:
+- `app/agent/guardrails.py` - NEW
+- `app/api/voice.py` - feature flag integration
+- `app/agent/nodes_v2/*.py` - guardrails integration
+- `app/core/metrics.py` - version comparison metrics
+
+**Результат**: V2 готов к тестированию, guardrails работают
+
+---
 
 ### 2026-01-21 - E2E Business Logic Testing
 **Агент**: Claude Opus 4.5

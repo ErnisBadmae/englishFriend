@@ -226,8 +226,12 @@ async def run_agent_turn(
     # Get current phase
     current_phase = state.get("current_phase", AgentPhase.START)
 
-    logger.debug(f"[Agent] Running turn: phase={current_phase.value}, "
-                 f"user_msg={user_message[:30] if user_message else None}...")
+    # Verbose logging for debugging
+    logger.info(f"[Agent] ▶ Turn start | phase={current_phase.value} | "
+                f"user_msg='{user_message[:50] if user_message else 'None'}...'")
+    logger.debug(f"[Agent] State: goal={state.get('confirmed_goal')}, "
+                 f"interests={state.get('confirmed_interests')}, "
+                 f"mode={state.get('current_mode')}")
 
     # Route to appropriate node based on phase
     # For incremental turn processing, we don't run the full graph
@@ -288,8 +292,19 @@ async def run_agent_turn(
     elif current_phase == AgentPhase.SESSION_END:
         state = await session_end_node(state)
 
-    logger.debug(f"[Agent] Turn complete: phase={state.get('current_phase', AgentPhase.START).value}, "
-                 f"response={'yes' if state.get('pending_response') else 'no'}")
+    # Log turn completion with decision log
+    new_phase = state.get('current_phase', AgentPhase.START)
+    response_preview = state.get('pending_response', '')[:60] if state.get('pending_response') else 'None'
+
+    logger.info(f"[Agent] ◀ Turn complete | phase={new_phase.value} | "
+                f"response='{response_preview}...'")
+
+    # Log decision log entries from this turn
+    decision_log = state.get("decision_log", [])
+    if decision_log:
+        latest = decision_log[-1]
+        logger.info(f"[Agent] 📋 Decision: node={latest.get('node')} | "
+                   f"action={latest.get('action')} | reason={latest.get('reason')}")
 
     return state
 

@@ -127,6 +127,89 @@ voice_errors_total = Counter(
     ['stage']  # stage: llm/tts/db/websocket
 )
 
+
+# ============ AGENT V2 METRICS (LLM-driven architecture) ============
+
+# LLM latency by node
+agent_v2_llm_latency = Histogram(
+    'agent_v2_llm_latency_seconds',
+    'LLM response time for agent v2 nodes',
+    ['node'],  # node: onboarding, learning, session_end
+    buckets=[0.3, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+)
+
+# Parse success rate
+agent_v2_parse_success = Counter(
+    'agent_v2_parse_success_total',
+    'JSON parse success/failure count for agent v2',
+    ['node', 'success']  # success: true/false
+)
+
+# Goal detection
+agent_v2_goal_detection = Counter(
+    'agent_v2_goal_detection_total',
+    'Goal detection events in onboarding',
+    ['detected']  # detected: true/false
+)
+
+# Corrections made
+agent_v2_corrections = Counter(
+    'agent_v2_corrections_total',
+    'Error corrections made by agent v2',
+    ['type']  # type: grammar/vocabulary/pronunciation/total
+)
+
+# Session completion
+agent_v2_session_complete = Counter(
+    'agent_v2_session_complete_total',
+    'Completed sessions by agent v2',
+    ['goal', 'level']  # goal: goal slug, level: CEFR level
+)
+
+# A/B experiment tracking
+agent_v2_ab_variant = Counter(
+    'agent_v2_ab_variant_total',
+    'A/B experiment variant assignments',
+    ['experiment', 'variant']  # experiment name, variant: control/variant
+)
+
+# ============ AGENT VERSION COMPARISON METRICS ============
+
+# Sessions by agent version (for v1 vs v2 comparison)
+agent_version_sessions = Counter(
+    'agent_version_sessions_total',
+    'Sessions by agent version',
+    ['version']  # v1 or v2
+)
+
+# Errors by agent version
+agent_version_errors = Counter(
+    'agent_version_errors_total',
+    'Errors by agent version',
+    ['version', 'error_type']  # version: v1/v2, error_type: parse/llm/validation/etc
+)
+
+# Successful onboarding completions by version
+agent_version_onboarding_complete = Counter(
+    'agent_version_onboarding_complete_total',
+    'Successful onboarding completions by version',
+    ['version']  # v1 or v2
+)
+
+# Guardrail violations
+agent_guardrail_violations = Counter(
+    'agent_guardrail_violations_total',
+    'Guardrail validation failures',
+    ['node', 'violation_type']  # node: onboarding/learning/session_end, violation_type: length/forbidden/missing_field/invalid_action
+)
+
+# Fallback applications
+agent_guardrail_fallbacks = Counter(
+    'agent_guardrail_fallbacks_total',
+    'Times fallback response was applied',
+    ['node']  # node: onboarding/learning/session_end
+)
+
 def normalize_endpoint(path: str) -> str:
     """
     Нормализует endpoint путь для метрик.

@@ -119,6 +119,10 @@ class AgentState(TypedDict, total=False):
     should_end_session: bool
     needs_user_input: bool
     last_user_message: Optional[str]
+    _route: Optional[str]  # Internal: router decision (onboarding/learning/session_end)
+    _skip_goal: bool  # Internal: skip goal discovery in onboarding
+    _skip_interests: bool  # Internal: skip interest probe in onboarding
+    _skip_assessment: bool  # Internal: skip assessment in onboarding
 
 
 def create_initial_state(
@@ -208,6 +212,10 @@ def create_initial_state(
         should_end_session=False,
         needs_user_input=True,
         last_user_message=None,
+        _route=None,
+        _skip_goal=False,
+        _skip_interests=False,
+        _skip_assessment=False,
     )
 
 

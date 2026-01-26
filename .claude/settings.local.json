@@ -101,7 +101,17 @@
       "Bash(timeout 10 ./venv/Scripts/python.exe:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(tail:*)",
+      "Bash(timeout 10 ./venv/bin/python:*)",
+      "Bash(./venv/bin/python:*)",
+      "Bash(./venv/bin/pytest -v --tb=short)",
+      "Bash(./venv/bin/pytest tests/ -v --tb=short)",
+      "Bash(grep:*)",
+      "Bash(pip3 list:*)",
+      "Bash(pip3 uninstall:*)",
+      "Bash(pip3 show:*)"
     ]
   }
 }

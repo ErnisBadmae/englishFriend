@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     # Доступные голоса: american_female, american_male, british_female, british_male, australian_female
     tts_voice: str = "american_female"
 
+    # ======= Langfuse Observability =======
+    # Cloud: https://cloud.langfuse.com
+    # Self-hosted: docker compose up langfuse
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_enabled: bool = True  # Set to False to disable tracing
+
     # ======= Legacy настройки (для /stream endpoint) =======
     openai_realtime_model: str = "gpt-4o-realtime-preview-2024-12-17"
     openai_realtime_voice: str = "alloy"
