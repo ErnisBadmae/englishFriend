@@ -1,5 +1,4 @@
 {
-  "enableAllProjectMcpServers": true,
   "permissions": {
     "allow": [
       "Bash(python3:*)",
@@ -112,7 +111,11 @@
       "Bash(grep:*)",
       "Bash(pip3 list:*)",
       "Bash(pip3 uninstall:*)",
-      "Bash(pip3 show:*)"
+      "Bash(pip3 show:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)",
+      "Bash(git stash:*)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true
 }
