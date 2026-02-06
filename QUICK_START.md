@@ -411,6 +411,7 @@ englishFriend/
 
 ## 📖 Дополнительная документация
 
+- **Система управления документацией**: [!DOC/DOCUMENTATION_SYSTEM.md](!DOC/DOCUMENTATION_SYSTEM.md) - Как агенты поддерживают документацию
 - **Полная документация системы**: [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)
 - **Стратегия развития**: [!DOC/STRATEGY.md](!DOC/STRATEGY.md)
 - **Интеграция CDC**: [cdc/README.md](cdc/README.md)
