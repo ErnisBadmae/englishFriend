@@ -114,7 +114,8 @@
       "Bash(pip3 show:*)",
       "Bash(git fetch:*)",
       "Bash(git merge:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(chmod:*)"
     ]
   },
   "enableAllProjectMcpServers": true
