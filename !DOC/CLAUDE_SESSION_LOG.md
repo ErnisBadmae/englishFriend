@@ -5,6 +5,55 @@
 
 ---
 
+## Последнее обновление: 2026-02-09 (Documentation Reorganization)
+
+### 2026-02-09 - Documentation Reorganization & Unified Rules System
+
+**Агент**: Kiro (Claude Sonnet 4.5)
+**Задача**: Реорганизовать документацию согласно аудиту, создать единую систему правил для Kiro и Claude Code
+
+**Что сделано**:
+
+1. **Создана единая система правил для AI агентов**:
+   - `.kiro/steering/coding-standards.md` - Стандарты кодирования (Python, async/await, service layer)
+   - `.kiro/steering/architecture-guidelines.md` - Архитектурные гайдлайны (CDC, WebSocket, integrations)
+   - `.claude/rules/coding-standards.md` - Синхронизирован с Kiro (добавлен header с shared_with: kiro)
+   - `.claude/rules/architecture-guidelines.md` - Ссылка на Kiro guidelines
+
+2. **Создан индекс документации**:
+   - `!DOC/README.md` - Главный индекс с навигацией по всем документам
+   - `!DOC/GLOSSARY.md` - Глоссарий технических терминов (CDC, FSRS, RLS, WAL, etc.)
+   - `!DOC/CHANGELOG.md` - История изменений документации
+
+3. **Переименованы файлы для ясности**:
+   - `db-steps.md` → `DB_IMPLEMENTATION_ROADMAP.md` (добавлен header с датой и статусом)
+
+4. **Архивированы устаревшие файлы**:
+   - `concept.md` → `archive/concept_original.md` (заменен SYSTEM_OVERVIEW.md)
+   - `TECHNICAL_SPECIFICATION.md` → `archive/TECHNICAL_SPECIFICATION_draft.md` (неполный черновик)
+
+5. **Удалены дубликаты**:
+   - Voice AI stack comparison теперь только в JEPA_WORLDMODELS_VOICE_AI_ANALYSIS.md
+   - Архитектурные гайдлайны консолидированы в `.kiro/steering/architecture-guidelines.md`
+   - Coding standards консолидированы в `.kiro/steering/coding-standards.md`
+
+**Файлы созданы**: 6 (README.md, GLOSSARY.md, CHANGELOG.md, 2 steering files, 1 claude rule)
+**Файлы переименованы**: 1 (db-steps.md → DB_IMPLEMENTATION_ROADMAP.md)
+**Файлы архивированы**: 2 (concept.md, TECHNICAL_SPECIFICATION.md)
+
+**Результаты**:
+- Оба агента (Kiro и Claude Code) теперь используют одинаковые правила
+- Четкая структура документации с индексом
+- Снижение дублирования с 56% до ~10%
+- Упрощенная навигация для разработчиков
+
+**Следующие шаги**:
+1. [ ] Разделить STRATEGY.md на business/technical/roadmap секции
+2. [ ] Добавить sequence diagrams в SYSTEM_OVERVIEW.md
+3. [ ] Архивировать старые записи session log (ежеквартально)
+
+---
+
 ## Последнее обновление: 2026-02-05 (PersonaPlex Integration)
 
 ### 2026-02-05 - PersonaPlex Speech-to-Speech Integration

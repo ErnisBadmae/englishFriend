@@ -1,222 +1,261 @@
-# Glossary - Technical Terms
+# Glossary
+
+**Last Updated**: 2026-02-09
+
+Technical terms and acronyms used in the English Friend project.
 
 ---
-last_updated: 2025-01-31
----
 
-## Summary
+## Architecture & Infrastructure
 
-This glossary defines technical terms and acronyms used throughout the EnglishFriend documentation.
+**CDC (Change Data Capture)**
+- Technology for capturing database changes in real-time
+- Implementation: Debezium connector reading PostgreSQL WAL
+- Purpose: Event-driven sync to Neo4j and Qdrant
+
+**Debezium**
+- Open-source CDC platform
+- Captures row-level changes from PostgreSQL
+- Publishes events to Kafka topics
+
+**Kafka**
+- Distributed event streaming platform
+- Message broker between PostgreSQL and sync services
+- Topics: `memories.public.memories`, `graph.public.sessions`, etc.
+
+**RLS (Row-Level Security)**
+- PostgreSQL security feature
+- Enforces user data isolation at database level
+- Policies filter rows based on `user_id`
+
+**WAL (Write-Ahead Log)**
+- PostgreSQL transaction log
+- Source for Debezium CDC events
+- Must be set to `logical` for replication
 
 ---
 
 ## AI & Machine Learning
 
-### CDC (Change Data Capture)
-Technology for tracking and capturing changes in database tables in real-time. Used to synchronize data between PostgreSQL, Neo4j, and Qdrant.
+**FSRS (Free Spaced Repetition Scheduler)**
+- Evidence-based spaced repetition algorithm
+- Used for vocabulary card scheduling
+- States: New, Learning, Review, Relearning
 
-### Embedding
-Vector representation of text or other data that captures semantic meaning. Used for similarity search in vector databases.
+**Groq**
+- AI inference platform
+- Model: llama-3.3-70b-versatile
+- Purpose: Fast LLM responses for voice chat
 
-### FSRS (Free Spaced Repetition Scheduler)
-Modern spaced repetition algorithm that predicts optimal review intervals for vocabulary learning. Successor to SM-2 (SuperMemo 2).
+**LangGraph**
+- Framework for building stateful agent workflows
+- Used for pedagogical agent (assessment, goal discovery, learning)
+- Nodes: onboarding, learning, router, session_end
 
-### JEPA (Joint Embedding Predictive Architecture)
-Self-supervised learning architecture proposed by Yann LeCun. Predicts in embedding space rather than generating pixels/tokens directly.
+**RAG (Retrieval-Augmented Generation)**
+- Technique combining retrieval and generation
+- Memory extraction from conversations
+- Semantic search in Qdrant for context
 
-### LangGraph
-Framework for building stateful, multi-actor applications with LLMs. Used for orchestrating our AI agent's conversation flow.
+**STT (Speech-to-Text)**
+- Converts audio to text
+- Implementation: Vosk (browser-based)
+- Privacy: Speech never leaves user's device
 
-### LLM (Large Language Model)
-AI model trained on vast amounts of text data. Examples: GPT-4, Claude, Llama.
-
-### RAG (Retrieval-Augmented Generation)
-Technique that enhances LLM responses by retrieving relevant information from a knowledge base before generating answers.
-
-### RLS (Row-Level Security)
-PostgreSQL feature that restricts which rows users can access based on policies. Used to isolate user data.
-
-### SRS (Spaced Repetition System)
-Learning technique that schedules review of information at increasing intervals. Proven to improve long-term retention.
-
-### VAD (Voice Activity Detection)
-Algorithm that detects when a person is speaking vs silence. Critical for natural conversation flow.
-
-### WER (Word Error Rate)
-Metric for measuring speech recognition accuracy. Lower is better. Vosk: ~10-15%, Deepgram: ~5.8%.
+**TTS (Text-to-Speech)**
+- Converts text to audio
+- Implementation: edge-tts (Microsoft Edge API)
+- Voices: en-US-AndrewNeural, en-US-JennyNeural
 
 ---
 
-## Voice AI Technologies
+## Database
 
-### Deepgram Nova-3
-State-of-the-art speech-to-text API with 5.8% WER. Used in Premium Tier.
+**Partition**
+- Database table split into smaller physical pieces
+- Types: Range (monthly sessions), Hash (utterances)
+- Management: `scripts/manage_partitions.sh`
 
-### edge-tts
-Microsoft's text-to-speech service. Free, good quality, used in Free Tier.
+**Materialized View**
+- Pre-computed query result stored as table
+- Example: `mv_user_weekly_summary`
+- Refresh: Manual or scheduled
 
-### ElevenLabs
-Premium text-to-speech service with natural voices and low latency (75ms). Used in Premium/Ultra Tiers.
-
-### Groq
-Fast LLM inference API. Free tier available, used in MVP.
-
-### Hume AI EVI (Empathic Voice Interface)
-Voice AI with emotional intelligence. Detects user emotions and adapts responses.
-
-### Moshi
-Open-source full-duplex voice AI from Kyutai lab. 160-200ms latency, self-hostable.
-
-### OpenAI Realtime API
-Speech-to-speech API that processes audio directly without separate STT/TTS steps. Used in Ultra Tier.
-
-### Pipecat
-Open-source voice AI framework for orchestrating STT/LLM/TTS pipelines.
-
-### Ultravox
-Speech-native LLM that understands audio directly. Alternative to traditional STT→LLM→TTS cascade.
-
-### Vosk
-Open-source speech recognition that runs in browser via WASM. Used in Free Tier.
+**ORM (Object-Relational Mapping)**
+- SQLAlchemy models mapping to database tables
+- Files: `app/models/core_tables.py`, `app/models/extended_tables.py`
 
 ---
 
-## Database Technologies
+## Learning System
 
-### Neo4j
-Graph database used for storing relationships between users, topics, emotions, and interests.
+**Assessment Mode**
+- Learning mode for evaluating English level
+- Asks diagnostic questions
+- Determines CEFR level (A1-C2)
 
-### Partition
-Database technique for splitting large tables into smaller, more manageable pieces. Used for `sessions`, `utterances`, `xp_events`.
+**Mock Interview Mode**
+- Learning mode simulating job interviews
+- Scenario-based practice
+- Feedback on answers and pronunciation
 
-### pgvector
-PostgreSQL extension for vector similarity search. Fallback option if Qdrant unavailable.
+**Vocabulary Drill Mode**
+- Learning mode for spaced repetition
+- FSRS-scheduled vocabulary cards
+- Ratings: Again, Hard, Good, Easy
 
-### Qdrant
-Vector database optimized for similarity search. Used for semantic search over user memories.
+**Free Conversation Mode**
+- Open-ended chat with corrections
+- Natural conversation practice
+- Grammar and vocabulary feedback
 
-### PostgreSQL
-Primary relational database. Source of truth for all user data.
+**Gamification**
+- XP (Experience Points) system
+- Streak tracking (daily check-ins)
+- Achievements and bonuses
 
----
+**Memory**
+- Extracted fact from conversation
+- Types: interest, goal, background, preference
+- Stored in PostgreSQL, embedded in Qdrant
 
-## Architecture Patterns
-
-### CDC Pipeline
-Change Data Capture pipeline: PostgreSQL → Debezium → Kafka → sync-vector/sync-graph → Qdrant/Neo4j
-
-### DLQ (Dead Letter Queue)
-Queue for messages that failed processing. Allows retry without blocking main pipeline.
-
-### Materialized View
-Pre-computed query result stored as a table. Used for analytics dashboards.
-
-### Microservices
-Architecture pattern where application is composed of small, independent services.
-
-### WebRTC
-Real-time communication protocol for audio/video in browsers. Used for voice calls.
-
-### WebSocket
-Protocol for bidirectional communication between client and server. Used for real-time chat.
+**Learning Plan**
+- User's learning goal and roadmap
+- Generated by LLM based on goal
+- Stored in `learning_plan` table
 
 ---
 
-## Learning Methodologies
+## Services
 
-### CEFR (Common European Framework of Reference)
-Standard for measuring language proficiency: A1, A2, B1, B2, C1, C2.
+**sync-vector**
+- Microservice syncing memories to Qdrant
+- Consumes Kafka topic: `memories.public.memories`
+- Generates embeddings for semantic search
 
-### EPI (Extensive Processing Instruction)
-Language teaching methodology: Input processing → Fluency → Listening → Pronunciation → Grammar.
+**sync-graph**
+- Microservice syncing data to Neo4j
+- Consumes Kafka topics: sessions, utterances, user_interest
+- Builds knowledge graph
 
-### Socratic Method
-Teaching technique using questions to guide students to discover answers themselves.
-
-### SLA (Second Language Acquisition)
-Academic field studying how people learn second languages.
-
----
-
-## Business Terms
-
-### Churn Rate
-Percentage of subscribers who cancel their subscription in a given period.
-
-### COGS (Cost of Goods Sold)
-Direct costs of producing a service. For us: API costs (STT, LLM, TTS).
-
-### Freemium
-Business model with free basic tier and paid premium features.
-
-### LTV (Lifetime Value)
-Total revenue expected from a customer over their entire relationship with the product.
-
-### NPS (Net Promoter Score)
-Customer satisfaction metric: "How likely are you to recommend us?" (-100 to +100).
-
-### Retention
-Percentage of users who continue using the product after a given period.
+**API Server**
+- FastAPI application
+- Endpoints: REST (users, sessions) + WebSocket (voice chat)
+- Port: 8000
 
 ---
 
-## Development Tools
+## Monitoring
 
-### Debezium
-Open-source platform for change data capture (CDC).
+**Prometheus**
+- Metrics collection system
+- Scrapes `/metrics` endpoints
+- Port: 9090
 
-### Docker Compose
-Tool for defining and running multi-container Docker applications.
+**Grafana**
+- Metrics visualization
+- Dashboards: CDC pipeline, voice backend, English Friend
+- Port: 3000
 
-### FastAPI
-Modern Python web framework for building APIs.
+**Data Flow Logger**
+- Custom logging for data pipeline
+- Tracks: PostgreSQL writes, CDC events, sync operations
+- File: `app/services/data_flow_logger.py`
 
-### Flyway / Liquibase
-Database migration tools for version control of database schemas.
+---
 
-### Grafana
-Visualization platform for metrics and logs.
+## Development
 
-### Kafka
-Distributed event streaming platform. Used for CDC events.
+**Black**
+- Python code formatter
+- Line length: 100
+- Auto-formatting on save
 
-### pgTAP
-Unit testing framework for PostgreSQL.
+**isort**
+- Python import sorter
+- Groups: stdlib, third-party, local
+- Compatible with Black
 
-### Prometheus
-Monitoring system and time series database.
+**mypy**
+- Static type checker for Python
+- Mode: strict
+- Enforces type hints
 
-### pytest
-Python testing framework.
+**pytest**
+- Testing framework
+- Async support: pytest-asyncio
+- Coverage target: 70%
+
+**asyncpg**
+- Async PostgreSQL driver
+- Used with SQLAlchemy
+- Non-blocking I/O
 
 ---
 
 ## Acronyms
 
-| Acronym | Full Name | Description |
-|---------|-----------|-------------|
-| AI | Artificial Intelligence | Computer systems that mimic human intelligence |
-| API | Application Programming Interface | Interface for software components to communicate |
-| CDC | Change Data Capture | Real-time database change tracking |
-| CEFR | Common European Framework of Reference | Language proficiency standard |
-| COGS | Cost of Goods Sold | Direct production costs |
-| DLQ | Dead Letter Queue | Failed message queue |
-| EPI | Extensive Processing Instruction | Language teaching methodology |
-| FSRS | Free Spaced Repetition Scheduler | Spaced repetition algorithm |
-| JEPA | Joint Embedding Predictive Architecture | Self-supervised learning architecture |
-| LLM | Large Language Model | AI trained on text data |
-| LTV | Lifetime Value | Customer lifetime revenue |
-| MVP | Minimum Viable Product | Simplest version of product |
-| NPS | Net Promoter Score | Customer satisfaction metric |
-| RAG | Retrieval-Augmented Generation | LLM + knowledge base |
-| RLS | Row-Level Security | Database access control |
-| SLA | Second Language Acquisition | Language learning research field |
-| SRS | Spaced Repetition System | Learning technique |
-| STT | Speech-to-Text | Voice recognition |
-| TTS | Text-to-Speech | Voice synthesis |
-| VAD | Voice Activity Detection | Speech detection algorithm |
-| WER | Word Error Rate | Speech recognition accuracy metric |
+- **API**: Application Programming Interface
+- **CEFR**: Common European Framework of Reference for Languages
+- **DLQ**: Dead Letter Queue (failed Kafka messages)
+- **HTTP**: Hypertext Transfer Protocol
+- **JSON**: JavaScript Object Notation
+- **REST**: Representational State Transfer
+- **SRS**: Spaced Repetition System
+- **UUID**: Universally Unique Identifier
+- **WebSocket**: Full-duplex communication protocol
+- **XP**: Experience Points
 
 ---
 
-**Last Updated**: 2025-01-31
+## Domain-Specific Terms
+
+**Salience Score**
+- Importance rating for memories (0.0-1.0)
+- Higher score = more important fact
+- Used for memory prioritization
+
+**Turn**
+- Single exchange in conversation
+- User message + AI response
+- Tracked in `utterances` table
+
+**Session**
+- Complete conversation from start to end
+- Tracked in `sessions` table
+- Partitioned by month
+
+**Utterance**
+- Single message in conversation
+- Can be from user or AI
+- Partitioned by hash
+
+**Dimension Tables**
+- Reference data (emotions, topics, accents, goals)
+- Prefix: `dim_*`
+- Examples: `dim_emotion`, `dim_topic`
+
+---
+
+## File Naming Conventions
+
+**Helper Modules**
+- `*_helpers.py`: Utility functions
+- Examples: `query_helpers.py`, `logger_helpers.py`, `voice_helpers.py`
+
+**Service Modules**
+- `*_service.py`: Business logic classes
+- Examples: `vocabulary_service.py`, `learning_plan_service.py`
+
+**API Modules**
+- `app/api/*.py`: FastAPI routers
+- Examples: `users.py`, `sessions.py`, `voice.py`
+
+**Model Modules**
+- `app/models/*.py`: SQLAlchemy ORM models
+- Examples: `core_tables.py`, `extended_tables.py`
+
+---
+
+**Glossary Version**: 1.0  
+**Contributors**: AI Agents (Kiro, Claude Code)

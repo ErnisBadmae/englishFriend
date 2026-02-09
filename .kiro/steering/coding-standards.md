@@ -1,12 +1,9 @@
 ---
 description: Coding standards for English Friend project (FastAPI + PostgreSQL + CDC + Groq + edge-tts)
-shared_with: kiro
-last_updated: 2026-02-09
+inclusion: always
 ---
 
 # Coding Standards
-
-> **Note**: This file is synchronized with `.kiro/steering/coding-standards.md` for consistent rules across AI agents.
 
 ## 1. Python Code Style
 

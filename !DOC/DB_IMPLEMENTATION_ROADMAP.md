@@ -1,3 +1,21 @@
+# Database Implementation Roadmap
+
+**Last Updated**: 2026-02-09  
+**Status**: Active Implementation Guide  
+**Source**: Based on [DB.md](./DB.md)
+
+---
+
+---
+
+## Sprint Status
+
+- [x] Sprint 1 - Postgres bootstrap (Completed)
+- [x] Sprint 2 - Sessions and utterances storage (Completed)
+- [x] Sprint 3 - Memory, progress, and reports (Completed)
+
+---
+
 Sprint 1 – Postgres bootstrap (!DOC/DB.md:48-122): подготовить базовые миграции: расширения, enum-типы, справочники, таблицы users, user_channel_identity, user_interest. Tests: 1) прогнать миграции на пустой и наполненной БД (Flyway/Liquibase up/down) и убедиться в идемпотентности (!DOC/DB.md:520); 2) pgTAP-проверки уникальности user_channel_identity и валидности access_channel; 3) seed-скрипт для dim_emotion/dim_topic/dim_accent сверяется с эталонными данными.
 
 Sprint 2 – Хранилище сессий и реплик (!DOC/DB.md:124-188): реализовать партиционированные sessions, utterances, feedback, corrections, добавить индексы (btree + GIN). Tests: 1) автоматическое создание месячных/хэш-партиций и проверка их наличия через каталоги; 2) EXPLAIN ANALYZE запросов по session_id и topics подтверждает использование индексов (!DOC/DB.md:522); 3) тесты RLS на sessions/utterances с set local app.user_id показывают, что чужие строки недоступны.
