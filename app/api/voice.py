@@ -39,6 +39,14 @@ from app.core.metrics import (
     agent_version_sessions,
     agent_version_errors,
     agent_version_onboarding_complete,
+    personaplex_connections_active,
+    personaplex_sessions_total,
+    personaplex_latency_seconds,
+    personaplex_session_duration_seconds,
+    personaplex_turns_total,
+    personaplex_pedagogical_events,
+    personaplex_errors_total,
+    personaplex_fallback_total,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +95,12 @@ from app.api.voice_helpers import (
     award_session_gamification,
     rebuild_system_prompt,
 )
+
+# PersonaPlex speech-to-speech
+from app.core.config import settings
+from app.services.ai.personaplex_provider import PersonaPlexProvider, PersonaPlexConnectionError
+from app.services.ai.personaplex_health import check_personaplex_health
+from app.services.ai.base import VoiceSession
 
 # LangGraph agent (v1 - original 11-node architecture)
 from app.agent import AgentState, AgentPhase, LearningModeEnum
@@ -1007,6 +1021,504 @@ async def voice_chat_v2(
     finally:
         voice_sessions_active.dec()
         voice_sessions_total.labels(mode=final_mode, status=session_status).inc()
+
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# =============================================================================
+# PersonaPlex-based endpoint (full-duplex speech-to-speech)
+# =============================================================================
+
+
+def _build_personaplex_system_prompt(agent_state: dict) -> str:
+    """Build a rich pedagogical system prompt for PersonaPlex from agent state.
+
+    PersonaPlex uses this prompt to condition its speech generation, so it
+    includes the full learning context: goal, mode, vocabulary, memories, etc.
+    """
+    username = agent_state.get("username", "Student")
+    level = agent_state.get("language_level", "B1")
+    goal = agent_state.get("confirmed_goal") or agent_state.get("detected_goal") or "improve English"
+    mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
+    if isinstance(mode, LearningModeEnum):
+        mode = mode.value
+    interests = agent_state.get("detected_interests") or []
+    memories = agent_state.get("memory_section") or ""
+    vocab_words = agent_state.get("due_vocabulary_words") or []
+
+    mode_instructions = {
+        "mock_interview": (
+            "Act as a professional interviewer. Ask behavioral and technical "
+            "questions. Give STAR method feedback. Be encouraging but honest."
+        ),
+        "vocabulary_drill": (
+            "Focus on vocabulary practice. Use the target words naturally in "
+            "conversation. Ask the student to use them in sentences."
+        ),
+        "free_conversation": (
+            "Have a natural conversation. Gently correct errors using Socratic "
+            "recasting. Keep the dialogue engaging and educational."
+        ),
+        "grammar_focus": (
+            "Focus on grammar exercises. Provide examples and ask the student "
+            "to construct sentences. Correct errors explicitly."
+        ),
+        "assessment": (
+            "Assess the student's English level through natural conversation. "
+            "Ask progressively harder questions to gauge CEFR level."
+        ),
+    }
+
+    sections = [
+        f"You are Sarah, a warm and professional English mentor.",
+        f"",
+        f"STUDENT PROFILE:",
+        f"- Name: {username}",
+        f"- Level: {level} (CEFR)",
+        f"- Goal: {goal}",
+    ]
+
+    if interests:
+        sections.append(f"- Interests: {', '.join(interests[:5])}")
+
+    sections.extend([
+        f"",
+        f"CURRENT SESSION MODE: {mode.replace('_', ' ').title()}",
+        mode_instructions.get(mode, mode_instructions["free_conversation"]),
+    ])
+
+    if vocab_words:
+        sections.append("")
+        sections.append("VOCABULARY TO REINFORCE:")
+        for word in vocab_words[:5]:
+            sections.append(f"- \"{word}\" (weave into conversation naturally)")
+
+    if memories:
+        sections.append("")
+        sections.append("MEMORY CONTEXT (from previous sessions):")
+        sections.append(memories)
+
+    sections.extend([
+        "",
+        "IMPORTANT RULES:",
+        "- Speak naturally and at a pace appropriate for the student's level.",
+        "- Use Socratic recasting: repeat the student's error in correct form.",
+        "- Keep responses concise (2-3 sentences) for voice conversation.",
+        "- Be encouraging and maintain a positive learning atmosphere.",
+    ])
+
+    return "\n".join(sections)
+
+
+@router.websocket("/chat/plex")
+async def voice_chat_plex(
+    websocket: WebSocket,
+    user_id: int = Query(..., description="ID пользователя"),
+    db: AsyncSession = Depends(get_db),
+):
+    """PersonaPlex-based full-duplex voice chat with pedagogical pipeline.
+
+    Flow:
+    1. Health-check PersonaPlex → fallback to /chat/v2 if unavailable
+    2. Initialize LangGraph agent state (same as /chat/v2)
+    3. Build pedagogical system prompt for PersonaPlex
+    4. Connect to PersonaPlex (WebSocket)
+    5. Bidirectional streaming:
+       - Client audio → PersonaPlex
+       - PersonaPlex audio/transcript → Client
+       - Transcripts → LangGraph for pedagogical analysis
+
+    Protocol:
+    - Client -> Server: {"type": "audio", "data": "<base64 opus>"}
+    - Client -> Server: {"type": "text", "text": "..."}  (text fallback)
+    - Client -> Server: {"type": "end"}
+    - Server -> Client: {"type": "connected", "session_id": "...", "provider": "personaplex"}
+    - Server -> Client: {"type": "transcript", "role": "user"|"assistant", "text": "..."}
+    - Server -> Client: {"type": "audio", "data": "<base64 opus>", "format": "opus"}
+    - Server -> Client: {"type": "phase_changed", "phase": "...", "mode": "..."}
+    - Server -> Client: {"type": "error", "message": "..."}
+    """
+    # --- Health check: fallback to v2 if PersonaPlex is unavailable ---
+    if not settings.personaplex_enabled or not await check_personaplex_health():
+        logger.info(f"[PersonaPlex] Unavailable for user {user_id}, falling back to v2")
+        personaplex_fallback_total.labels(reason="health_check_failed").inc()
+        data_logger.log_personaplex_fallback(user_id, reason="health_check_failed")
+        return await voice_chat_v2(websocket, user_id, db)
+
+    await websocket.accept()
+
+    personaplex_connections_active.inc()
+    session_start_time = time.time()
+    final_mode = "unknown"
+    session_status = "disconnected"
+    plex: PersonaPlexProvider | None = None
+    plex_turn_count = 0
+
+    try:
+        # === INITIALIZATION (same as /chat/v2) ===
+        session_id = str(uuid.uuid4())
+
+        user = None
+        is_new_user = True
+        username = "Student"
+        language_level = "B1"
+
+        try:
+            user_service = UserService(db)
+            user = await user_service.get_user(user_id)
+            if not user:
+                logger.info(f"[PersonaPlex] User {user_id} not found, auto-creating...")
+                user = await user_service.create_user(UserCreate(
+                    telegram_id=user_id,
+                    username=f"User_{user_id}",
+                    language_level="B1",
+                ))
+            if user:
+                username = user.username or "Student"
+                language_level = user.language_level or "B1"
+        except Exception as e:
+            logger.warning(f"Could not fetch/create user from DB: {e}")
+            voice_errors_total.labels(stage="db").inc()
+
+        # Load learning context
+        learning_plan_service = LearningPlanService(db)
+        vocabulary_service = VocabularyService(db)
+        memory_pipeline = create_memory_pipeline(db)
+
+        confirmed_goal = None
+        confirmed_interests = None
+        roadmap = None
+        due_vocabulary_count = 0
+        due_vocabulary_words: list[str] = []
+        memory_section = ""
+
+        try:
+            learning_plan = await learning_plan_service.get_or_create_plan(user_id)
+            confirmed_goal = learning_plan_service.get_goal(learning_plan)
+            roadmap = learning_plan.roadmap
+            total_sessions = learning_plan_service.get_session_count(learning_plan)
+            is_new_user = total_sessions == 0 and not confirmed_goal
+
+            due_vocabulary = await vocabulary_service.get_due_cards(user_id, limit=10)
+            due_vocabulary_count = len(due_vocabulary)
+            due_vocabulary_words = [card.word for card in due_vocabulary]
+
+            memory_section = await memory_pipeline.format_memory_for_prompt(user_id)
+        except Exception as e:
+            logger.warning(f"Could not load learning context: {e}")
+            voice_errors_total.labels(stage="db").inc()
+
+        # Initialize LangGraph agent state
+        use_v2 = USE_AGENT_V2
+        if use_v2:
+            agent_state = await initialize_session_v2(
+                user_id=user_id,
+                session_id=session_id,
+                username=username,
+                is_new_user=is_new_user,
+                language_level=language_level,
+                confirmed_goal=confirmed_goal,
+                confirmed_interests=confirmed_interests,
+                roadmap=roadmap,
+                due_vocabulary_count=due_vocabulary_count,
+                due_vocabulary_words=due_vocabulary_words,
+                memory_section=memory_section,
+            )
+        else:
+            agent_state = await initialize_session(
+                user_id=user_id,
+                session_id=session_id,
+                username=username,
+                is_new_user=is_new_user,
+                language_level=language_level,
+                confirmed_goal=confirmed_goal,
+                confirmed_interests=confirmed_interests,
+                roadmap=roadmap,
+                due_vocabulary_count=due_vocabulary_count,
+                due_vocabulary_words=due_vocabulary_words,
+                memory_section=memory_section,
+            )
+
+        current_phase = agent_state.get("current_phase", AgentPhase.START)
+        current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
+        final_mode = current_mode.value if isinstance(current_mode, LearningModeEnum) else str(current_mode)
+
+        # Build pedagogical prompt for PersonaPlex
+        system_prompt = _build_personaplex_system_prompt(agent_state)
+
+        # === CONNECT TO PERSONAPLEX ===
+        plex = PersonaPlexProvider(voice=settings.personaplex_default_voice)
+        try:
+            connect_start = time.time()
+            await plex.connect(VoiceSession(
+                session_id=session_id,
+                user_id=user_id,
+                system_prompt=system_prompt,
+            ))
+            personaplex_latency_seconds.labels(operation="connect").observe(
+                time.time() - connect_start
+            )
+        except PersonaPlexConnectionError:
+            logger.warning(f"[PersonaPlex] Connection failed for user {user_id}, falling back to v2")
+            personaplex_fallback_total.labels(reason="connection_error").inc()
+            personaplex_errors_total.labels(error_type="connection_failed").inc()
+            data_logger.log_personaplex_fallback(user_id, reason="connection_error")
+            personaplex_connections_active.dec()
+            # Fall back: re-use the already-accepted websocket by continuing as v2
+            # We need to send an error and close, then the client will reconnect
+            await websocket.send_json({
+                "type": "error",
+                "message": "PersonaPlex unavailable, please reconnect to /chat/v2",
+            })
+            await websocket.close(code=1013, reason="PersonaPlex unavailable")
+            return
+
+        data_logger.log_personaplex_connect(
+            user_id=user_id,
+            session_id=session_id,
+            voice=settings.personaplex_default_voice,
+            mode=final_mode,
+        )
+
+        # Send connected message to client
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "phase": current_phase.value if isinstance(current_phase, AgentPhase) else str(current_phase),
+            "mode": final_mode,
+            "provider": "personaplex",
+            "is_new_user": is_new_user,
+            "goal": confirmed_goal,
+            "due_vocabulary_count": due_vocabulary_count,
+        })
+
+        # Track conversation transcripts for pedagogical analysis
+        conversation_history: list[dict] = []
+
+        # === BIDIRECTIONAL STREAMING ===
+        import asyncio
+
+        async def forward_plex_to_client():
+            """Forward PersonaPlex events (audio + transcripts) to the client."""
+            nonlocal plex_turn_count
+            async for event in plex.receive():
+                if event["type"] == "audio":
+                    await websocket.send_json({
+                        "type": "audio",
+                        "data": base64.b64encode(event["data"]).decode(),
+                        "format": "opus",
+                    })
+                    voice_messages_total.labels(direction="outbound", type="audio").inc()
+
+                elif event["type"] == "transcript":
+                    role = event.get("role", "assistant")
+                    text = event.get("text", "")
+                    is_final = event.get("is_final", True)
+
+                    if is_final and text:
+                        plex_turn_count += 1
+                        conversation_history.append({"role": role, "content": text})
+
+                        mode_str = final_mode
+                        phase_str = (
+                            current_phase.value
+                            if isinstance(current_phase, AgentPhase)
+                            else str(current_phase)
+                        )
+                        personaplex_turns_total.labels(mode=mode_str, phase=phase_str).inc()
+                        data_logger.log_personaplex_turn(
+                            session_id=session_id,
+                            role=role,
+                            text_preview=text,
+                            latency_ms=0,  # PersonaPlex handles latency internally
+                        )
+
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": role,
+                        "text": text,
+                        "is_final": is_final,
+                        "phase": (
+                            current_phase.value
+                            if isinstance(current_phase, AgentPhase)
+                            else str(current_phase)
+                        ),
+                        "mode": final_mode,
+                        "turn": plex_turn_count,
+                    })
+
+                elif event["type"] == "error":
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": event.get("message", "PersonaPlex error"),
+                    })
+                    personaplex_errors_total.labels(error_type="audio_processing").inc()
+
+        async def forward_client_to_plex():
+            """Forward client messages (audio/text/end) to PersonaPlex."""
+            nonlocal current_phase, current_mode, final_mode
+
+            while True:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                msg_type = message.get("type", "")
+
+                if msg_type == "audio":
+                    # Client sends base64-encoded opus audio
+                    audio_bytes = base64.b64decode(message["data"])
+                    await plex.send_audio(audio_bytes)
+                    voice_messages_total.labels(direction="inbound", type="audio").inc()
+
+                elif msg_type == "text":
+                    # Text fallback: client sends recognized text
+                    user_text = message.get("text", "").strip()
+                    if not user_text:
+                        continue
+                    voice_messages_total.labels(direction="inbound", type="text").inc()
+                    conversation_history.append({"role": "user", "content": user_text})
+
+                    # Run pedagogical analysis via LangGraph
+                    old_phase = agent_state.get("current_phase", AgentPhase.START)
+                    if use_v2:
+                        updated = await run_agent_turn_v2(agent_state, user_message=user_text)
+                    else:
+                        updated = await run_agent_turn(agent_state, user_message=user_text)
+                    agent_state.update(updated)
+
+                    new_phase = agent_state.get("current_phase", AgentPhase.START)
+                    new_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
+
+                    # Check for phase/mode change → update PersonaPlex prompt
+                    if old_phase != new_phase or current_mode != new_mode:
+                        current_phase = new_phase
+                        current_mode = new_mode
+                        final_mode = (
+                            current_mode.value
+                            if isinstance(current_mode, LearningModeEnum)
+                            else str(current_mode)
+                        )
+                        new_prompt = _build_personaplex_system_prompt(agent_state)
+                        await plex.update_persona(new_prompt)
+                        personaplex_pedagogical_events.labels(event_type="mode_changed").inc()
+
+                        await websocket.send_json({
+                            "type": "phase_changed",
+                            "phase": (
+                                current_phase.value
+                                if isinstance(current_phase, AgentPhase)
+                                else str(current_phase)
+                            ),
+                            "mode": final_mode,
+                        })
+
+                    # Periodic memory extraction (every 5 turns)
+                    if plex_turn_count > 0 and plex_turn_count % 5 == 0:
+                        try:
+                            extracted = await memory_pipeline.process_conversation(
+                                user_id=user_id,
+                                messages=conversation_history[-10:],
+                                session_id=session_id,
+                            )
+                            if extracted:
+                                personaplex_pedagogical_events.labels(
+                                    event_type="memory_extracted"
+                                ).inc()
+                                logger.info(
+                                    f"[PersonaPlex] Extracted {len(extracted)} memories"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Memory extraction failed: {e}")
+
+                elif msg_type == "end":
+                    raise WebSocketDisconnect(code=1000, reason="Client ended session")
+
+        # Run both directions concurrently
+        plex_task = asyncio.create_task(forward_plex_to_client())
+        try:
+            await forward_client_to_plex()
+        except WebSocketDisconnect:
+            session_status = "completed" if plex_turn_count > 0 else "disconnected"
+        finally:
+            plex_task.cancel()
+            try:
+                await plex_task
+            except asyncio.CancelledError:
+                pass
+
+        # === POST-SESSION PERSISTENCE ===
+        try:
+            if agent_state.get("confirmed_goal") and not confirmed_goal:
+                await learning_plan_service.set_goal(user_id, agent_state["confirmed_goal"])
+
+            await learning_plan_service.increment_session_count(
+                user_id,
+                mode=final_mode,
+                duration_minutes=int((time.time() - session_start_time) / 60),
+            )
+
+            if agent_state.get("assessed_level"):
+                await learning_plan_service.record_assessment(
+                    user_id,
+                    assessed_level=agent_state["assessed_level"],
+                    scores=agent_state.get("assessment_scores"),
+                )
+
+            if conversation_history:
+                await memory_pipeline.process_conversation(
+                    user_id=user_id,
+                    messages=conversation_history,
+                    session_id=session_id,
+                )
+
+            await award_session_gamification(db, user_id, session_id)
+        except Exception as e:
+            logger.warning(f"[PersonaPlex] Post-session persistence error: {e}")
+
+    except PersonaPlexConnectionError as e:
+        logger.error(f"[PersonaPlex] Connection error: {e}")
+        session_status = "error"
+        personaplex_errors_total.labels(error_type="connection_failed").inc()
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": "PersonaPlex connection lost",
+            })
+            await websocket.close(code=1011, reason="PersonaPlex error")
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"[PersonaPlex] Unexpected error: {e}", exc_info=True)
+        session_status = "error"
+        personaplex_errors_total.labels(error_type="unexpected").inc()
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Server error. Please refresh the page.",
+            })
+            await websocket.close(code=1011, reason="Internal server error")
+        except Exception:
+            pass
+
+    finally:
+        # Disconnect PersonaPlex
+        if plex:
+            await plex.disconnect()
+
+        # Metrics
+        personaplex_connections_active.dec()
+        session_duration = time.time() - session_start_time
+        personaplex_session_duration_seconds.observe(session_duration)
+        personaplex_sessions_total.labels(status=session_status).inc()
+
+        data_logger.log_personaplex_disconnect(
+            session_id=session_id,
+            turns=plex_turn_count,
+            duration_seconds=session_duration,
+        )
 
         try:
             await websocket.close()

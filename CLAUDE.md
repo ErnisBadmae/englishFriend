@@ -22,13 +22,14 @@ User → PostgreSQL → Debezium → Kafka → [sync-vector → Qdrant]
 
 ### Key Components
 1. **FastAPI Application** (`app/`): Main API service with routers for users, sessions, utterances, memories
-2. **LangGraph Agent** (`app/agent/`): State machine for pedagogical conversations (NEW)
-3. **Database Migrations** (`db/migrations/postgres/`): Flyway-compatible SQL migrations
-4. **CDC Layer** (`cdc/`): Debezium connectors and Kafka topic definitions
-5. **Sync Services**:
+2. **LangGraph Agent** (`app/agent/`): State machine for pedagogical conversations
+3. **PersonaPlex Provider** (`app/services/ai/personaplex_provider.py`): Full-duplex speech-to-speech via NVIDIA Moshi 7B
+4. **Database Migrations** (`db/migrations/postgres/`): Flyway-compatible SQL migrations
+5. **CDC Layer** (`cdc/`): Debezium connectors and Kafka topic definitions
+6. **Sync Services**:
    - `sync-vector/`: Syncs memories from Kafka to Qdrant
    - `sync-graph/`: Syncs sessions/utterances from Kafka to Neo4j
-6. **Graph Layer** (`graph/`): Neo4j schema, queries, and Cypher scripts
+7. **Graph Layer** (`graph/`): Neo4j schema, queries, and Cypher scripts
 
 ### Database Features
 - **Partitioning**: `sessions` (by month), `utterances` (by hash), `xp_events` (by date)
@@ -56,12 +57,55 @@ START → GOAL_DISCOVERY (with confirmation) → INTEREST_PROBE → ASSESSMENT
 - `session_end.py`: Session termination and persistence
 
 **API Endpoints**:
-- `/api/v1/voice/chat`: Legacy endpoint (hardcoded logic)
-- `/api/v1/voice/chat/v2`: NEW LangGraph-based endpoint (recommended)
+- `/api/v1/voice/chat`: Legacy endpoint (redirects to v2)
+- `/api/v1/voice/chat/v2`: LangGraph-based endpoint (Vosk + Groq + edge-tts)
+- `/api/v1/voice/chat/plex`: PersonaPlex full-duplex speech-to-speech (recommended)
 
 **Logging**: All pedagogical decisions logged with `[PEDAGOGY]` prefix via `app/services/pedagogy_logger.py`
 
 **State**: `AgentState` (TypedDict) flows through nodes, loaded from PostgreSQL at session start
+
+### PersonaPlex Integration
+
+Full-duplex speech-to-speech provider using NVIDIA Moshi 7B, self-hosted on Linux server (RTX 5060 Ti 16GB VRAM, INT8 quantization).
+
+**Architecture**:
+```
+Student audio → EnglishFriend → PersonaPlex (ws://192.168.0.88:8998/api/chat)
+Student audio ← EnglishFriend ← PersonaPlex
+                     ↕
+              LangGraph Agent (pedagogy, memories, vocabulary)
+```
+
+**Key Principle**: PersonaPlex = voice (blackbox), EnglishFriend = brain (we control)
+- PersonaPlex follows our `system_prompt` for generation
+- We build the prompt from user context (goals, memories, vocabulary, interests)
+- We analyze transcripts for errors, vocabulary, progress
+- We update the prompt dynamically when mode/phase changes
+
+**Advantages over Vosk+Groq+edge-tts**:
+- Latency: 200-400ms vs 800-1200ms (3-4x faster)
+- Full-duplex: student can interrupt mentor
+- Neural voice quality: 16 built-in personas
+- Cost: $0 (self-hosted) vs ~$0.002/reply (Groq)
+
+**Fallback**: If PersonaPlex is unavailable, `/chat/plex` automatically falls back to `/chat/v2`
+
+**Configuration** (`.env`):
+```bash
+PERSONAPLEX_ENABLED=true
+PERSONAPLEX_HOST=192.168.0.88
+PERSONAPLEX_PORT=8998
+PERSONAPLEX_DEFAULT_VOICE=NATM0
+PERSONAPLEX_QUANTIZATION=int8
+```
+
+**Key Files**:
+- `app/services/ai/personaplex_provider.py`: WebSocket client (`PersonaPlexProvider`)
+- `app/services/ai/personaplex_health.py`: Health check with TTL cache
+- `app/core/config.py`: PersonaPlex settings block
+- `app/api/voice.py`: `/chat/plex` endpoint + `_build_personaplex_system_prompt()`
+- `docker-compose.personaplex.yml`: Docker Compose for Linux GPU server
 
 ## Development Commands
 
@@ -87,6 +131,20 @@ make start
 
 # Application runs on http://localhost:8000
 # API docs: http://localhost:8000/docs
+```
+
+### PersonaPlex Setup (Linux GPU Server)
+```bash
+# Deploy PersonaPlex on Linux server (RTX 5060 Ti)
+scp docker-compose.personaplex.yml nero@192.168.0.88:~/personaplex/
+ssh nero@192.168.0.88 "cd ~/personaplex && docker compose up -d"
+
+# Verify health
+curl http://192.168.0.88:8998/health
+
+# Enable in .env on Windows laptop
+PERSONAPLEX_ENABLED=true
+PERSONAPLEX_HOST=192.168.0.88
 ```
 
 ### Database Management
@@ -128,8 +186,11 @@ pytest sync-vector/tests/test_integration.py -v
 # Sync-graph tests
 pytest sync-graph/tests/test_transform.py
 
-# LangGraph Agent tests (NEW)
+# LangGraph Agent tests
 pytest tests/agent/ -v
+
+# PersonaPlex tests
+pytest tests/test_personaplex.py -v
 ```
 
 ### Code Quality
@@ -188,6 +249,7 @@ englishFriend/
 │   ├── models/           # SQLAlchemy ORM models
 │   ├── schemas/          # Pydantic schemas
 │   └── services/         # Business logic (including pedagogy_logger.py)
+│       └── ai/           # AI providers (LLM, TTS, PersonaPlex)
 ├── db/
 │   ├── migrations/postgres/  # SQL migrations (ordered 000-007)
 │   ├── seed/                 # Reference data seeds
@@ -214,8 +276,15 @@ englishFriend/
 
 - `main.py`: FastAPI application entry point
 - `app/core/database.py`: Database connection and initialization
+- `app/core/config.py`: Settings (including PersonaPlex config)
+- `app/core/metrics.py`: Prometheus metrics (voice, agent, PersonaPlex)
 - `app/models/core_tables.py`: Core SQLAlchemy models (users, sessions, utterances)
 - `app/models/extended_tables.py`: Extended models (memories, learning_plan, xp_events)
+- `app/api/voice.py`: WebSocket endpoints (`/chat`, `/chat/v2`, `/chat/plex`)
+- `app/services/ai/personaplex_provider.py`: PersonaPlex WebSocket client
+- `app/services/ai/personaplex_health.py`: PersonaPlex health check with cache
+- `app/services/ai/base.py`: AIProvider base class (with `update_persona()`)
+- `app/services/data_flow_logger.py`: Data flow logger (includes PersonaPlex events)
 - `Makefile`: Development shortcuts
 - `pyproject.toml`: Black, isort, mypy configuration
 - `pytest.ini`: Pytest configuration
@@ -247,6 +316,7 @@ englishFriend/
 - `docker-compose.vector.yml`: Vector stack (Postgres + Kafka + Qdrant + sync-vector)
 - `docker-compose.graph.yml`: Graph stack (Postgres + Kafka + Neo4j + sync-graph)
 - `docker-compose.partitions.yml`: Partition management cron job
+- `docker-compose.personaplex.yml`: PersonaPlex on Linux GPU server (NVIDIA Moshi 7B, INT8)
 
 ## Important Patterns
 
@@ -362,6 +432,13 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # SQL queries
 - `voice_llm_latency_seconds` - Latency LLM запросов
 - `voice_tts_latency_seconds` - Latency TTS синтеза
 - `voice_errors_total` - Счётчик ошибок по stage
+- `personaplex_connections_active` - Активные PersonaPlex соединения
+- `personaplex_latency_seconds` - Latency PersonaPlex по операциям (connect, audio_in, audio_out)
+- `personaplex_sessions_total` - Счётчик PersonaPlex сессий по статусу
+- `personaplex_turns_total` - Счётчик conversation turns по mode/phase
+- `personaplex_pedagogical_events` - Педагогические события (error_detected, vocabulary_used, memory_extracted)
+- `personaplex_errors_total` - Ошибки PersonaPlex по типу
+- `personaplex_fallback_total` - Количество fallback на legacy стек
 
 ## Health Check Endpoints
 
@@ -370,6 +447,7 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # SQL queries
 - sync-graph: `http://localhost:8091/health`
 - Qdrant: `http://localhost:6333/health`
 - Neo4j: `http://localhost:7474`
+- PersonaPlex: `http://192.168.0.88:8998/health` (Linux GPU server)
 
 ## Running Single Tests
 

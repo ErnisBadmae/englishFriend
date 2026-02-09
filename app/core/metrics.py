@@ -210,6 +210,57 @@ agent_guardrail_fallbacks = Counter(
     ['node']  # node: onboarding/learning/session_end
 )
 
+# ============ PERSONAPLEX METRICS ============
+
+personaplex_connections_active = Gauge(
+    'personaplex_connections_active',
+    'Active PersonaPlex WebSocket connections',
+)
+
+personaplex_sessions_total = Counter(
+    'personaplex_sessions_total',
+    'Total PersonaPlex sessions',
+    ['status'],  # status: completed/disconnected/error/fallback
+)
+
+personaplex_latency_seconds = Histogram(
+    'personaplex_latency_seconds',
+    'PersonaPlex response latency by operation',
+    ['operation'],  # connect, audio_in, audio_out, transcript
+    buckets=[0.1, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0],
+)
+
+personaplex_session_duration_seconds = Histogram(
+    'personaplex_session_duration_seconds',
+    'Duration of PersonaPlex sessions',
+    buckets=[60, 120, 300, 600, 1200, 1800],
+)
+
+personaplex_turns_total = Counter(
+    'personaplex_turns_total',
+    'Total conversation turns via PersonaPlex',
+    ['mode', 'phase'],
+)
+
+personaplex_pedagogical_events = Counter(
+    'personaplex_pedagogical_events',
+    'Pedagogical events detected during PersonaPlex sessions',
+    ['event_type'],  # error_detected, vocabulary_used, memory_extracted, mode_changed
+)
+
+personaplex_errors_total = Counter(
+    'personaplex_errors_total',
+    'PersonaPlex errors by type',
+    ['error_type'],  # connection_failed, timeout, audio_processing, fallback_triggered
+)
+
+personaplex_fallback_total = Counter(
+    'personaplex_fallback_total',
+    'Times fallback from PersonaPlex to legacy stack was triggered',
+    ['reason'],  # health_check_failed, connection_error, timeout
+)
+
+
 def normalize_endpoint(path: str) -> str:
     """
     Нормализует endpoint путь для метрик.

@@ -43,6 +43,8 @@ class DataFlowLogger:
             "qdrant_reads": 0,
             "neo4j_writes": 0,
             "neo4j_reads": 0,
+            "personaplex_connections": 0,
+            "personaplex_turns": 0,
         }
 
     def log_postgres_write(
@@ -186,6 +188,61 @@ class DataFlowLogger:
         logger.info(
             f"📊 SESSION END [user={user_id}] session={session_id[:8]}... "
             f"duration={duration_minutes}min, new_words={new_words}, xp={xp_earned}"
+        )
+
+    # === PersonaPlex Events ===
+
+    def log_personaplex_connect(
+        self,
+        user_id: int,
+        session_id: str,
+        voice: str,
+        mode: str,
+    ):
+        """Log PersonaPlex session start."""
+        self.stats["personaplex_connections"] += 1
+        logger.info(
+            f"🎙️ PERSONAPLEX CONNECT [user={user_id}] "
+            f"session={session_id[:8]}... voice={voice} mode={mode}"
+        )
+
+    def log_personaplex_turn(
+        self,
+        session_id: str,
+        role: str,
+        text_preview: str,
+        latency_ms: int,
+    ):
+        """Log each PersonaPlex conversation turn."""
+        self.stats["personaplex_turns"] += 1
+        preview = text_preview[:50] + "..." if len(text_preview) > 50 else text_preview
+        logger.info(
+            f"🎙️ PERSONAPLEX TURN session={session_id[:8]}... "
+            f"role={role} latency={latency_ms}ms text={preview}"
+        )
+
+    def log_personaplex_disconnect(
+        self,
+        session_id: str,
+        turns: int,
+        duration_seconds: float,
+    ):
+        """Log PersonaPlex session end."""
+        minutes = int(duration_seconds // 60)
+        seconds = int(duration_seconds % 60)
+        logger.info(
+            f"🎙️ PERSONAPLEX DISCONNECT session={session_id[:8]}... "
+            f"turns={turns} duration={minutes}m{seconds}s"
+        )
+
+    def log_personaplex_fallback(
+        self,
+        user_id: int,
+        reason: str,
+    ):
+        """Log fallback from PersonaPlex to legacy stack."""
+        logger.warning(
+            f"🎙️ PERSONAPLEX FALLBACK [user={user_id}] reason={reason}"
         )
 
     def get_stats(self) -> dict:

@@ -1,5 +1,6 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -58,6 +59,26 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
     langfuse_enabled: bool = True  # Set to False to disable tracing
+
+    # ======= PersonaPlex Speech-to-Speech (NVIDIA Moshi 7B) =======
+    # Self-hosted on Linux server with RTX 5060 Ti (INT8 quantization)
+    personaplex_enabled: bool = False
+    personaplex_host: str = "192.168.0.88"
+    personaplex_port: int = 8998
+    personaplex_ws_url: str = ""  # Auto-computed if empty
+    personaplex_timeout: float = 60.0
+    personaplex_default_voice: str = "NATM0"  # Natural Male voice
+    personaplex_quantization: Literal["fp16", "int8"] = "int8"
+    personaplex_health_cache_ttl: int = 30  # seconds
+
+    @field_validator("personaplex_ws_url", mode="before")
+    @classmethod
+    def _build_personaplex_url(cls, v: str, info: Any) -> str:
+        if v:
+            return v
+        host = info.data.get("personaplex_host", "192.168.0.88")
+        port = info.data.get("personaplex_port", 8998)
+        return f"ws://{host}:{port}/api/chat"
 
     # ======= Legacy настройки (для /stream endpoint) =======
     openai_realtime_model: str = "gpt-4o-realtime-preview-2024-12-17"
