@@ -1,3 +1,17 @@
+---
+status: ARCHIVED - Incomplete Draft
+archived_date: 2025-01-31
+reason: Superseded by SYSTEM_OVERVIEW.md and DATABASE.md
+---
+
+# Technical Specification (DRAFT - INCOMPLETE)
+
+**⚠️ NOTICE**: This document is an incomplete draft and has been archived. For current technical specifications, please refer to:
+- [architecture/SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md) - Complete system architecture
+- [architecture/DATABASE.md](../architecture/DATABASE.md) - Database design and schema
+
+---
+
 Функциональные требования
 
 Каналы доступа: Telegram-бот/мини-приложение, кроссплатформенное мобильное приложение (iOS/Android) и веб-клиент. Все модули ниже должны работать одинаково независимо от выбранного канала.
@@ -99,17 +113,3 @@ Research:
 2. Сделать поверхностное сравнение, контекстно окно
 3. сделать поиск на анализ голоса, фонетическая править на ошибки в произношении
 4. подумать над userflow ()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
