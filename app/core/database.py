@@ -15,8 +15,11 @@ def _get_session_maker():
     if _engine is None:
         _engine = create_async_engine(
             settings.database_url,
-            echo=False,  # Always off - use sqlalchemy.engine logger at WARNING
-            future=True
+            echo=False,
+            future=True,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_pre_ping=settings.db_pool_pre_ping,
         )
 
         @event.listens_for(_engine.sync_engine, "connect")

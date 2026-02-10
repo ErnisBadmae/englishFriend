@@ -292,6 +292,85 @@ class VLLMProvider(LLMProvider):
                 yield chunk.choices[0].delta.content
 
 
+# ============== PersonaPlex Provider ==============
+
+class PersonaPlexProvider(LLMProvider):
+    """PersonaPlex провайдер - vLLM-совместимый API в облаке (Colab/Runpod/etc)."""
+
+    def __init__(self):
+        if not settings.personaplex_base_url:
+            raise ValueError(
+                "PERSONAPLEX_BASE_URL is not set. "
+                "Set it to your Colab/cloud endpoint URL (e.g. https://xxx.ngrok-free.app/v1)"
+            )
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.personaplex_timeout, connect=15.0),
+        )
+        self._client = AsyncOpenAI(
+            api_key=settings.personaplex_api_key or "EMPTY",
+            base_url=settings.personaplex_base_url,
+            http_client=http_client,
+        )
+        self._retry = create_retry_decorator()
+
+    async def generate(
+        self,
+        user_message: str,
+        system_prompt: str,
+        conversation_history: list[dict] | None = None,
+        max_tokens: int = 150,
+    ) -> str:
+        messages = self._build_messages(user_message, system_prompt, conversation_history)
+        start_time = time.time()
+
+        @self._retry
+        async def _call():
+            response = await self._client.chat.completions.create(
+                model=settings.personaplex_model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=settings.llm_temperature,
+            )
+            return response
+
+        response = await _call()
+        output = response.choices[0].message.content or ""
+        latency_ms = (time.time() - start_time) * 1000
+
+        usage = response.usage
+        trace_llm_generation(
+            model=f"personaplex/{settings.personaplex_model}",
+            messages=messages,
+            output=output,
+            latency_ms=latency_ms,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+        )
+
+        return output
+
+    async def generate_stream(
+        self,
+        user_message: str,
+        system_prompt: str,
+        conversation_history: list[dict] | None = None,
+        max_tokens: int = 150,
+    ) -> AsyncIterator[str]:
+        messages = self._build_messages(user_message, system_prompt, conversation_history)
+
+        stream = await self._client.chat.completions.create(
+            model=settings.personaplex_model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=settings.llm_temperature,
+            stream=True,
+        )
+
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
 # ============== Groq Provider ==============
 
 class GroqProvider(LLMProvider):
@@ -460,6 +539,8 @@ def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
     if provider_type not in _providers:
         if provider_type == "vllm":
             _providers[provider_type] = VLLMProvider()
+        elif provider_type == "personaplex":
+            _providers[provider_type] = PersonaPlexProvider()
         elif provider_type == "groq":
             _providers[provider_type] = GroqProvider()
         elif provider_type == "openai":

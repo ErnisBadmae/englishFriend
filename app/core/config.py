@@ -10,31 +10,45 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/englishfriend_dev"
     database_url_sync: str = "postgresql://postgres:postgres@localhost:5432/englishfriend_dev"
 
+    # Database pool
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_pre_ping: bool = True
+
     # API настройки
     api_title: str = "English Friend API"
     api_version: str = "3.0.0"
-    debug: bool = True
+    debug: bool = False
 
     # CORS настройки
-    allowed_origins: list = ["*"]
+    allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
 
     # Proxy (для России)
     proxy_url: Optional[str] = None
 
     # ======= LLM Provider (для /chat endpoint) =======
     # vllm - свой сервер (по умолчанию, для разработки)
+    # personaplex - PersonaPlex через vLLM-совместимый API (Colab / облако)
     # groq - бесплатно 30 req/min (для демо)
     # openai - премиум
-    llm_provider: Literal["vllm", "groq", "openai"] = "vllm"
+    llm_provider: Literal["vllm", "personaplex", "groq", "openai"] = "vllm"
 
     # vLLM настройки (свой сервер)
-    vllm_base_url: str = "http://192.168.0.88:8000/v1"
+    vllm_base_url: str = "http://localhost:8000/v1"
     vllm_model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ"
     vllm_timeout: int = 60  # секунды
     vllm_max_retries: int = 3
 
+    # PersonaPlex настройки (vLLM-совместимый API в облаке)
+    personaplex_base_url: str = ""  # e.g. https://xxx.ngrok-free.app/v1
+    personaplex_model: str = "PersonaPlex"
+    personaplex_api_key: str = ""  # если требуется
+    personaplex_timeout: int = 90  # секунды (Colab может быть медленнее)
+
     # Groq API (бесплатно, быстро ~200ms)
-    # Получить ключ: https://console.groq.com/keys
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     groq_timeout: int = 30  # секунды
@@ -53,12 +67,10 @@ class Settings(BaseSettings):
     tts_voice: str = "american_female"
 
     # ======= Langfuse Observability =======
-    # Cloud: https://cloud.langfuse.com
-    # Self-hosted: docker compose up langfuse
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
-    langfuse_enabled: bool = True  # Set to False to disable tracing
+    langfuse_enabled: bool = True
 
     # ======= PersonaPlex Speech-to-Speech (NVIDIA Moshi 7B) =======
     # Self-hosted on Linux server with RTX 5060 Ti (INT8 quantization)
@@ -79,14 +91,6 @@ class Settings(BaseSettings):
         host = info.data.get("personaplex_host", "192.168.0.88")
         port = info.data.get("personaplex_port", 8998)
         return f"ws://{host}:{port}/api/chat"
-
-    # ======= Legacy настройки (для /stream endpoint) =======
-    openai_realtime_model: str = "gpt-4o-realtime-preview-2024-12-17"
-    openai_realtime_voice: str = "alloy"
-    openai_whisper_model: str = "whisper-1"
-    hume_api_key: str = ""
-    hume_secret_key: str = ""
-    ai_provider: Literal["hume_evi", "openai_realtime", "whisper_pipeline"] = "hume_evi"
 
     class Config:
         env_file = ".env"

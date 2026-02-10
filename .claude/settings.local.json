@@ -115,7 +115,10 @@
       "Bash(git fetch:*)",
       "Bash(git merge:*)",
       "Bash(git stash:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(/Users/macbook/Desktop/englishFriend/venv/bin/python:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rebase:*)"
     ]
   },
   "enableAllProjectMcpServers": true

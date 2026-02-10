@@ -2,6 +2,7 @@
 API для текстового чата с агентом
 """
 
+import logging
 import uuid
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, field_validator
@@ -10,6 +11,8 @@ import os
 
 from app.core.database import get_db
 from app.agents.base_agent import create_english_friend_agent
+
+logger = logging.getLogger(__name__)
 from app.models.core_tables import Utterance
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"])
@@ -132,9 +135,6 @@ async def agent_chat(
         
     except Exception as e:
         await db.rollback()
-        import traceback
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Agent error: {str(e)}\n{traceback.format_exc()}"
-        )
+        logger.error(f"Agent chat error for user {request.user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
