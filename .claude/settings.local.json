@@ -118,6 +118,7 @@
       "Bash(chmod:*)",
       "Bash(/Users/macbook/Desktop/englishFriend/venv/bin/python:*)",
       "Bash(git checkout:*)",
+      "Bash(git pull:*)",
       "Bash(git rebase:*)"
     ]
   },
