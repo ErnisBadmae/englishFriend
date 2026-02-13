@@ -1,10 +1,10 @@
 ---
-last_updated: 2025-01-31
+last_updated: 2026-02-12
 ---
 
 # Business Strategy
 
-**Summary**: EnglishFriend targets Russian-speaking English learners with a freemium Telegram-based AI mentor. Our competitive advantage lies in specialization on typical Russian speaker errors (W/V, TH, articles), goal-driven learning (ML interviews, IELTS), and integrated spaced repetition. We compete against Speak.com ($20/mo), ELSA ($12/mo), and Duolingo Max ($30/mo) with a more affordable $10-30/mo pricing model.
+**Summary**: EnglishFriend targets Russian-speaking English learners with a freemium Telegram-based AI mentor. Our competitive advantage: self-hosted full-duplex voice (200ms latency, 90%+ margin), specialization on Russian speaker errors (W/V, TH, articles), goal-driven learning, and FSRS spaced repetition. We compete against TalkPal ($5-15/mo), Speak.com ($20/mo), Gliglish ($29/mo), and Duolingo Max ($30/mo) with a $12.99/mo Pro tier backed by self-hosted economics.
 
 ## Market Analysis
 
@@ -31,12 +31,21 @@ last_updated: 2025-01-31
   - Specific phoneme detection
 - **Weakness**: No free conversations, only exercises
 
-#### 3. **TalkPal** (50+ languages)
-- **Technology**: Voice + text conversations
-- **Focus**: Role-play scenarios (restaurant, travel, doctor)
-- **Price**: Unknown (free tier + premium)
-- **Strengths**: Many languages, practical scenarios
-- **Weakness**: Basic feedback
+#### 3. **TalkPal** (57 languages, fastest-growing)
+- **Technology**: GPT-4 powered voice + text conversations
+- **Focus**: Role-play scenarios (restaurant, travel, doctor, job interview)
+- **Price**: $5.99/month (Basic), $9.99/month (Premium), $15.99/month (Premium+)
+- **Free Tier**: 10 minutes/day, limited features
+- **Strengths**:
+  - 57 languages (broadest coverage)
+  - Role-play scenarios with AI characters
+  - Grammar/vocabulary explanations after each response
+  - Affordable entry price ($5.99)
+- **Weakness**:
+  - API-dependent (OpenAI) — margin ~70%
+  - No full-duplex (turn-based only, 500-800ms latency)
+  - Generic corrections (not L1-specific)
+  - Free tier very limited (10 min)
 
 #### 4. **Langua** (LanguaTalk)
 - **Technology**: AI voices cloned from real native speakers
@@ -83,11 +92,14 @@ last_updated: 2025-01-31
 
 | App | Month | Year | Model |
 |-----|-------|------|-------|
+| TalkPal Basic | $5.99 | $72 | Voice + text, 57 langs |
+| TalkPal Premium | $9.99 | $120 | Unlimited + advanced |
 | ELSA Speak | $12-15 | $70-100 | Pronunciation focus |
 | Speak.com | ~$19.50 | $235 | Conversations |
-| Kippy | ~$6.70 | $80 | Budget |
-| Duolingo+ | ~$7 | $84 | Gamification |
-| **EnglishFriend** | $0 (free) | $5-10? | Telegram, Russians |
+| Gliglish | $29 | ~$348 | Premium voice AI |
+| Duolingo Max | ~$30 | $168 | Gamification + AI |
+| **EnglishFriend Free** | **$0** | **$0** | **30 min/day, Telegram** |
+| **EnglishFriend Pro** | **$12.99** | **~$156** | **Full-duplex, unlimited** |
 
 ### ⚠️ Important Update: Duolingo Video Call (September 2024)
 
@@ -104,7 +116,12 @@ Duolingo launched AI Video Call with character Lily:
 - Cheaper: $10-30/month vs $30/month
 - Open-source self-hosting possibility
 
-### Gliglish - Scientifically Proven Effectiveness
+### Gliglish - Scientifically Proven, Premium Pricing
+
+- **Price**: $29/month (single tier, no free plan — only trial)
+- **Technology**: OpenAI GPT-4 + Whisper STT + proprietary TTS
+- **Strengths**: Scientifically validated (+75% speaking improvement, Gualán & Ramírez 2024)
+- **Weakness**: Expensive ($29/mo), API-dependent, no free tier, generic (not L1-specific)
 
 Gualán & Ramírez (2024) study: **+75% improvement** in speaking scores
 - Pre-test: 4.69 → Post-test: 8.24
@@ -112,72 +129,58 @@ Gualán & Ramírez (2024) study: **+75% improvement** in speaking scores
 
 **Conclusion**: Voice AI for language learning works. The question is differentiation.
 
-**Our niche**: Between free Duolingo (low quality) and expensive Cambly (live people). We provide live dialogue quality at subscription price + Russian speaker specialization + goal-based approach.
+**Our niche**: Between free Duolingo (low quality) and expensive Gliglish/Cambly ($29-40/mo). We provide full-duplex dialogue quality at $12.99/mo + Russian speaker specialization + goal-based approach.
 
-## Unit Economics (Updated January 2026)
+## Unit Economics (Updated February 2026)
 
-### ⚡ Important Change: OpenAI Realtime API Price Reduction
+### Game Changer: Self-Hosted PersonaPlex
 
-In December 2024 OpenAI reduced prices:
-- **Input audio**: -60% (was $0.06/min → ~$0.024/min)
-- **Output audio**: -87.5% (was $0.24/min → ~$0.03/min)
+PersonaPlex (NVIDIA Moshi 7B on RTX 5060 Ti) is already integrated, replacing the need for Deepgram + ElevenLabs + OpenAI Realtime. This fundamentally changes our economics.
 
-**New Ultra Tier Calculation:**
-- 10 min dialogue: ~$0.54 (was $3.00)
-- Hour of practice: ~$3.24 (was $18.00)
+### Free Tier ($0)
 
-### Premium Tier ($9.99/month)
+| Component | Cost |
+|-----------|------|
+| Vosk STT | $0 (browser WASM) |
+| Groq LLM | ~$0.001/request |
+| edge-tts | $0 |
+| **Per hour** | **~$0.10-0.50** |
+| **Per user/month** | **~$1.50-7.50** |
 
-**Assumptions**:
-- Average user: 10 hours/month practice
-- Operating cost: $3/hour (Deepgram + GPT-4o-mini + ElevenLabs)
-- Total COGS (Cost of Goods Sold): $30/month
-- **Margin**: -$20.01 😱 (UNPROFITABLE at small scale!)
+### Pro Tier ($12.99/month)
 
-**Optimization**:
-1. Prompt caching: -80% on input tokens → $2/hour
-2. Mixed TTS: OpenAI (cheap) for simple phrases, ElevenLabs for complex → $1.5/hour
-3. Total: $1.5/hour × 10 hours = $15/month
-4. **Margin**: -$5.01 (still negative, but tolerable for attracting Ultra)
+| Component | Cost |
+|-----------|------|
+| PersonaPlex (self-hosted) | $0 marginal |
+| GPU server amortized | ~$0.25-1/user/month |
+| **Gross margin** | **$11.99-12.74 (92-98%)** |
 
-### Ultra Tier ($29.99/month) - OpenAI Realtime
+### Team Tier ($99/month, up to 10)
 
-**Updated Assumptions** (after price reduction):
-- Average user: 15 hours/month (more engaged)
-- Operating cost: ~$3.24/hour (after price reduction)
-- Total COGS: ~$48.60/month
-- **Margin**: -$18.61 (still negative, but better than was -$0.01 at 15 hours)
+| Metric | Value |
+|--------|-------|
+| COGS | ~$2.50-10/month |
+| **Gross margin** | **$89-96.50 (90-97%)** |
 
-### 🆕 Ultra Tier Alternative: Moshi Self-Hosted
+### Competitor Margin Comparison
 
-**Calculation for self-hosted Moshi:**
-- GPU cost: L4 instance ~$0.50/hour (with shared usage)
-- Per user with 10 concurrent users: ~$0.05/hour
-- 15 hours/month × $0.05 = **$0.75/month**
-- **Margin**: +$29.24 🎉
+| | EnglishFriend | TalkPal | Gliglish | SPEAK |
+|---|---|---|---|---|
+| Price | $12.99 | $9.99 | $29 | ~$20 |
+| COGS/user | ~$1 | ~$2-3 | ~$3-5 | ~$3-5 |
+| **Margin** | **92%** | ~70% | ~83% | ~75% |
+| Stack | Self-hosted | API | API | API |
 
-**Trade-offs Moshi vs OpenAI Realtime:**
+**Break-even**: ~300 active free users + 20 pro subscribers
 
-| Factor | OpenAI Realtime | Moshi Self-Hosted |
-|--------|-----------------|-------------------|
-| Latency | 200-300ms | 160-200ms ✅ |
-| Quality | Best-in-class | Very good |
-| Cost/hour | $3.24 | $0.05 ✅ |
-| Setup complexity | Low ✅ | High |
-| Maintenance | None ✅ | DevOps required |
-
-**Conclusion (Updated)**:
-- Premium Tier - loss leader for attraction
-- Ultra Tier with OpenAI Realtime - for MVP and validation (easier to launch)
-- Ultra Tier with Moshi - for scale (after 1000+ users)
-- B2B tier: $99/month for corporate license with Moshi self-hosted = 95%+ margin
+> For detailed analysis, see [Unit Economics](./UNIT_ECONOMICS.md)
 
 ## Competitive Advantages (What Sets Us Apart)
 
-### 1. **Hybrid Architecture with Tier Choice**
-- **Difference**: Most competitors use only one technology
-- **Ours**: Freemium model allows free trial, then upgrade as you progress
-- **Example**: Duolingo uses only text, HelloTalk - only peer-to-peer, we - adaptive AI with tier choice
+### 1. **Full-Duplex Voice with Self-Hosted Economics**
+- **Difference**: All competitors use turn-based API calls (500ms+ latency)
+- **Ours**: PersonaPlex (Moshi 7B) gives full-duplex at 200-400ms, self-hosted at $0 marginal cost
+- **Result**: 90%+ margins vs 70-80% at competitors; user can interrupt AI naturally
 
 ### 2. **Specialization on Russian-Speaking Students**
 - **Difference**: Prompts account for typical Russian speaker errors (articles, "most of people", th-sounds)
@@ -201,28 +204,32 @@ In December 2024 OpenAI reduced prices:
 
 ## Critical Risks and Mitigation
 
-### Risk 1: High Operating Cost
-
-**Mitigation**:
-- Aggressive prompt caching
-- Hybrid TTS model
-- Self-hosted vLLM for Premium (instead of GPT-4o-mini) → $0.50/hour instead of $2
-
-### Risk 2: OpenAI Realtime API May Change Pricing
-
-**Mitigation**:
-- Keep ready alternative on LiveKit + Pipecat (open source)
-- Monitor Anthropic Claude Voice (announced for 2025)
-
-### Risk 3: Low Free → Paid Conversion
+### Risk 1: Low Free → Paid Conversion
 
 **Mitigation**:
 - Limit Free Tier to 30 min/day (create "hunger" for product)
-- Trial Premium: 7 days free to demonstrate quality
-- Gamification: "Unlock unlimited practice for $9.99"
+- Trial Pro: 7 days free PersonaPlex to demonstrate quality difference
+- Gamification: "Unlock unlimited full-duplex practice for $12.99"
+- Full-duplex experience creates clear quality gap vs free tier
+
+### Risk 2: GPU Server Scaling
+
+**Mitigation**:
+- Single RTX 5060 Ti handles ~200 concurrent users
+- At 500+ concurrent: add second GPU server (~$50/month)
+- Fallback to Vosk+Groq+edge-tts stack if PersonaPlex unavailable (already implemented)
+
+### Risk 3: Competitor Price War
+
+**Mitigation**:
+- Self-hosted economics allow us to match any price while staying profitable
+- TalkPal at $5.99 has ~70% margin; we can go to $7.99 and still have 85%+ margin
+- Focus on quality differentiator (full-duplex) rather than price alone
 
 ---
 
-*For technical implementation details, see [Technical Strategy](./TECHNICAL_STRATEGY.md)*  
-*For timeline and milestones, see [Roadmap](./ROADMAP.md)*  
+*For technical implementation details, see [Technical Strategy](./TECHNICAL_STRATEGY.md)*
+*For timeline and milestones, see [Roadmap](./ROADMAP.md)*
+*For detailed unit economics, see [Unit Economics](./UNIT_ECONOMICS.md)*
+*For go-to-market plan, see [Go-to-Market](./GO_TO_MARKET.md)*
 *For voice AI technology research, see [Voice AI Technologies](../research/VOICE_AI_TECHNOLOGIES.md)*
