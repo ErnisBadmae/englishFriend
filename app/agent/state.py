@@ -82,6 +82,9 @@ class AgentState(TypedDict, total=False):
     current_milestone: Optional[str]
     focus_areas: list[str]
     preferred_mode: Optional[str]
+    interview_track_id: Optional[str]
+    interview_track_title: Optional[str]
+    session_focus: Optional[str]
 
     # === Current Session Learning ===
     current_mode: LearningModeEnum
@@ -175,6 +178,9 @@ def create_initial_state(
         current_milestone=None,
         focus_areas=[],
         preferred_mode=None,
+        interview_track_id=None,
+        interview_track_title=None,
+        session_focus=None,
 
         # Current Session
         current_mode=LearningModeEnum.FREE_CONVERSATION,

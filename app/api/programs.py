@@ -39,6 +39,52 @@ class MissionSummary(BaseModel):
     reason: str
 
 
+class InterviewRecommendedTrack(BaseModel):
+    id: str
+    title: str
+    subtitle: str
+
+
+class InterviewScores(BaseModel):
+    overall: float
+    clarity: float
+    structure: float
+    accuracy: float
+    vocabulary: float
+    confidence: float
+
+
+class InterviewRunMeta(BaseModel):
+    user_turns: int
+    avg_words_per_turn: float
+    corrections_count: int
+    weakest_area: str
+    strongest_area: str
+
+
+class InterviewRun(BaseModel):
+    id: str
+    session_id: str
+    track_id: str
+    track_title: str
+    track_subtitle: str
+    recorded_at: str
+    scores: InterviewScores
+    strengths: list[str]
+    next_focus: list[str]
+    summary: str
+    meta: InterviewRunMeta
+
+
+class InterviewSnapshot(BaseModel):
+    completed_runs: int
+    readiness_score: Optional[float] = None
+    trend: str
+    recommended_track: InterviewRecommendedTrack
+    latest_run: Optional[InterviewRun] = None
+    recent_runs: list[InterviewRun]
+
+
 class XPInfo(BaseModel):
     total_xp: int
     level: int
@@ -96,6 +142,7 @@ class ProgramSnapshotResponse(BaseModel):
     assessment: Optional[AssessmentSummary] = None
     mission: MissionSummary
     gamification: dict[str, Any]
+    interview: InterviewSnapshot
     vocabulary: VocabularySnapshot
     progress: ProgressSnapshot
 

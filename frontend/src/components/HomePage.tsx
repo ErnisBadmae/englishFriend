@@ -5,6 +5,7 @@ interface HomePageProps {
   onStartSession: () => void;
   onOpenReview: () => void;
   onOpenProgress: () => void;
+  onOpenInterview: () => void;
   onRefresh: () => void;
 }
 
@@ -13,6 +14,7 @@ export function HomePage({
   onStartSession,
   onOpenReview,
   onOpenProgress,
+  onOpenInterview,
   onRefresh,
 }: HomePageProps) {
   const latestSession = snapshot.progress.recent_sessions[0];
@@ -84,6 +86,27 @@ export function HomePage({
             <div className="list-empty">No focus areas yet. Complete onboarding in a session.</div>
           )}
         </div>
+      </section>
+
+      <section className="content-card">
+        <div className="section-row">
+          <div>
+            <div className="section-label">Interview readiness</div>
+            <h3>
+              {snapshot.interview.readiness_score
+                ? `${snapshot.interview.readiness_score}/10 readiness`
+                : 'No interview runs yet'}
+            </h3>
+          </div>
+          <button className="link-action" onClick={onOpenInterview}>
+            Open
+          </button>
+        </div>
+        <p>
+          {snapshot.interview.completed_runs
+            ? `${snapshot.interview.completed_runs} runs completed. Recommended track: ${snapshot.interview.recommended_track.title}.`
+            : `Recommended track: ${snapshot.interview.recommended_track.title}.`}
+        </p>
       </section>
 
       <section className="content-card">

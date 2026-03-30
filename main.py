@@ -12,6 +12,7 @@ from app.api import (
     agent_chat,
     dimensions,
     gamification,
+    interviews,
     memory_and_interests,
     programs,
     sessions,
@@ -153,6 +154,7 @@ app.include_router(agent_chat.router)
 app.include_router(gamification.router)
 app.include_router(vocabulary.router)
 app.include_router(programs.router)
+app.include_router(interviews.router)
 
 
 @app.get("/health")

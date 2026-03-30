@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.models.core_tables import Correction, Feedback, Session, User
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.gamification import StreakService, XPService
+from app.services.interview_service import build_interview_summary
 from app.services.learning_plan_service import LearningPlanService
 
 
@@ -115,6 +116,7 @@ class ProgramSnapshotService:
 
         plan = await self.learning_plan_service.get_or_create_plan(user_id)
         roadmap = plan.roadmap or {}
+        interview_runs = roadmap.get("interview_runs") or []
 
         vocabulary_stats = await self.vocabulary_service.get_vocabulary_stats(user_id)
         due_cards = await self.vocabulary_service.get_due_cards(user_id, limit=5)
@@ -126,6 +128,26 @@ class ProgramSnapshotService:
         latest_assessment = build_latest_assessment(roadmap)
         preferred_mode = self.learning_plan_service.get_preferred_mode(plan)
         goal = self.learning_plan_service.get_goal(plan)
+        interview_summary = build_interview_summary(interview_runs, goal=goal)
+        mission = recommend_next_mission(
+            goal=goal,
+            preferred_mode=preferred_mode,
+            due_count=vocabulary_stats["due_now"],
+            error_patterns=error_patterns,
+            has_assessment=latest_assessment is not None,
+        )
+
+        if mission["mode"] == "mock_interview":
+            recommended_track = interview_summary["recommended_track"]
+            mission = {
+                "mode": "mock_interview",
+                "title": f"Run {recommended_track['title']}",
+                "reason": (
+                    "Career-focused practice is your highest-leverage next step right now."
+                    if interview_summary["completed_runs"] == 0
+                    else f"Your next best drill is {recommended_track['title'].lower()} to keep interview readiness moving."
+                ),
+            }
 
         return {
             "user": {
@@ -141,17 +163,12 @@ class ProgramSnapshotService:
                 "focus_areas": extract_focus_areas(roadmap),
             },
             "assessment": latest_assessment,
-            "mission": recommend_next_mission(
-                goal=goal,
-                preferred_mode=preferred_mode,
-                due_count=vocabulary_stats["due_now"],
-                error_patterns=error_patterns,
-                has_assessment=latest_assessment is not None,
-            ),
+            "mission": mission,
             "gamification": {
                 "xp": xp_info,
                 "streak": streak_info,
             },
+            "interview": interview_summary,
             "vocabulary": {
                 "stats": vocabulary_stats,
                 "due_preview": [

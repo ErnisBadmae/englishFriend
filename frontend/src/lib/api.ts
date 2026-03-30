@@ -47,6 +47,62 @@ export interface MissionSummary {
   reason: string;
 }
 
+export interface InterviewScores {
+  overall: number;
+  clarity: number;
+  structure: number;
+  accuracy: number;
+  vocabulary: number;
+  confidence: number;
+}
+
+export interface InterviewRunMeta {
+  user_turns: number;
+  avg_words_per_turn: number;
+  corrections_count: number;
+  weakest_area: string;
+  strongest_area: string;
+}
+
+export interface InterviewRun {
+  id: string;
+  session_id: string;
+  track_id: string;
+  track_title: string;
+  track_subtitle: string;
+  recorded_at: string;
+  scores: InterviewScores;
+  strengths: string[];
+  next_focus: string[];
+  summary: string;
+  meta: InterviewRunMeta;
+}
+
+export interface InterviewTrack {
+  id: string;
+  title: string;
+  subtitle: string;
+  description: string;
+  prompt_focus: string;
+  starter_question: string;
+  rubric_focus: string[];
+  recommended: boolean;
+  completed_runs: number;
+}
+
+export interface InterviewSummary {
+  completed_runs: number;
+  readiness_score?: number | null;
+  trend: string;
+  recommended_track: {
+    id: string;
+    title: string;
+    subtitle: string;
+  };
+  latest_run?: InterviewRun | null;
+  recent_runs: InterviewRun[];
+}
+
 export interface VocabularyStats {
   total: number;
   new: number;
@@ -103,6 +159,7 @@ export interface ProgramSnapshot {
       last_activity?: string | null;
     };
   };
+  interview: InterviewSummary;
   vocabulary: {
     stats: VocabularyStats;
     due_preview: VocabularyCard[];
@@ -121,6 +178,22 @@ interface ReviewPayload {
   rating: number;
   session_id?: string;
   duration_ms?: number;
+}
+
+interface InterviewTracksResponse {
+  summary: InterviewSummary;
+  tracks: InterviewTrack[];
+}
+
+interface CreateInterviewRunPayload {
+  session_id: string;
+  track_id?: string;
+  corrections_count?: number;
+  reviewed_words?: Array<Record<string, unknown>>;
+  conversation_history: Array<{
+    role: string;
+    content: string;
+  }>;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -181,6 +254,21 @@ export async function getDueVocabulary(userId: number, limit = 10): Promise<Voca
 
 export async function reviewVocabularyCard(userId: number, payload: ReviewPayload): Promise<VocabularyCard> {
   return fetchJson<VocabularyCard>(`/api/v1/vocabulary/${userId}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getInterviewTracks(userId: number): Promise<InterviewTracksResponse> {
+  return fetchJson<InterviewTracksResponse>(`/api/v1/interviews/${userId}/tracks`);
+}
+
+export async function getInterviewRuns(userId: number, limit = 10): Promise<InterviewRun[]> {
+  return fetchJson<InterviewRun[]>(`/api/v1/interviews/${userId}/runs?limit=${limit}`);
+}
+
+export async function createInterviewRun(userId: number, payload: CreateInterviewRunPayload): Promise<InterviewRun> {
+  return fetchJson<InterviewRun>(`/api/v1/interviews/${userId}/runs`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });

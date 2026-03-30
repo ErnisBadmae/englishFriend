@@ -25,6 +25,7 @@ from typing import Optional, Any, Literal
 from langgraph.graph import StateGraph, END
 
 from app.agent.state import AgentState, AgentPhase
+from app.data.interview_tracks import get_interview_track
 from app.agent.nodes_v2 import (
     router_node,
     route_after_router,
@@ -139,6 +140,8 @@ async def initialize_session_v2(
     due_vocabulary_count: int = 0,
     due_vocabulary_words: Optional[list[str]] = None,
     memory_section: str = "",
+    explicit_mode: Optional[str] = None,
+    interview_track_id: Optional[str] = None,
 ) -> AgentState:
     """Initialize a new agent session.
 
@@ -175,12 +178,19 @@ async def initialize_session_v2(
             for fa in roadmap.get("focus_areas", [])
         ]
 
+    selected_track = get_interview_track(interview_track_id)
+
     # Determine initial mode
     initial_mode = LearningMode.FREE_CONVERSATION
     if due_vocabulary_count >= 10:
         initial_mode = LearningMode.VOCABULARY_DRILL
     elif confirmed_goal and "interview" in confirmed_goal.lower():
         initial_mode = LearningMode.MOCK_INTERVIEW
+    if explicit_mode:
+        try:
+            initial_mode = LearningMode(explicit_mode)
+        except ValueError:
+            logger.warning(f"[Agent V2] Unknown explicit mode ignored: {explicit_mode}")
 
     state: AgentState = {
         # User info
@@ -207,6 +217,9 @@ async def initialize_session_v2(
         # Learning program
         "roadmap": roadmap,
         "focus_areas": focus_areas,
+        "interview_track_id": selected_track["id"] if selected_track else None,
+        "interview_track_title": selected_track["title"] if selected_track else None,
+        "session_focus": selected_track["prompt_focus"] if selected_track else None,
 
         # Current session
         "current_mode": initial_mode,

@@ -37,6 +37,25 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
       </section>
 
       <section className="content-card">
+        <div className="section-label">Interview trajectory</div>
+        {snapshot.interview.recent_runs.length > 0 ? (
+          <div className="list-stack">
+            {snapshot.interview.recent_runs.slice(0, 3).map((run) => (
+              <div key={run.id} className="list-item">
+                <strong>{run.track_title}</strong>
+                <span className="muted-line">
+                  {new Date(run.recorded_at).toLocaleString()} · overall {run.scores.overall}/10
+                </span>
+                <p className="session-summary">{run.summary}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="list-empty">Interview runs will appear here after your first career mission.</div>
+        )}
+      </section>
+
+      <section className="content-card">
         <div className="section-label">Top error patterns</div>
         <div className="list-stack">
           {snapshot.progress.top_error_patterns.length > 0 ? (

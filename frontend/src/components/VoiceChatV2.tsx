@@ -18,9 +18,25 @@ import './VoiceChat.css';
 interface VoiceChatV2Props {
   userId: number;
   wsUrl: string;
+  mode?: string;
+  interviewTrackId?: string;
+  title?: string;
+  subtitle?: string;
+  onSessionEnded?: (payload: {
+    sessionId: string | null;
+    messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+  }) => void;
 }
 
-export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
+export function VoiceChatV2({
+  userId,
+  wsUrl,
+  mode,
+  interviewTrackId,
+  title,
+  subtitle,
+  onSessionEnded,
+}: VoiceChatV2Props) {
 
   // Vosk с VAD
   const {
@@ -51,6 +67,7 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
   const {
     isConnected,
     isConnecting,
+    sessionId,
     messages,
     sendText,
     connect,
@@ -59,6 +76,10 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
   } = useWebSocket({
     url: wsUrl,
     userId,
+    query: {
+      mode,
+      interview_track: interviewTrackId,
+    },
     onAudio: (audioData) => {
       play(audioData);
     },
@@ -125,11 +146,18 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
 
   // Завершить сессию
   const handleEndSession = useCallback(() => {
+    const transcriptSnapshot = [...messages];
     if (isListening) {
       cancelAndReset();
     }
     disconnect();
-  }, [isListening, cancelAndReset, disconnect]);
+    window.setTimeout(() => {
+      onSessionEnded?.({
+        sessionId,
+        messages: transcriptSnapshot,
+      });
+    }, 700);
+  }, [messages, sessionId, isListening, cancelAndReset, disconnect, onSessionEnded]);
 
   // Статус для отображения
   const getStatusMessage = () => {
@@ -170,6 +198,8 @@ export function VoiceChatV2({ userId, wsUrl }: VoiceChatV2Props) {
       {/* Header */}
       <div className="voice-chat-header">
         <h1>🎓 English Mentor</h1>
+        {title && <p className="voice-session-subtitle">{title}</p>}
+        {subtitle && <p className="voice-session-subtitle">{subtitle}</p>}
         <p className="status">{getStatusMessage()}</p>
         {error && <p className="error">{error}</p>}
       </div>

@@ -12,6 +12,7 @@ import time
 from typing import Optional
 
 from app.agent.state import AgentState, AgentPhase, add_decision_log
+from app.data.interview_tracks import get_interview_track
 from app.agent.response_parser import parse_llm_response
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
@@ -279,6 +280,9 @@ def _build_template_context(state: AgentState) -> dict:
         "last_user_message": state.get("last_user_message", ""),
         "conversation_history": state.get("conversation_history", []),
         "focus_areas": state.get("focus_areas", []),
+        "session_focus": state.get("session_focus"),
+        "interview_track_id": state.get("interview_track_id"),
+        "interview_track_title": state.get("interview_track_title"),
         "vocabulary_list": _format_vocabulary_list(state),
         "memory_section": state.get("memory_section", ""),
         "corrections_made": state.get("corrections_made", []),
@@ -299,6 +303,34 @@ def _get_fallback_prompt(state: AgentState) -> str:
     username = state.get("username", "Student")
     level = state.get("language_level", "B1")
     goal = state.get("confirmed_goal", "General Fluency")
+    current_mode = state.get("current_mode")
+    if hasattr(current_mode, "value"):
+        current_mode = current_mode.value
+
+    if current_mode == "mock_interview":
+        track = get_interview_track(state.get("interview_track_id")) or {
+            "title": state.get("interview_track_title") or "Interview Mission",
+            "prompt_focus": state.get("session_focus") or "clear professional communication",
+            "starter_question": "Tell me about yourself and your recent work.",
+        }
+        return f"""You are English Friend acting as a friendly but demanding interviewer.
+
+Student: {username}
+Level: {level}
+Goal: {goal}
+Interview track: {track['title']}
+Track focus: {track['prompt_focus']}
+Starter question: {track['starter_question']}
+
+Rules:
+1. Keep the interview realistic and concise.
+2. Ask one question at a time, then a short follow-up.
+3. Give micro-feedback naturally after answers.
+4. Use Socratic recasts for grammar mistakes.
+5. If there is no user message yet, open with the starter question.
+
+Respond with JSON:
+{{"action": "continue", "response_text": "your response", "corrections": [{{"original": "...", "corrected": "...", "type": "grammar"}}], "vocabulary_emphasized": ["word"], "should_end": false}}"""
 
     return f"""You are English Friend - a patient, encouraging AI English tutor.
 

@@ -33,11 +33,13 @@ interface UseWebSocketOptions {
   onError?: (error: string) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  query?: Record<string, string | number | undefined | null>;
 }
 
 interface UseWebSocketReturn {
   isConnected: boolean;
   isConnecting: boolean;
+  sessionId: string | null;
   messages: Message[];
   sendText: (text: string) => void;
   connect: () => void;
@@ -54,10 +56,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     onError,
     onConnect,
     onDisconnect,
+    query,
   } = options;
 
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,7 +77,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     setIsConnecting(true);
     setError(null);
 
-    const wsUrl = `${url}?user_id=${userId}`;
+    const params = new URLSearchParams();
+    params.set('user_id', String(userId));
+    Object.entries(query || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        params.set(key, String(value));
+      }
+    });
+
+    const wsUrl = `${url}?${params.toString()}`;
     console.log('Connecting to WebSocket:', wsUrl);
 
     const ws = new WebSocket(wsUrl);
@@ -95,6 +107,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         switch (data.type) {
           case 'connected':
             console.log('Session started:', data.session_id);
+            setSessionId(data.session_id || null);
             if (data.greeting) {
               const greetingMessage: Message = {
                 role: 'assistant',
@@ -149,6 +162,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       console.log('WebSocket closed:', event.code, event.reason);
       setIsConnected(false);
       setIsConnecting(false);
+      setSessionId(null);
       wsRef.current = null;
       onDisconnect?.();
 
@@ -164,7 +178,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setError('Cannot connect to server. Please refresh the page.');
       }
     };
-  }, [url, userId, isConnecting, onConnect, onDisconnect, onMessage, onAudio, onError]);
+  }, [url, userId, query, isConnecting, onConnect, onDisconnect, onMessage, onAudio, onError]);
 
   // Отключение с отправкой "end" сообщения для PostSessionService
   const disconnect = useCallback(() => {
@@ -191,6 +205,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
 
     setIsConnected(false);
+    setSessionId(null);
     setMessages([]);
   }, []);
 
@@ -220,6 +235,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   return {
     isConnected,
     isConnecting,
+    sessionId,
     messages,
     sendText,
     connect,

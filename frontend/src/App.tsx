@@ -1,16 +1,39 @@
 import { useEffect, useState } from 'react';
 import { HomePage } from './components/HomePage';
+import { InterviewPage } from './components/InterviewPage';
 import { ProgressPage } from './components/ProgressPage';
 import { ReviewPage } from './components/ReviewPage';
 import { VoiceChatV2 } from './components/VoiceChatV2';
-import { API_BASE, WS_BASE, getProgramSnapshot, resolveOrCreateUser, type ProgramSnapshot } from './lib/api';
+import {
+  API_BASE,
+  WS_BASE,
+  createInterviewRun,
+  getProgramSnapshot,
+  resolveOrCreateUser,
+  type InterviewTrack,
+  type ProgramSnapshot,
+} from './lib/api';
 import './App.css';
 
-type Screen = 'home' | 'session' | 'review' | 'progress';
+type Screen = 'home' | 'session' | 'interview' | 'review' | 'progress';
+
+interface SessionConfig {
+  wsUrl: string;
+  mode?: string;
+  interviewTrackId?: string;
+  title?: string;
+  subtitle?: string;
+  returnScreen: Screen;
+}
 
 function readScreenFromHash(): Screen {
   const normalized = window.location.hash.replace('#', '');
-  if (normalized === 'session' || normalized === 'review' || normalized === 'progress') {
+  if (
+    normalized === 'session'
+    || normalized === 'interview'
+    || normalized === 'review'
+    || normalized === 'progress'
+  ) {
     return normalized;
   }
   return 'home';
@@ -22,12 +45,14 @@ function App() {
   const [userId, setUserId] = useState<number | null>(null);
   const [snapshot, setSnapshot] = useState<ProgramSnapshot | null>(null);
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
+  const [sessionConfig, setSessionConfig] = useState<SessionConfig>({
+    wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+    returnScreen: 'progress',
+  });
   const [isReady, setIsReady] = useState(false);
   const [isResolvingUser, setIsResolvingUser] = useState(true);
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const wsUrl = `${WS_BASE}/api/v1/voice/chat`;
 
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
@@ -148,10 +173,78 @@ function App() {
   }, [userId]);
 
   useEffect(() => {
-    if (screen === 'home') {
+    if (screen === 'home' || screen === 'progress' || screen === 'interview') {
       void refreshSnapshot();
     }
   }, [screen]);
+
+  function startGuidedSession() {
+    if (!snapshot) {
+      return;
+    }
+
+    if (snapshot.mission.mode === 'mock_interview') {
+      setScreen('interview');
+      return;
+    }
+
+    setSessionConfig({
+      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+      mode: snapshot.mission.mode,
+      title: snapshot.mission.title,
+      subtitle: snapshot.mission.reason,
+      returnScreen: 'progress',
+    });
+    setScreen('session');
+  }
+
+  function startInterviewTrack(track: InterviewTrack) {
+    setSessionConfig({
+      wsUrl: `${WS_BASE}/api/v1/voice/chat-legacy`,
+      mode: 'mock_interview',
+      interviewTrackId: track.id,
+      title: track.title,
+      subtitle: track.subtitle,
+      returnScreen: 'interview',
+    });
+    setScreen('session');
+  }
+
+  function openDefaultSession() {
+    setSessionConfig({
+      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+      returnScreen: 'progress',
+    });
+    setScreen('session');
+  }
+
+  async function handleSessionEnded(payload: {
+    sessionId: string | null;
+    messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+  }) {
+    if (
+      userId
+      && sessionConfig.mode === 'mock_interview'
+      && payload.sessionId
+      && payload.messages.length > 0
+    ) {
+      try {
+        await createInterviewRun(userId, {
+          session_id: payload.sessionId,
+          track_id: sessionConfig.interviewTrackId,
+          conversation_history: payload.messages.map((message) => ({
+            role: message.role,
+            content: message.text,
+          })),
+        });
+      } catch (err) {
+        console.error('Failed to save interview run', err);
+      }
+    }
+
+    await refreshSnapshot();
+    setScreen(sessionConfig.returnScreen);
+  }
 
   if (!isReady) {
     return (
@@ -199,7 +292,8 @@ function App() {
             {screen === 'home' && (
               <HomePage
                 snapshot={snapshot}
-                onStartSession={() => setScreen('session')}
+                onStartSession={startGuidedSession}
+                onOpenInterview={() => setScreen('interview')}
                 onOpenReview={() => setScreen('review')}
                 onOpenProgress={() => setScreen('progress')}
                 onRefresh={() => {
@@ -207,7 +301,25 @@ function App() {
                 }}
               />
             )}
-            {screen === 'session' && <VoiceChatV2 userId={userId} wsUrl={wsUrl} />}
+            {screen === 'session' && (
+              <VoiceChatV2
+                userId={userId}
+                wsUrl={sessionConfig.wsUrl}
+                mode={sessionConfig.mode}
+                interviewTrackId={sessionConfig.interviewTrackId}
+                title={sessionConfig.title}
+                subtitle={sessionConfig.subtitle}
+                onSessionEnded={(payload) => {
+                  void handleSessionEnded(payload);
+                }}
+              />
+            )}
+            {screen === 'interview' && (
+              <InterviewPage
+                userId={userId}
+                onStartTrack={startInterviewTrack}
+              />
+            )}
             {screen === 'review' && (
               <ReviewPage
                 userId={userId}
@@ -233,8 +345,11 @@ function App() {
         <button className={screen === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('home')}>
           Home
         </button>
-        <button className={screen === 'session' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('session')}>
+        <button className={screen === 'session' ? 'nav-item active' : 'nav-item'} onClick={openDefaultSession}>
           Session
+        </button>
+        <button className={screen === 'interview' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('interview')}>
+          Interview
         </button>
         <button className={screen === 'review' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('review')}>
           Review

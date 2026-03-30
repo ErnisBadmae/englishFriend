@@ -291,13 +291,16 @@ body {
 .stat-card small,
 .muted-line,
 .session-summary,
-.list-empty {
+.list-empty,
+.track-description,
+.voice-session-subtitle {
   color: var(--app-muted);
 }
 
 .stat-card small,
 .muted-line,
-.list-empty {
+.list-empty,
+.voice-session-subtitle {
   display: block;
   margin-top: 8px;
 }
@@ -337,6 +340,16 @@ body {
 
 .tiny-pill {
   padding: 6px 10px;
+}
+
+.interview-track-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.track-description {
+  margin-top: 6px;
 }
 
 .review-card {
@@ -391,7 +404,7 @@ body {
   position: sticky;
   bottom: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   padding: 14px 20px 18px;
   background: linear-gradient(180deg, rgba(247, 244, 236, 0), rgba(247, 244, 236, 0.94) 35%);
@@ -427,6 +440,16 @@ body {
 
   .hero-card h1 {
     font-size: 26px;
+  }
+
+  .bottom-nav {
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  .nav-item {
+    padding-inline: 4px;
+    font-size: 12px;
   }
 }
 
