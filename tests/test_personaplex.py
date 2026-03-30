@@ -14,6 +14,7 @@ Integration tests (require PersonaPlex server):
 
 import asyncio
 import json
+import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -386,6 +387,13 @@ class TestPersonaPlexConfig:
         assert hasattr(settings, "personaplex_port")
         assert hasattr(settings, "personaplex_default_voice")
         assert hasattr(settings, "personaplex_quantization")
+
+    def test_default_host_points_to_ai_host_03(self):
+        """Default host should target the current corporate PersonaPlex node."""
+        with patch.dict(os.environ, {}, clear=True):
+            s = Settings(_env_file=None)
+        assert s.personaplex_host == "192.168.0.18"
+        assert s.personaplex_ws_url == "ws://192.168.0.18:8998/api/chat"
 
     def test_ws_url_auto_computed(self):
         """WebSocket URL is auto-computed from host and port if not set."""

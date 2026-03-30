@@ -84,7 +84,7 @@ class Settings(BaseSettings):
 
     # PersonaPlex speech-to-speech
     personaplex_enabled: bool = False
-    personaplex_host: str = "192.168.0.88"
+    personaplex_host: str = "192.168.0.18"
     personaplex_port: int = 8998
     personaplex_ws_url: str = ""
     personaplex_default_voice: str = "NATM0"
@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     def _build_personaplex_url(cls, v: str, info: Any) -> str:
         if v:
             return v
-        host = info.data.get("personaplex_host", "192.168.0.88")
+        host = info.data.get("personaplex_host", "192.168.0.18")
         port = info.data.get("personaplex_port", 8998)
         return f"ws://{host}:{port}/api/chat"
 
