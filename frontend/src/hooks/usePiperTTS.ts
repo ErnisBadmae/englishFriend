@@ -61,7 +61,7 @@ async function loadPiperModule(): Promise<PiperTTSModule> {
   piperModulePromise = (async () => {
     // Динамический импорт через CDN
     const module = await import(
-      /* webpackIgnore: true */
+      /* @vite-ignore */
       'https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.3/dist/piper-tts-web.js'
     );
     return module as PiperTTSModule;

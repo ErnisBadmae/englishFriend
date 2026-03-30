@@ -11,17 +11,55 @@ import logging
 import time
 from datetime import datetime
 from typing import Optional, Any
-from jinja2 import Environment, BaseLoader, TemplateSyntaxError
+
+try:
+    from jinja2 import Environment, BaseLoader, TemplateSyntaxError
+except ModuleNotFoundError:
+    class TemplateSyntaxError(Exception):
+        pass
+
+    class BaseLoader:
+        pass
+
+    class _FallbackTemplate:
+        def __init__(self, template: str):
+            self._template = template
+
+        def render(self, **state):
+            class _SafeDict(dict):
+                def __missing__(self, key):
+                    return "{" + key + "}"
+
+            try:
+                return self._template.format_map(_SafeDict(state))
+            except Exception:
+                return self._template
+
+    class Environment:
+        def __init__(self, loader=None):
+            self.loader = loader
+            self.filters = {}
+
+        def from_string(self, template: str):
+            return _FallbackTemplate(template)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.prompt_models import (
-    PromptTemplate,
-    ABExperiment,
-    SessionPromptLog,
-    DimLearningGoal,
-)
+try:
+    from app.models.prompt_models import (
+        PromptTemplate,
+        ABExperiment,
+        SessionPromptLog,
+        DimLearningGoal,
+    )
+    PROMPT_MODELS_AVAILABLE = True
+except ModuleNotFoundError:
+    PromptTemplate = Any
+    ABExperiment = Any
+    SessionPromptLog = Any
+    DimLearningGoal = Any
+    PROMPT_MODELS_AVAILABLE = False
 from app.core.database import get_async_session
 
 logger = logging.getLogger(__name__)
@@ -52,6 +90,9 @@ class PromptService:
         Returns:
             PromptTemplate or None if not found
         """
+        if not PROMPT_MODELS_AVAILABLE:
+            return None
+
         async with self._get_db() as db:
             # Check for active experiment if no variant forced
             if variant is None:
@@ -163,6 +204,9 @@ class PromptService:
             experiment_id: A/B experiment ID if applicable
         """
         try:
+            if not PROMPT_MODELS_AVAILABLE:
+                return
+
             async with self._get_db() as db:
                 log_entry = SessionPromptLog(
                     session_id=session_id,
@@ -191,6 +235,9 @@ class PromptService:
         Returns:
             DimLearningGoal or None
         """
+        if not PROMPT_MODELS_AVAILABLE:
+            return None
+
         async with self._get_db() as db:
             result = await db.execute(
                 select(DimLearningGoal)
@@ -205,6 +252,9 @@ class PromptService:
         Returns:
             List of DimLearningGoal
         """
+        if not PROMPT_MODELS_AVAILABLE:
+            return []
+
         async with self._get_db() as db:
             result = await db.execute(
                 select(DimLearningGoal)
@@ -245,6 +295,9 @@ class PromptService:
         node_type: str,
     ) -> Optional[ABExperiment]:
         """Get active A/B experiment for node type."""
+        if not PROMPT_MODELS_AVAILABLE:
+            return None
+
         result = await db.execute(
             select(ABExperiment)
             .where(ABExperiment.node_type == node_type)

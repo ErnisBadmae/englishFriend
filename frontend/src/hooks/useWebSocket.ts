@@ -22,6 +22,7 @@ interface WebSocketMessage {
   format?: string;
   message?: string;
   session_id?: string;
+  greeting?: string;
 }
 
 interface UseWebSocketOptions {
@@ -94,6 +95,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         switch (data.type) {
           case 'connected':
             console.log('Session started:', data.session_id);
+            if (data.greeting) {
+              const greetingMessage: Message = {
+                role: 'assistant',
+                text: data.greeting,
+              };
+              setMessages(prev => (prev.length === 0 ? [greetingMessage] : prev));
+              onMessage?.(greetingMessage);
+            }
             break;
 
           case 'transcript':

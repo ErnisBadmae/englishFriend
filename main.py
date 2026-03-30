@@ -8,7 +8,18 @@ from typing import Dict, Any
 from contextlib import asynccontextmanager
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-from app.api import users, sessions, dimensions, utterances_and_feedback, memory_and_interests, voice, agent_chat, gamification
+from app.api import (
+    agent_chat,
+    dimensions,
+    gamification,
+    memory_and_interests,
+    programs,
+    sessions,
+    users,
+    utterances_and_feedback,
+    vocabulary,
+    voice,
+)
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.middleware import PrometheusMiddleware, RequestIDMiddleware, MetricsLogFilter, RequestIDFormatter
@@ -140,6 +151,8 @@ app.include_router(memory_and_interests.router)
 app.include_router(voice.router)
 app.include_router(agent_chat.router)
 app.include_router(gamification.router)
+app.include_router(vocabulary.router)
+app.include_router(programs.router)
 
 
 @app.get("/health")
