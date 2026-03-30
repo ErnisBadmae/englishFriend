@@ -5,6 +5,88 @@
 
 ---
 
+## Последнее обновление: 2026-03-30 (Career Interview Loop v1)
+
+### 2026-03-30 - Career Interview Loop v1
+
+**Агент**: Codex (GPT-5)
+**Задача**: Реализовать следующий продуктовый слой после product shell: карьерные interview missions, history, readiness summary и user-visible loop, который сильнее отличает продукт от generic voice chat.
+
+**Что было решено**
+
+Вместо тяжелой новой таблицы `interview_sessions` и глубокого переписывания websocket-пайплайна выбран v1 путь:
+
+- curated interview tracks в коде
+- хранение run history в `learning_plan.roadmap`
+- отдельный interview API
+- persistence interview run после завершения сессии через REST
+- новый экран `Interview` в Mini App
+
+**Почему выбрали именно этот путь**
+
+1. Нужно было быстро показать пользователю измеримую карьерную ценность, а не только внутреннюю архитектурную готовность
+2. `learning_plan.roadmap` уже был продуктовым контейнером для progress state
+3. REST-запись после конца сессии позволила не ломать существующий voice flow
+4. Это дает возможность быстро проверить, повышает ли interview history perceived value и retention
+
+**Что реализовано**
+
+1. **Interview domain layer**
+   - `app/data/interview_tracks.py`
+   - `app/services/interview_service.py`
+   - треки:
+     - `HR Interview`
+     - `Project Walkthrough`
+     - `Workplace Communication`
+   - heuristic scoring:
+     - overall
+     - clarity
+     - structure
+     - accuracy
+     - vocabulary
+     - confidence
+
+2. **Interview API**
+   - `app/api/interviews.py`
+   - endpoints:
+     - `GET /api/v1/interviews/{user_id}/tracks`
+     - `GET /api/v1/interviews/{user_id}/runs`
+     - `POST /api/v1/interviews/{user_id}/runs`
+
+3. **Program snapshot enrichment**
+   - `ProgramSnapshotService` теперь включает:
+     - interview readiness
+     - trend
+     - recommended track
+     - recent interview runs
+   - mission recommendation теперь лучше подстраивается под interview wedge
+
+4. **Frontend**
+   - новый экран:
+     - `frontend/src/components/InterviewPage.tsx`
+   - Mini App navigation теперь включает `Interview`
+   - interview session можно запустить из выбранного track
+   - после завершения voice session run сохраняется и затем виден в snapshot / progress / interview screen
+
+5. **Prompt readiness for future native integration**
+   - agent v2 state расширен под interview track / session focus
+   - fallback learning prompt стал лучше для `mock_interview`
+
+**Проверка**
+
+- `python -m pytest tests/test_program_snapshot_service.py tests/test_interview_service.py tests/test_voice_helpers.py -q`
+  - результат: `10 passed`
+- `npm run build` в `frontend/`
+  - passed
+- `python -c "import main; print('main import ok')"`
+  - passed
+
+**Что осталось следующим логичным шагом**
+
+- перенести interview persistence глубже в backend session-end path
+- сделать нативную track-aware voice session без промежуточного REST persistence
+- усилить rubric scoring и сравнение прогресса между runs
+
 ## Последнее обновление: 2026-03-30 (Product Wedge Pivot + Product Shell)
 
 ### 2026-03-30 - Product Wedge Pivot, Program Snapshot, Mini App Shell

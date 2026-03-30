@@ -179,25 +179,56 @@ The project now has a visible product shell:
 
 This is the minimum base needed to justify the next strategic implementation step.
 
-## Next Build Step
+## Implemented After The Pivot
 
-The next high-value implementation step is:
+### Career Interview Loop v1
 
-## Career Interview Loop
+The next slice after the product shell was implemented as a lightweight but user-visible career loop:
 
-Build a dedicated outcome loop for interview/workplace readiness:
+- curated interview tracks:
+  - `HR Interview`
+  - `Project Walkthrough`
+  - `Workplace Communication`
+- interview history API
+- interview readiness summary inside program snapshot
+- dedicated `Interview` screen in the Mini App
+- ability to end a spoken interview session and persist it as a scored run
 
-- scenario selection
-- interview session run
-- structured scoring
-- session outcome record
-- historical comparison over time
+### Why This Was Implemented This Way
+
+This step was intentionally implemented without a new SQL table or a deep voice backend refactor.
 
 Reason:
 
-- it is the clearest product wedge against generic voice chat
-- it aligns with the chosen IT-career segment
-- it produces stronger retention and payment reasons than a generic dashboard
+- the product needed visible differentiation faster than it needed a perfect domain model
+- `learning_plan.roadmap` already existed and could hold interview evidence safely enough for v1
+- a REST write after session end was enough to create persistent interview history without destabilizing the live websocket path
+- the user can now see readiness, trend, recommended track, and recent runs directly in the app
+
+This is a pragmatic product decision:
+
+- first prove that interview history and scoring improve retention and perceived value
+- then move persistence deeper into the backend session pipeline if the loop validates
+
+## Next Build Step
+
+The next high-value implementation step is now:
+
+## Interview Evidence Hardening
+
+Harden the interview loop from v1 into a stronger backend-owned system:
+
+- persist interview runs directly from session end in backend
+- attach track selection to session state natively
+- improve scoring from heuristic v1 toward richer rubric scoring
+- connect interview outcomes to next mission routing and milestone updates
+- expose clearer before/after deltas per skill axis
+
+Reason:
+
+- v1 already makes the wedge visible
+- the next gain comes from making the evidence loop more trustworthy and automated
+- stronger evidence is what turns interview practice into a real moat instead of a UI wrapper
 
 ## Research Inputs Used
 
