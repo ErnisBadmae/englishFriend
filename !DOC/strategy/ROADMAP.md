@@ -1,8 +1,12 @@
 ---
-last_updated: 2026-02-12
+last_updated: 2026-03-30
 ---
 
 # Roadmap
+
+> Strategic update on 2026-03-30:
+> the execution order in this file is no longer the primary product roadmap.
+> See [PRODUCT_WEDGE_PIVOT_2026-03-30.md](./PRODUCT_WEDGE_PIVOT_2026-03-30.md) for the current wedge, rationale, and next build step.
 
 **Summary**: EnglishFriend MVP is ~95% complete with PersonaPlex (full-duplex, 200-400ms, $0) already integrated. The roadmap focuses on launch validation (Phase 1.5), monetization with self-hosted advantage (Phase 2), and scaling to B2B/mobile (Phase 3).
 
@@ -155,5 +159,3 @@ last_updated: 2026-02-12
 
 *For business context, see [Business Strategy](./BUSINESS_STRATEGY.md)*
 *For technical details, see [Technical Strategy](./TECHNICAL_STRATEGY.md)*
-*For unit economics, see [Unit Economics](./UNIT_ECONOMICS.md)*
-*For go-to-market plan, see [Go-to-Market](./GO_TO_MARKET.md)*

@@ -1,6 +1,6 @@
 # English Friend Documentation
 
-**Last Updated**: 2026-02-09
+**Last Updated**: 2026-03-30
 
 Welcome to the English Friend documentation. This guide will help you navigate the project documentation efficiently.
 
@@ -24,6 +24,7 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 | [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) | High-level architecture, data flow, deployment | Understanding system design |
 | [DB.md](./DB.md) | Database schema, partitioning, CDC, RLS | Working with database |
 | [STRATEGY.md](./STRATEGY.md) | Business strategy, market analysis, roadmap | Strategic planning |
+| [strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md](./strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md) | Current strategic pivot, research summary, rationale, next execution step | Product direction and prioritization |
 | [TEMPLATE.md](./TEMPLATE.md) | Documentation system template for other projects | Reusing doc system |
 | [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md) | How to deploy doc system to other projects | Setting up docs elsewhere |
 

@@ -5,6 +5,118 @@
 
 ---
 
+## Последнее обновление: 2026-03-30 (Product Wedge Pivot + Product Shell)
+
+### 2026-03-30 - Product Wedge Pivot, Program Snapshot, Mini App Shell
+
+**Агент**: Codex (GPT-5)
+**Задача**: Провести независимый анализ конкурентной позиции, сохранить rationale в документации, реализовать первый продуктовый слой поверх существующего backend и зафиксировать прогресс перед следующим шагом.
+
+**Ключевое решение**:
+
+Проект не должен конкурировать как generic voice tutor.
+Выбран стартовый клин:
+
+- русскоязычные IT-специалисты
+- international career / interview / workplace English
+- Telegram Mini App
+- B2C first
+
+Основной moat определён как:
+
+`assessment -> program -> mission -> live session -> evidence -> next mission`
+
+а не как `voice + memory` сами по себе.
+
+**Почему поменяли порядок работ**:
+
+1. ChatGPT и Claude уже закрывают generic conversational AI use case
+2. В репозитории уже были сильные backend-компоненты, но пользователь не видел связного продукта
+3. Frontend был недостаточно собран даже для базовой демонстрации ценности
+4. Нужен был сначала user-visible product shell, а уже потом новые сложные AI-фичи
+
+**Что реализовано**:
+
+1. **Backend - агрегированный program snapshot**
+   - Новый сервис: `app/services/program_snapshot_service.py`
+   - Новый endpoint: `GET /api/v1/programs/{user_id}/snapshot`
+   - Агрегирует:
+     - goal / preferred mode
+     - latest assessment
+     - today's mission recommendation
+     - XP / streak
+     - due vocabulary preview
+     - top error patterns
+     - milestones
+     - recent sessions
+
+2. **Backend - vocabulary REST layer**
+   - Новый router: `app/api/vocabulary.py`
+   - Endpoints:
+     - `GET /api/v1/vocabulary/{user_id}/stats`
+     - `GET /api/v1/vocabulary/{user_id}/due`
+     - `POST /api/v1/vocabulary/{user_id}/review`
+
+3. **Frontend - Telegram Mini App shell**
+   - `frontend/src/App.tsx` rewritten
+   - Новые экраны:
+     - `Home`
+     - `Session`
+     - `Review`
+     - `Progress`
+   - Новые компоненты:
+     - `frontend/src/components/HomePage.tsx`
+     - `frontend/src/components/ReviewPage.tsx`
+     - `frontend/src/components/ProgressPage.tsx`
+   - Новый API client:
+     - `frontend/src/lib/api.ts`
+
+4. **Identity flow**
+   - Telegram user ID теперь сначала резолвится во внутренний `users.id`
+   - Это устраняет product gap между Telegram Mini App и внутренними API
+
+5. **Runtime stabilization**
+   - Frontend build fixed for Piper CDN import
+   - `app/services/prompt_service.py` теперь безопасно деградирует, если нет optional prompt infra
+   - `app/models/__init__.py` больше не ломает import приложения при отсутствии `prompt_models`
+
+**Документация, добавленная по стратегии**:
+
+- Новый документ:
+  - `!DOC/strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md`
+- `!DOC/strategy/ROADMAP.md` обновлён ссылкой на новый приоритетный execution order
+- `!DOC/README.md` обновлён индексом нового стратегического документа
+
+**Проверки**:
+
+- `python -m pytest tests/test_program_snapshot_service.py tests/test_xp_service.py tests/test_streak_service.py -q`
+  - 52 passed
+- `npm run build` в `frontend/`
+  - passed
+- `python -c "import main; print('main import ok')"`
+  - passed
+
+**Что сознательно НЕ делали в этом шаге**:
+
+- не расширяли Neo4j/CDC как продуктовый приоритет
+- не делали weekly reports / reminders как следующий главный кусок
+- не шли сразу в broad B2C positioning
+- не строили ещё полноценный interview scoring/history loop
+
+**Следующий шаг**:
+
+Реализовать `Career Interview Loop`:
+
+- scenario packs
+- structured scoring
+- interview outcome records
+- historical comparison
+- productized interview readiness progress
+
+Это следующий ключевой differentiator против generic voice chat.
+
+---
+
 ## Последнее обновление: 2026-02-09 (Documentation Reorganization)
 
 ### 2026-02-09 - Documentation Reorganization & Unified Rules System
