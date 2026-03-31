@@ -26,6 +26,7 @@ from langgraph.graph import StateGraph, END
 
 from app.agent.state import AgentState, AgentPhase
 from app.data.interview_tracks import get_interview_track
+from app.data.interview_questions import select_questions_for_track
 from app.agent.nodes_v2 import (
     router_node,
     route_after_router,
@@ -177,8 +178,35 @@ async def initialize_session_v2(
             fa.get("area", fa) if isinstance(fa, dict) else fa
             for fa in roadmap.get("focus_areas", [])
         ]
+    goal_brief = roadmap.get("goal_brief") if isinstance(roadmap, dict) else None
+    proficiency_profile = roadmap.get("proficiency_profile") if isinstance(roadmap, dict) else None
+    assessed_level = None
+    assessment_scores: dict[str, Any] = {}
+    goal_setup_complete = False
+    if goal_brief:
+        goal_setup_complete = goal_brief.get("status") == "confirmed"
+    if proficiency_profile:
+        assessed_level = proficiency_profile.get("cefr_level")
+        assessment_scores = {
+            "fluency": proficiency_profile.get("fluency"),
+            "grammar": proficiency_profile.get("grammar_accuracy"),
+            "vocabulary": proficiency_profile.get("professional_vocabulary"),
+            "comprehension": proficiency_profile.get("listening_comprehension"),
+        }
+        if assessed_level:
+            language_level = assessed_level
 
     selected_track = get_interview_track(interview_track_id)
+
+    # Pre-select curated questions for this session (deterministic per session_id)
+    interview_question_prompts: list[str] = []
+    if selected_track:
+        qs = select_questions_for_track(
+            selected_track["id"],
+            limit=4,
+            session_seed=session_id,
+        )
+        interview_question_prompts = [q["prompt"] for q in qs]
 
     # Determine initial mode
     initial_mode = LearningMode.FREE_CONVERSATION
@@ -208,11 +236,13 @@ async def initialize_session_v2(
         "confirmed_goal": confirmed_goal,
         "detected_goal": None,
         "goal_needs_confirmation": False,
+        "goal_brief": goal_brief,
+        "goal_setup_complete": goal_setup_complete,
         "confirmed_interests": confirmed_interests or [],
 
         # Assessment
-        "assessed_level": None,
-        "assessment_scores": {},
+        "assessed_level": assessed_level,
+        "assessment_scores": assessment_scores,
 
         # Learning program
         "roadmap": roadmap,
@@ -220,6 +250,7 @@ async def initialize_session_v2(
         "interview_track_id": selected_track["id"] if selected_track else None,
         "interview_track_title": selected_track["title"] if selected_track else None,
         "session_focus": selected_track["prompt_focus"] if selected_track else None,
+        "interview_question_prompts": interview_question_prompts,
 
         # Current session
         "current_mode": initial_mode,

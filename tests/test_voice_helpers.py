@@ -147,3 +147,90 @@ async def test_award_session_gamification_handles_errors():
         await award_session_gamification(db, user_id, session_id)
         # If we get here, error was handled correctly
         assert True
+
+
+# ---------------------------------------------------------------------------
+# persist_interview_run_if_needed tests
+# ---------------------------------------------------------------------------
+
+from app.api.voice_helpers import persist_interview_run_if_needed
+
+
+@pytest.mark.asyncio
+async def test_persist_noop_non_interview_mode():
+    """Returns None without calling InterviewService for non-interview modes."""
+    db = AsyncMock()
+    result = await persist_interview_run_if_needed(
+        db=db,
+        user_id=1,
+        session_id="s1",
+        current_mode="free_conversation",
+        interview_track_id=None,
+        conversation_history=[
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "Hi"},
+            {"role": "user", "content": "I want to practice"},
+        ],
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_noop_insufficient_history():
+    """Returns None when fewer than 2 user messages."""
+    db = AsyncMock()
+    result = await persist_interview_run_if_needed(
+        db=db,
+        user_id=1,
+        session_id="s1",
+        current_mode="mock_interview",
+        interview_track_id="hr_intro",
+        conversation_history=[
+            {"role": "assistant", "content": "Tell me about yourself."},
+            {"role": "user", "content": "Sure."},  # only 1 user message
+        ],
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_saves_mock_interview_run():
+    """Calls InterviewService.record_run and returns the run for mock_interview."""
+    db = AsyncMock()
+    fake_run = {"id": "run-1", "track_id": "hr_intro", "scores": {"overall": 7.0}}
+
+    with patch('app.api.voice_helpers.InterviewService') as MockService:
+        mock_instance = AsyncMock()
+        mock_instance.record_run = AsyncMock(return_value=fake_run)
+        MockService.return_value = mock_instance
+
+        result = await persist_interview_run_if_needed(
+            db=db,
+            user_id=1,
+            session_id="s1",
+            current_mode="mock_interview",
+            interview_track_id="hr_intro",
+            conversation_history=[
+                {"role": "assistant", "content": "Tell me about yourself."},
+                {"role": "user", "content": "I am a software engineer."},
+                {"role": "assistant", "content": "Great, what projects?"},
+                {"role": "user", "content": "I built a recommendation system."},
+            ],
+            corrections_made=2,
+            vocabulary_reviewed=[{"word": "scalability"}],
+        )
+
+    assert result == fake_run
+    mock_instance.record_run.assert_called_once_with(
+        user_id=1,
+        session_id="s1",
+        conversation_history=[
+            {"role": "assistant", "content": "Tell me about yourself."},
+            {"role": "user", "content": "I am a software engineer."},
+            {"role": "assistant", "content": "Great, what projects?"},
+            {"role": "user", "content": "I built a recommendation system."},
+        ],
+        corrections_count=2,
+        reviewed_words=[{"word": "scalability"}],
+        track_id="hr_intro",
+    )

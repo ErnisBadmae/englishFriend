@@ -46,8 +46,10 @@ class InterviewRun(BaseModel):
     scores: InterviewScores
     strengths: list[str]
     next_focus: list[str]
+    rubric_notes: list[str] = []
     summary: str
     meta: InterviewRunMeta
+    delta_vs_previous: Optional[float] = None
 
 
 class InterviewSummary(BaseModel):

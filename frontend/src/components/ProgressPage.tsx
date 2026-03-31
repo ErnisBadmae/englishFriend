@@ -5,16 +5,36 @@ interface ProgressPageProps {
 }
 
 export function ProgressPage({ snapshot }: ProgressPageProps) {
+  const readiness = snapshot.assessment?.goal_readiness;
+  const skillAxes = snapshot.assessment?.skill_axes ?? {};
+
   return (
     <div className="miniapp-page">
       <section className="content-card">
-        <div className="section-label">Progress snapshot</div>
-        <h1>{snapshot.assessment ? `CEFR ${snapshot.assessment.level}` : 'No baseline yet'}</h1>
+        <div className="section-label">Progress trajectory</div>
+        <h1>
+          {snapshot.assessment
+            ? `CEFR ${snapshot.assessment.level}${readiness ? ` · readiness ${readiness}/10` : ''}`
+            : 'No baseline yet'}
+        </h1>
         <p>
           {snapshot.assessment
-            ? 'Your coach can now route practice based on a measured starting point.'
-            : 'Complete one assessment session to unlock structured routing and progress tracking.'}
+            ? 'The coach is now routing practice from a measured baseline instead of generic conversation.'
+            : 'Complete the baseline assessment to unlock a real program instead of generic practice.'}
         </p>
+      </section>
+
+      <section className="content-card">
+        <div className="section-label">Current stage</div>
+        <h3>{snapshot.program.stage_label}</h3>
+        <p>{snapshot.program.success_metric}</p>
+        <div className="pill-row">
+          {snapshot.program.stages.map((stage) => (
+            <span key={stage.id} className={`pill ${stage.status === 'current' ? 'interview-source-pill' : ''}`}>
+              {stage.label}
+            </span>
+          ))}
+        </div>
       </section>
 
       <section className="stats-grid">
@@ -37,6 +57,35 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
       </section>
 
       <section className="content-card">
+        <div className="section-label">Skill axes</div>
+        <div className="list-stack">
+          {Object.keys(skillAxes).length > 0 ? (
+            Object.entries(skillAxes).map(([label, value]) => (
+              <div key={label} className="list-item split">
+                <strong>{label.replace(/_/g, ' ')}</strong>
+                <span className="tiny-pill">{value ?? '-'}</span>
+              </div>
+            ))
+          ) : (
+            <div className="list-empty">Skill axes will appear after the baseline assessment.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="content-card">
+        <div className="section-label">Top gaps right now</div>
+        <div className="list-stack">
+          {snapshot.assessment?.critical_gaps?.length ? (
+            snapshot.assessment.critical_gaps.map((gap) => (
+              <div key={gap} className="list-item">{gap}</div>
+            ))
+          ) : (
+            <div className="list-empty">No critical gaps surfaced yet.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="content-card">
         <div className="section-label">Interview trajectory</div>
         {snapshot.interview.recent_runs.length > 0 ? (
           <div className="list-stack">
@@ -53,22 +102,6 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
         ) : (
           <div className="list-empty">Interview runs will appear here after your first career mission.</div>
         )}
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">Top error patterns</div>
-        <div className="list-stack">
-          {snapshot.progress.top_error_patterns.length > 0 ? (
-            snapshot.progress.top_error_patterns.map((pattern) => (
-              <div key={pattern.label} className="list-item split">
-                <strong>{pattern.label}</strong>
-                <span className="tiny-pill">{pattern.count}</span>
-              </div>
-            ))
-          ) : (
-            <div className="list-empty">No recurring error patterns recorded yet.</div>
-          )}
-        </div>
       </section>
 
       <section className="content-card">
@@ -99,9 +132,7 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
           {snapshot.progress.recent_sessions.length > 0 ? (
             snapshot.progress.recent_sessions.map((session) => (
               <div key={session.id} className="list-item">
-                <strong>
-                  {session.duration_minutes ? `${session.duration_minutes} min session` : 'Session'}
-                </strong>
+                <strong>{session.duration_minutes ? `${session.duration_minutes} min session` : 'Session'}</strong>
                 <span className="muted-line">
                   {new Date(session.started_at).toLocaleString()} · {session.corrections_count} corrections
                 </span>

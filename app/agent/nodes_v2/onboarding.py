@@ -16,6 +16,7 @@ from app.agent.state import AgentState, AgentPhase, add_decision_log
 from app.agent.response_parser import (
     parse_llm_response,
     extract_goal_from_action,
+    extract_goal_brief_from_action,
     extract_interests_from_action,
     extract_assessment_from_action,
 )
@@ -164,6 +165,7 @@ async def _apply_onboarding_action(
     """
     action_type = action.get("action", "")
     response_text = action.get("response_text", "")
+    goal_brief = extract_goal_brief_from_action(action)
 
     # Always set response
     state["pending_response"] = response_text
@@ -176,6 +178,12 @@ async def _apply_onboarding_action(
         if goal:
             state["confirmed_goal"] = goal
             state["goal_needs_confirmation"] = False
+            merged_goal_brief = dict(state.get("goal_brief") or {})
+            if goal_brief:
+                merged_goal_brief.update(goal_brief)
+            if merged_goal_brief:
+                state["goal_brief"] = merged_goal_brief
+                state["goal_setup_complete"] = bool(merged_goal_brief.get("status") == "confirmed")
 
             agent_v2_goal_detection.labels(detected="true").inc()
 
@@ -193,6 +201,11 @@ async def _apply_onboarding_action(
             if validate_confidence(action, "goal_detection"):
                 state["detected_goal"] = goal
                 state["goal_needs_confirmation"] = True
+                if goal_brief:
+                    merged_goal_brief = dict(state.get("goal_brief") or {})
+                    merged_goal_brief.update(goal_brief)
+                    state["goal_brief"] = merged_goal_brief
+                    state["goal_setup_complete"] = bool(merged_goal_brief.get("status") == "confirmed")
 
                 agent_v2_goal_detection.labels(detected="true").inc()
 
@@ -213,6 +226,7 @@ async def _apply_onboarding_action(
     elif action_type == "goal_skipped":
         state["confirmed_goal"] = "General Fluency"
         state["goal_needs_confirmation"] = False
+        state["goal_setup_complete"] = False
 
         pedagogy.log_goal_defaulted(
             user_id=state["user_id"],
@@ -275,6 +289,8 @@ def _build_template_context(state: AgentState) -> dict:
         "session_id": state.get("session_id", ""),
         "last_user_message": state.get("last_user_message", ""),
         "confirmed_goal": state.get("confirmed_goal"),
+        "goal_brief": state.get("goal_brief") or {},
+        "goal_setup_complete": state.get("goal_setup_complete", False),
         "detected_goal": state.get("detected_goal"),
         "goal_needs_confirmation": state.get("goal_needs_confirmation", False),
         "confirmed_interests": state.get("confirmed_interests", []),
@@ -288,36 +304,51 @@ def _build_template_context(state: AgentState) -> dict:
 def _get_fallback_prompt(state: AgentState) -> str:
     """Get fallback prompt when template not available."""
     username = state.get("username", "Student")
-    has_goal = bool(state.get("confirmed_goal"))
-    has_interests = len(state.get("confirmed_interests", [])) > 0
+    goal_brief = state.get("goal_brief") or {}
+    goal_setup_complete = state.get("goal_setup_complete", False)
+    skip_goal = state.get("_skip_goal", False)
+    skip_assessment = state.get("_skip_assessment", False)
+    missing_goal_fields = [
+        name
+        for name in ["primary_goal", "target_role", "target_market", "main_contexts"]
+        if not goal_brief.get(name)
+    ]
 
-    if not has_goal:
+    if not skip_goal and not goal_setup_complete:
+        next_hint = {
+            "primary_goal": "Ask what concrete English outcome they want: interview, job, workplace communication, or something similar.",
+            "target_role": "Ask what role they are aiming for, for example ML engineer, data scientist, or software engineer.",
+            "target_market": "Ask what kind of company context they target: international company, western company, remote global team, and so on.",
+            "main_contexts": "Ask which situations matter most right now: interviews, project walkthroughs, or workplace communication.",
+        }.get(missing_goal_fields[0] if missing_goal_fields else "primary_goal")
         return f"""You are English Friend, a patient English tutor.
 Student: {username}
 
-Ask about their English learning goal. Be warm and friendly.
-When they mention a goal, confirm it: "So you want to focus on [goal], is that right?"
+You are building a precise career-English goal brief.
+{next_hint}
+Be proactive with short, concrete options if the student is passive.
+Only use "confirm_goal" when you have a specific goal and at least a draft goal_brief.
 
 Respond with JSON:
-{{"action": "ask_goal" or "confirm_goal", "response_text": "your response", "extracted_data": {{"goal": "detected goal or null"}}}}"""
+{{"action": "ask_goal" or "confirm_goal" or "goal_confirmed", "response_text": "your response", "confidence": 0.0, "extracted_data": {{"goal": "detected goal or null", "goal_brief": {{"primary_goal": "...", "target_role": "...", "domain": "...", "target_market": "...", "deadline_type": "...", "main_contexts": ["..."], "current_blockers": ["..."], "motivation": "...", "status": "incomplete or confirmed"}}}}}}"""
 
-    elif not has_interests:
+    if not skip_assessment and not state.get("assessed_level"):
         return f"""You are English Friend.
-Student: {username}, Goal: {state.get('confirmed_goal')}
-
-Ask about their interests for personalization.
-
-Respond with JSON:
-{{"action": "ask_interests" or "interests_confirmed", "response_text": "your response", "extracted_data": {{"interests": ["list"]}}}}"""
-
-    else:
-        return f"""You are English Friend.
-Student: {username}, Level: {state.get('language_level', 'B1')}
+Student: {username}, Goal: {state.get('confirmed_goal')}, Level: {state.get('language_level', 'B1')}
 
 Ask 2-3 questions to assess their English level. Start simple, then increase difficulty.
+Return both the CEFR level and numeric scores for fluency, grammar, vocabulary, and comprehension.
 
 Respond with JSON:
-{{"action": "ask_assessment" or "assessment_complete", "response_text": "your response", "extracted_data": {{"assessed_level": "A1-C2"}}}}"""
+{{"action": "ask_assessment" or "assessment_complete", "response_text": "your response", "extracted_data": {{"assessed_level": "A1-C2", "assessment_scores": {{"fluency": 0.0, "grammar": 0.0, "vocabulary": 0.0, "comprehension": 0.0}}}}}}"""
+
+    return f"""You are English Friend.
+Student: {username}, Goal: {state.get('confirmed_goal')}, Level: {state.get('assessed_level') or state.get('language_level', 'B1')}
+
+Onboarding is complete. Give one short response that transitions into guided practice.
+
+Respond with JSON:
+{{"action": "transition_to_learning", "response_text": "your response"}}"""
 
 
 def route_after_onboarding(state: AgentState) -> str:

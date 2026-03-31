@@ -348,6 +348,12 @@ body {
   gap: 12px;
 }
 
+.track-badge-group {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .track-description {
   margin-top: 6px;
 }
@@ -457,4 +463,73 @@ body {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Interview source badge (mission card on home) */
+.interview-source-pill {
+  background: rgba(243, 180, 91, 0.22);
+  color: #9a6a10;
+}
+
+/* Interview results screen */
+.interview-results-hero {
+  text-align: center;
+  padding: 32px 24px 28px;
+}
+
+.results-score-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  margin: 12px 0 10px;
+}
+
+.results-score {
+  font-size: 64px;
+  font-weight: 800;
+  line-height: 1;
+  color: #f7f1e0;
+}
+
+.results-score-denom {
+  font-size: 24px;
+  font-weight: 700;
+  color: rgba(247, 247, 242, 0.7);
+}
+
+.results-delta {
+  margin-left: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.results-delta.delta-positive {
+  background: rgba(60, 180, 100, 0.22);
+  color: #b8f0cb;
+}
+
+.results-delta.delta-negative {
+  background: rgba(200, 60, 60, 0.22);
+  color: #f5b8b8;
+}
+
+.results-delta.delta-neutral {
+  background: rgba(247, 247, 242, 0.15);
+  color: rgba(247, 247, 242, 0.7);
+}
+
+.results-feedback-item {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.results-strength {
+  border-left: 3px solid var(--app-accent);
+}
+
+.results-next-focus {
+  border-left: 3px solid var(--app-highlight);
 }

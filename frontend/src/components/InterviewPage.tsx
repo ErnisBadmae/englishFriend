@@ -6,6 +6,18 @@ import {
   type InterviewTrack,
 } from '../lib/api';
 
+const TRACK_WHAT_IT_TRAINS: Record<string, string> = {
+  hr_intro: "STAR storytelling, concise motivation, and behavioral answers for HR rounds.",
+  project_walkthrough: "Technical explanation, architecture trade-offs, and business impact framing.",
+  workplace_communication: "Standup updates, blocker escalation, and stakeholder communication.",
+};
+
+const TRACK_WHAT_IS_EVALUATED: Record<string, string[]> = {
+  hr_intro: ["Structure (STAR)", "Clarity", "Confidence"],
+  project_walkthrough: ["Vocabulary", "Technical depth", "Impact framing"],
+  workplace_communication: ["Brevity", "Clarity", "Professional tone"],
+};
+
 interface InterviewPageProps {
   userId: number;
   onStartTrack: (track: InterviewTrack) => void;
@@ -103,18 +115,34 @@ export function InterviewPage({ userId, onStartTrack }: InterviewPageProps) {
                   <strong>{track.title}</strong>
                   <span className="muted-line">{track.subtitle}</span>
                 </div>
-                {track.recommended && <span className="tiny-pill">recommended</span>}
+                <div className="track-badge-group">
+                  {track.recommended && <span className="tiny-pill">recommended</span>}
+                  {track.completed_runs > 0 && (
+                    <span className="tiny-pill">{track.completed_runs} runs</span>
+                  )}
+                </div>
               </div>
-              <p className="track-description">{track.description}</p>
+              {TRACK_WHAT_IT_TRAINS[track.id] && (
+                <p className="track-description">{TRACK_WHAT_IT_TRAINS[track.id]}</p>
+              )}
+              <div className="section-label" style={{ marginTop: 8 }}>What is evaluated</div>
               <div className="pill-row">
-                <span className="pill">{track.completed_runs} runs</span>
-                {track.rubric_focus.slice(0, 3).map((item) => (
+                {(TRACK_WHAT_IS_EVALUATED[track.id] ?? track.rubric_focus.slice(0, 3)).map((item) => (
                   <span key={`${track.id}-${item}`} className="pill">
                     {item.replace('_', ' ')}
                   </span>
                 ))}
               </div>
-              <p className="muted-line">Starter: {track.starter_question}</p>
+              {summary?.recent_runs.some((r) => r.track_id === track.id) && (
+                <p className="muted-line">
+                  Best score:{' '}
+                  {Math.max(
+                    ...summary.recent_runs
+                      .filter((r) => r.track_id === track.id)
+                      .map((r) => r.scores.overall),
+                  ).toFixed(1)}/10
+                </p>
+              )}
               <button className="primary-action" onClick={() => onStartTrack(track)}>
                 Start this mission
               </button>

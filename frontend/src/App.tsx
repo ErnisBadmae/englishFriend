@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react';
 import { HomePage } from './components/HomePage';
 import { InterviewPage } from './components/InterviewPage';
+import { InterviewResultsPage } from './components/InterviewResultsPage';
 import { ProgressPage } from './components/ProgressPage';
 import { ReviewPage } from './components/ReviewPage';
 import { VoiceChatV2 } from './components/VoiceChatV2';
 import {
   API_BASE,
   WS_BASE,
-  createInterviewRun,
   getProgramSnapshot,
   resolveOrCreateUser,
+  type InterviewRun,
   type InterviewTrack,
+  type MissionSummary,
   type ProgramSnapshot,
 } from './lib/api';
 import './App.css';
 
-type Screen = 'home' | 'session' | 'interview' | 'review' | 'progress';
+type Screen = 'home' | 'session' | 'interview' | 'review' | 'progress' | 'interview_results';
 
 interface SessionConfig {
   wsUrl: string;
@@ -33,8 +35,9 @@ function readScreenFromHash(): Screen {
     || normalized === 'interview'
     || normalized === 'review'
     || normalized === 'progress'
+    || normalized === 'interview_results'
   ) {
-    return normalized;
+    return normalized as Screen;
   }
   return 'home';
 }
@@ -49,6 +52,8 @@ function App() {
     wsUrl: `${WS_BASE}/api/v1/voice/chat`,
     returnScreen: 'progress',
   });
+  const [lastInterviewRun, setLastInterviewRun] = useState<InterviewRun | null>(null);
+  const [lastMission, setLastMission] = useState<MissionSummary | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [isResolvingUser, setIsResolvingUser] = useState(true);
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false);
@@ -151,9 +156,9 @@ function App() {
     };
   }, [isReady, telegramId, telegramUsername]);
 
-  async function refreshSnapshot() {
+  async function refreshSnapshot(): Promise<ProgramSnapshot | null> {
     if (!userId) {
-      return;
+      return null;
     }
 
     setIsLoadingSnapshot(true);
@@ -161,8 +166,10 @@ function App() {
     try {
       const data = await getProgramSnapshot(userId);
       setSnapshot(data);
+      return data;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load program snapshot');
+      return null;
     } finally {
       setIsLoadingSnapshot(false);
     }
@@ -188,9 +195,20 @@ function App() {
       return;
     }
 
+    if (snapshot.mission.mode === 'guided_setup') {
+      setSessionConfig({
+        wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+        title: snapshot.mission.title,
+        subtitle: snapshot.mission.reason,
+        returnScreen: 'home',
+      });
+      setScreen('session');
+      return;
+    }
+
     setSessionConfig({
       wsUrl: `${WS_BASE}/api/v1/voice/chat`,
-      mode: snapshot.mission.mode,
+      mode: snapshot.mission.launch_mode ?? snapshot.mission.mode,
       title: snapshot.mission.title,
       subtitle: snapshot.mission.reason,
       returnScreen: 'progress',
@@ -200,7 +218,7 @@ function App() {
 
   function startInterviewTrack(track: InterviewTrack) {
     setSessionConfig({
-      wsUrl: `${WS_BASE}/api/v1/voice/chat-legacy`,
+      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
       mode: 'mock_interview',
       interviewTrackId: track.id,
       title: track.title,
@@ -218,32 +236,18 @@ function App() {
     setScreen('session');
   }
 
-  async function handleSessionEnded(payload: {
+  async function handleSessionEnded(_payload: {
     sessionId: string | null;
     messages: Array<{ role: 'user' | 'assistant'; text: string }>;
   }) {
-    if (
-      userId
-      && sessionConfig.mode === 'mock_interview'
-      && payload.sessionId
-      && payload.messages.length > 0
-    ) {
-      try {
-        await createInterviewRun(userId, {
-          session_id: payload.sessionId,
-          track_id: sessionConfig.interviewTrackId,
-          conversation_history: payload.messages.map((message) => ({
-            role: message.role,
-            content: message.text,
-          })),
-        });
-      } catch (err) {
-        console.error('Failed to save interview run', err);
-      }
+    const fresh = await refreshSnapshot();
+    if (sessionConfig.mode === 'mock_interview' && fresh?.interview.latest_run) {
+      setLastInterviewRun(fresh.interview.latest_run);
+      setLastMission(fresh.mission);
+      setScreen('interview_results');
+    } else {
+      setScreen(sessionConfig.returnScreen);
     }
-
-    await refreshSnapshot();
-    setScreen(sessionConfig.returnScreen);
   }
 
   if (!isReady) {
@@ -318,6 +322,42 @@ function App() {
               <InterviewPage
                 userId={userId}
                 onStartTrack={startInterviewTrack}
+              />
+            )}
+            {screen === 'interview_results' && lastInterviewRun && (
+              <InterviewResultsPage
+                run={lastInterviewRun}
+                mission={lastMission ?? undefined}
+                onRunAgain={() => {
+                  const track: InterviewTrack = {
+                    id: lastInterviewRun.track_id,
+                    title: lastInterviewRun.track_title,
+                    subtitle: lastInterviewRun.track_subtitle,
+                    description: '',
+                    prompt_focus: '',
+                    starter_question: '',
+                    rubric_focus: [],
+                    recommended: false,
+                    completed_runs: 0,
+                  };
+                  startInterviewTrack(track);
+                }}
+                onBack={() => setScreen('interview')}
+                onStartMission={() => {
+                  if (!lastMission) return;
+                  if (lastMission.mode === 'mock_interview') {
+                    setScreen('interview');
+                  } else {
+                    setSessionConfig({
+                      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+                      mode: lastMission.launch_mode ?? undefined,
+                      title: lastMission.title,
+                      subtitle: lastMission.reason,
+                      returnScreen: 'progress',
+                    });
+                    setScreen('session');
+                  }
+                }}
               />
             )}
             {screen === 'review' && (

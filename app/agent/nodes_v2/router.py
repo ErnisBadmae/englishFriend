@@ -32,6 +32,7 @@ async def router_node(state: AgentState) -> AgentState:
 
     is_new = state.get("is_new_user", True)
     has_goal = bool(state.get("confirmed_goal"))
+    goal_setup_complete = state.get("goal_setup_complete", has_goal)
     has_assessment = bool(state.get("assessed_level"))
     should_end = state.get("should_end_session", False)
 
@@ -47,31 +48,31 @@ async def router_node(state: AgentState) -> AgentState:
         logger.info(f"[Router] User {state['user_id']}: route=session_end (end requested)")
         return state
 
-    # Decision 2: New user without goal -> full onboarding
-    if is_new and not has_goal:
+    # Decision 2: Missing or incomplete goal brief -> onboarding
+    if (is_new and not has_goal) or not goal_setup_complete:
         state["_route"] = "onboarding"
         state["_skip_goal"] = False
-        state["_skip_interests"] = False
-        state["_skip_assessment"] = False
+        state["_skip_interests"] = True
+        state["_skip_assessment"] = True if not goal_setup_complete else False
 
         pedagogy.log_phase_transition(
             user_id=state["user_id"],
             from_phase="start",
             to_phase="onboarding",
-            reason="new_user_needs_onboarding",
+            reason="goal_setup_incomplete",
         )
 
         add_decision_log(
             state,
             node="router",
-            action="route_onboarding_full",
-            reason="New user needs full onboarding",
-            data={"is_new": is_new, "has_goal": has_goal},
+            action="route_onboarding_goal_setup",
+            reason="User needs concrete goal setup before practice",
+            data={"is_new": is_new, "has_goal": has_goal, "goal_setup_complete": goal_setup_complete},
         )
-        logger.info(f"[Router] User {state['user_id']}: route=onboarding (new user)")
+        logger.info(f"[Router] User {state['user_id']}: route=onboarding (goal setup)")
         return state
 
-    # Decision 3: Has goal but no assessment -> assessment only
+    # Decision 3: Has complete goal but no assessment -> assessment only
     if has_goal and not has_assessment:
         state["_route"] = "onboarding"
         state["_skip_goal"] = True
@@ -83,7 +84,7 @@ async def router_node(state: AgentState) -> AgentState:
             node="router",
             action="route_onboarding_assessment",
             reason="User has goal but needs assessment",
-            data={"has_goal": has_goal, "has_assessment": has_assessment},
+            data={"has_goal": has_goal, "has_assessment": has_assessment, "goal_setup_complete": goal_setup_complete},
         )
         logger.info(f"[Router] User {state['user_id']}: route=onboarding (assessment only)")
         return state

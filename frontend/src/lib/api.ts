@@ -32,6 +32,20 @@ export interface GoalSummary {
   preferred_mode: string;
   target_level?: string | null;
   focus_areas: string[];
+  brief?: {
+    primary_goal?: string | null;
+    target_role?: string | null;
+    domain?: string | null;
+    target_market?: string | null;
+    deadline_type?: string | null;
+    main_contexts: string[];
+    current_blockers: string[];
+    motivation?: string | null;
+    confidence?: number | null;
+    status?: string | null;
+    summary?: string | null;
+  } | null;
+  missing_fields: string[];
 }
 
 export interface AssessmentSummary {
@@ -39,12 +53,34 @@ export interface AssessmentSummary {
   level: string;
   scores: Record<string, number>;
   notes?: string | null;
+  confidence?: number | null;
+  goal_readiness?: number | null;
+  critical_gaps: string[];
+  skill_axes: Record<string, number | null>;
 }
 
 export interface MissionSummary {
   mode: string;
+  launch_mode?: string | null;
   title: string;
   reason: string;
+  why_now?: string | null;
+  linked_goal_context?: string | null;
+  linked_skill_gap?: string | null;
+  from_interview?: boolean;
+}
+
+export interface ProgramSummary {
+  title: string;
+  time_horizon_days: number;
+  current_stage: string;
+  stage_label: string;
+  weekly_focus: string[];
+  success_metric: string;
+  next_milestone: string;
+  stages: Array<{ id: string; label: string; status: string }>;
+  preferred_mode: string;
+  focus_areas: string[];
 }
 
 export interface InterviewScores {
@@ -74,8 +110,10 @@ export interface InterviewRun {
   scores: InterviewScores;
   strengths: string[];
   next_focus: string[];
+  rubric_notes?: string[];
   summary: string;
   meta: InterviewRunMeta;
+  delta_vs_previous?: number | null;
 }
 
 export interface InterviewTrack {
@@ -101,6 +139,9 @@ export interface InterviewSummary {
   };
   latest_run?: InterviewRun | null;
   recent_runs: InterviewRun[];
+  weakest_area?: string | null;
+  interview_focus?: string[];
+  last_track?: string | null;
 }
 
 export interface VocabularyStats {
@@ -143,6 +184,7 @@ export interface ProgramSnapshot {
   user: UserIdentity;
   goal: GoalSummary;
   assessment?: AssessmentSummary | null;
+  program: ProgramSummary;
   mission: MissionSummary;
   gamification: {
     xp: {
@@ -170,6 +212,11 @@ export interface ProgramSnapshot {
     recommended_vocabulary: string[];
     top_error_patterns: ErrorPattern[];
     recent_sessions: RecentSession[];
+  };
+  setup: {
+    goal_complete: boolean;
+    assessment_complete: boolean;
+    needs_attention: boolean;
   };
 }
 

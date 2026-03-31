@@ -20,18 +20,19 @@ export function HomePage({
   const latestSession = snapshot.progress.recent_sessions[0];
   const xp = snapshot.gamification.xp;
   const streak = snapshot.gamification.streak;
+  const goalBrief = snapshot.goal.brief;
 
   return (
     <div className="miniapp-page">
       <section className="hero-card">
         <div className="eyebrow">EnglishFriend</div>
-        <h1>Career English coach for your next real conversation</h1>
+        <h1>{snapshot.program.title}</h1>
         <p className="hero-copy">
-          {snapshot.goal.text || 'Set a concrete goal to turn practice into a program.'}
+          {goalBrief?.summary || 'Turn vague English practice into a concrete career program.'}
         </p>
         <div className="hero-actions">
           <button className="primary-action" onClick={onStartSession}>
-            Start 10-min mission
+            {snapshot.setup.needs_attention ? 'Continue setup' : 'Start today\'s mission'}
           </button>
           <button className="secondary-action" onClick={onRefresh}>
             Refresh
@@ -39,14 +40,42 @@ export function HomePage({
         </div>
       </section>
 
+      <section className="content-card">
+        <div className="section-label">Program stage</div>
+        <h2>{snapshot.program.stage_label}</h2>
+        <p>{snapshot.program.success_metric}</p>
+        <div className="pill-row">
+          <span className="pill">{snapshot.program.time_horizon_days} days</span>
+          {snapshot.assessment?.level && <span className="pill">CEFR {snapshot.assessment.level}</span>}
+          {goalBrief?.target_role && <span className="pill">{goalBrief.target_role}</span>}
+        </div>
+      </section>
+
+      {snapshot.setup.needs_attention && (
+        <section className="mission-card">
+          <div className="section-label">Setup status</div>
+          <h2>{snapshot.mission.title}</h2>
+          <p>{snapshot.mission.reason}</p>
+          {snapshot.goal.missing_fields.length > 0 && (
+            <div className="pill-row">
+              {snapshot.goal.missing_fields.map((item) => (
+                <span key={item} className="pill">{item}</span>
+              ))}
+            </div>
+          )}
+          {snapshot.mission.why_now && <p className="muted-line">{snapshot.mission.why_now}</p>}
+        </section>
+      )}
+
       <section className="mission-card">
         <div className="section-label">Today&apos;s mission</div>
         <h2>{snapshot.mission.title}</h2>
         <p>{snapshot.mission.reason}</p>
+        {snapshot.mission.why_now && <p className="muted-line">{snapshot.mission.why_now}</p>}
         <div className="pill-row">
           <span className="pill">{snapshot.mission.mode.replace('_', ' ')}</span>
-          {snapshot.assessment?.level && <span className="pill">CEFR {snapshot.assessment.level}</span>}
-          <span className="pill">Level {xp.level}</span>
+          {snapshot.mission.linked_goal_context && <span className="pill">{snapshot.mission.linked_goal_context.replace('_', ' ')}</span>}
+          {snapshot.mission.from_interview && <span className="pill interview-source-pill">from last interview</span>}
         </div>
       </section>
 
@@ -69,21 +98,36 @@ export function HomePage({
         <article className="stat-card clickable" onClick={onOpenProgress}>
           <span className="stat-label">Sessions</span>
           <strong>{snapshot.progress.sessions_completed}</strong>
-          <small>See progress</small>
+          <small>See trajectory</small>
         </article>
       </section>
 
       <section className="content-card">
-        <div className="section-label">Current focus</div>
+        <div className="section-label">This week&apos;s focus</div>
         <div className="list-stack">
-          {snapshot.goal.focus_areas.length > 0 ? (
-            snapshot.goal.focus_areas.map((focus) => (
-              <div key={focus} className="list-item">
-                {focus}
-              </div>
+          {snapshot.program.weekly_focus.length > 0 ? (
+            snapshot.program.weekly_focus.map((focus) => (
+              <div key={focus} className="list-item">{focus}</div>
             ))
           ) : (
-            <div className="list-empty">No focus areas yet. Complete onboarding in a session.</div>
+            <div className="list-empty">The coach will populate weekly focus after setup.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="content-card">
+        <div className="section-label">What blocks the goal now</div>
+        <div className="list-stack">
+          {snapshot.assessment?.critical_gaps?.length ? (
+            snapshot.assessment.critical_gaps.map((gap) => (
+              <div key={gap} className="list-item">{gap}</div>
+            ))
+          ) : goalBrief?.current_blockers?.length ? (
+            goalBrief.current_blockers.map((gap) => (
+              <div key={gap} className="list-item">{gap}</div>
+            ))
+          ) : (
+            <div className="list-empty">The coach will surface the main blockers after setup and baseline.</div>
           )}
         </div>
       </section>
@@ -110,30 +154,15 @@ export function HomePage({
       </section>
 
       <section className="content-card">
-        <div className="section-row">
-          <div>
-            <div className="section-label">Vocabulary preview</div>
-            <h3>Words already queued for reinforcement</h3>
-          </div>
-          <button className="link-action" onClick={onOpenReview}>
-            Review
-          </button>
+        <div className="section-label">Program snapshot</div>
+        <div className="pill-row">
+          {snapshot.program.stages.map((stage) => (
+            <span key={stage.id} className={`pill ${stage.status === 'current' ? 'interview-source-pill' : ''}`}>
+              {stage.label}
+            </span>
+          ))}
         </div>
-        <div className="list-stack">
-          {snapshot.vocabulary.due_preview.length > 0 ? (
-            snapshot.vocabulary.due_preview.map((card) => (
-              <div key={card.id} className="list-item split">
-                <div>
-                  <strong>{card.word}</strong>
-                  {card.translation && <span className="muted-line">{card.translation}</span>}
-                </div>
-                <span className="tiny-pill">due</span>
-              </div>
-            ))
-          ) : (
-            <div className="list-empty">No cards due right now.</div>
-          )}
-        </div>
+        <p className="muted-line">Next milestone: {snapshot.program.next_milestone}</p>
       </section>
 
       <section className="content-card">

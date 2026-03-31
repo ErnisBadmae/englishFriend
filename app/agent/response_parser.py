@@ -331,6 +331,16 @@ def extract_goal_from_action(action: ParsedAction) -> Optional[str]:
     return None
 
 
+def extract_goal_brief_from_action(action: ParsedAction) -> Optional[dict]:
+    """Extract goal brief draft from parsed action."""
+    extracted_data = action.get("extracted_data", {})
+    if isinstance(extracted_data, dict):
+        goal_brief = extracted_data.get("goal_brief")
+        if isinstance(goal_brief, dict):
+            return goal_brief
+    return None
+
+
 def extract_interests_from_action(action: ParsedAction) -> list[str]:
     """Extract interests from parsed action.
 

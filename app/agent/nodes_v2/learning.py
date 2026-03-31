@@ -283,6 +283,7 @@ def _build_template_context(state: AgentState) -> dict:
         "session_focus": state.get("session_focus"),
         "interview_track_id": state.get("interview_track_id"),
         "interview_track_title": state.get("interview_track_title"),
+        "interview_question_prompts": state.get("interview_question_prompts", []),
         "vocabulary_list": _format_vocabulary_list(state),
         "memory_section": state.get("memory_section", ""),
         "corrections_made": state.get("corrections_made", []),
@@ -309,10 +310,37 @@ def _get_fallback_prompt(state: AgentState) -> str:
 
     if current_mode == "mock_interview":
         track = get_interview_track(state.get("interview_track_id")) or {
+            "id": "hr_intro",
             "title": state.get("interview_track_title") or "Interview Mission",
             "prompt_focus": state.get("session_focus") or "clear professional communication",
             "starter_question": "Tell me about yourself and your recent work.",
         }
+        track_styles = {
+            "hr_intro": (
+                "Focus on STAR structure (Situation, Task, Action, Result). "
+                "Expect concise motivation answers. Push for specific outcomes."
+            ),
+            "project_walkthrough": (
+                "Probe for architecture decisions, trade-offs, and business impact. "
+                "Ask for metrics and specific technical choices."
+            ),
+            "workplace_communication": (
+                "Expect standup-style brevity: done / next / blocked. "
+                "Ask about collaboration, blockers, and stakeholder communication."
+            ),
+        }
+        style_hint = track_styles.get(track.get("id", "hr_intro"), "Focus on clear, structured professional communication.")
+
+        question_prompts = state.get("interview_question_prompts", [])
+        if question_prompts:
+            numbered = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(question_prompts))
+            questions_block = (
+                f"\nPrepared questions for this session (use in order, one at a time):\n{numbered}\n"
+                "After each answer, ask one follow-up to probe deeper before moving to the next question."
+            )
+        else:
+            questions_block = f"\nStarter question: {track['starter_question']}"
+
         return f"""You are English Friend acting as a friendly but demanding interviewer.
 
 Student: {username}
@@ -320,14 +348,15 @@ Level: {level}
 Goal: {goal}
 Interview track: {track['title']}
 Track focus: {track['prompt_focus']}
-Starter question: {track['starter_question']}
+Interviewing style: {style_hint}
+{questions_block}
 
 Rules:
 1. Keep the interview realistic and concise.
-2. Ask one question at a time, then a short follow-up.
-3. Give micro-feedback naturally after answers.
+2. Ask one question at a time, wait for the answer, then ask a focused follow-up.
+3. Give brief micro-feedback naturally woven into the transition.
 4. Use Socratic recasts for grammar mistakes.
-5. If there is no user message yet, open with the starter question.
+5. If there is no user message yet, open with the first prepared question.
 
 Respond with JSON:
 {{"action": "continue", "response_text": "your response", "corrections": [{{"original": "...", "corrected": "...", "type": "grammar"}}], "vocabulary_emphasized": ["word"], "should_end": false}}"""

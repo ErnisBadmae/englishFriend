@@ -67,6 +67,8 @@ class AgentState(TypedDict, total=False):
     detected_goal: Optional[str]  # LLM-extracted goal (before confirmation)
     confirmed_goal: Optional[str]  # User-confirmed goal
     goal_needs_confirmation: bool  # Flag: waiting for user to confirm
+    goal_brief: Optional[dict[str, Any]]  # Structured goal brief for product routing
+    goal_setup_complete: bool  # Whether the goal is specific enough for the program
     detected_interests: list[str]
     confirmed_interests: list[str]
     interests_need_confirmation: bool
@@ -85,6 +87,7 @@ class AgentState(TypedDict, total=False):
     interview_track_id: Optional[str]
     interview_track_title: Optional[str]
     session_focus: Optional[str]
+    interview_question_prompts: list[str]  # curated questions for this session
 
     # === Current Session Learning ===
     current_mode: LearningModeEnum
@@ -163,6 +166,8 @@ def create_initial_state(
         detected_goal=None,
         confirmed_goal=None,
         goal_needs_confirmation=False,
+        goal_brief=None,
+        goal_setup_complete=False,
         detected_interests=[],
         confirmed_interests=[],
         interests_need_confirmation=False,
@@ -181,6 +186,7 @@ def create_initial_state(
         interview_track_id=None,
         interview_track_title=None,
         session_focus=None,
+        interview_question_prompts=[],
 
         # Current Session
         current_mode=LearningModeEnum.FREE_CONVERSATION,
