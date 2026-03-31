@@ -1,32 +1,26 @@
-"""Сервис генерации векторных эмбеддингов.
+"""Сервис генерации векторных эмбеддингов."""
 
-Поддерживает:
-- OpenAI text-embedding-3-small (1536 dimensions, дешёвый, хорошее качество)
-- OpenAI text-embedding-3-large (3072 dimensions, лучшее качество)
-- Groq (через совместимый API, если доступно)
+from __future__ import annotations
 
-Используется для:
-- Векторизации воспоминаний перед сохранением в Qdrant
-- Создания query vectors для семантического поиска
-"""
-
-from typing import Optional
-from openai import AsyncOpenAI
 import logging
+from typing import Optional
+
+from openai import AsyncOpenAI
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Размерности эмбеддингов
+
 EMBEDDING_DIMENSIONS = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
 }
 
-# Модель по умолчанию (самая экономичная)
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+class EmbeddingUnavailableError(RuntimeError):
+    """Embedding backend is disabled or not configured."""
 
 
 class EmbeddingService:
@@ -34,91 +28,77 @@ class EmbeddingService:
 
     def __init__(
         self,
-        model: str = DEFAULT_EMBEDDING_MODEL,
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
+        enabled: Optional[bool] = None,
     ):
-        """
-        Args:
-            model: Модель эмбеддингов OpenAI
-            api_key: API ключ (если None, берётся из settings)
-        """
-        self.model = model
-        self.dimensions = EMBEDDING_DIMENSIONS.get(model, 1536)
+        self.model = model or settings.openai_embedding_model
+        self.dimensions = EMBEDDING_DIMENSIONS.get(self.model, 1536)
+        self.enabled = settings.vector_memory_enabled if enabled is None else enabled
+        self._api_key = api_key or settings.openai_api_key
+        self._available = self.enabled and bool(self._api_key)
+        self._client = AsyncOpenAI(api_key=self._api_key) if self._available else None
 
-        # Используем OpenAI API key (или Groq если настроен OpenAI-совместимый endpoint)
-        api_key = api_key or settings.openai_api_key
-        if not api_key:
-            logger.warning("OpenAI API key not configured, embeddings will fail")
+        if not self.enabled:
+            logger.info("EmbeddingService disabled by VECTOR_MEMORY_ENABLED=false")
+        elif not self._api_key:
+            logger.warning("OpenAI API key not configured, vector memory will run in DB-only mode")
 
-        self._client = AsyncOpenAI(api_key=api_key or "dummy")
-        logger.info(f"EmbeddingService initialized with model={model}, dimensions={self.dimensions}")
+        logger.info(
+            "EmbeddingService initialized with model=%s dimensions=%s available=%s",
+            self.model,
+            self.dimensions,
+            self._available,
+        )
+
+    def is_available(self) -> bool:
+        """Return True when embeddings can be requested from the provider."""
+        return self._available
+
+    def _ensure_available(self) -> None:
+        if self._available:
+            return
+
+        if not self.enabled:
+            raise EmbeddingUnavailableError("Vector memory is disabled")
+
+        raise EmbeddingUnavailableError("OPENAI_API_KEY is not configured for embeddings")
 
     async def embed_text(self, text: str) -> list[float]:
-        """Создать эмбеддинг для текста.
-
-        Args:
-            text: Текст для векторизации
-
-        Returns:
-            Список float значений (вектор)
-        """
+        """Создать эмбеддинг для текста."""
         if not text or not text.strip():
             logger.warning("Empty text provided for embedding")
             return [0.0] * self.dimensions
 
-        try:
-            response = await self._client.embeddings.create(
-                model=self.model,
-                input=text.strip(),
-            )
-            embedding = response.data[0].embedding
-            logger.debug(f"Generated embedding for text ({len(text)} chars)")
-            return embedding
-        except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
-            raise
+        self._ensure_available()
+        response = await self._client.embeddings.create(
+            model=self.model,
+            input=text.strip(),
+        )
+        embedding = response.data[0].embedding
+        logger.debug("Generated embedding for text (%s chars)", len(text))
+        return embedding
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Создать эмбеддинги для нескольких текстов (batch).
-
-        Args:
-            texts: Список текстов
-
-        Returns:
-            Список векторов
-        """
+        """Создать эмбеддинги для нескольких текстов."""
         if not texts:
             return []
 
-        # Фильтруем пустые строки
-        valid_texts = [t.strip() for t in texts if t and t.strip()]
+        valid_texts = [text.strip() for text in texts if text and text.strip()]
         if not valid_texts:
             return [[0.0] * self.dimensions] * len(texts)
 
-        try:
-            response = await self._client.embeddings.create(
-                model=self.model,
-                input=valid_texts,
-            )
-
-            # Результаты приходят в том же порядке
-            embeddings = [item.embedding for item in response.data]
-            logger.debug(f"Generated {len(embeddings)} embeddings (batch)")
-            return embeddings
-        except Exception as e:
-            logger.error(f"Failed to generate batch embeddings: {e}")
-            raise
+        self._ensure_available()
+        response = await self._client.embeddings.create(
+            model=self.model,
+            input=valid_texts,
+        )
+        embeddings = [item.embedding for item in response.data]
+        logger.debug("Generated %s embeddings (batch)", len(embeddings))
+        return embeddings
 
     async def similarity(self, text1: str, text2: str) -> float:
-        """Вычислить косинусное сходство между двумя текстами.
-
-        Args:
-            text1: Первый текст
-            text2: Второй текст
-
-        Returns:
-            Косинусное сходство (0.0 - 1.0)
-        """
+        """Вычислить косинусное сходство между двумя текстами."""
         embeddings = await self.embed_texts([text1, text2])
         return self._cosine_similarity(embeddings[0], embeddings[1])
 
@@ -138,7 +118,6 @@ class EmbeddingService:
         return dot_product / (norm1 * norm2)
 
 
-# Singleton instance
 _embedding_service: Optional[EmbeddingService] = None
 
 
