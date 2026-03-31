@@ -68,6 +68,7 @@ export interface MissionSummary {
   linked_goal_context?: string | null;
   linked_skill_gap?: string | null;
   from_interview?: boolean;
+  interview_track_id?: string | null;
 }
 
 export interface ProgramSummary {

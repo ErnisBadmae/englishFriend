@@ -10,7 +10,7 @@ Uses structured JSON output from LLM for decisions.
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from app.agent.state import AgentState, AgentPhase, add_decision_log
 from app.agent.response_parser import (
@@ -166,6 +166,7 @@ async def _apply_onboarding_action(
     action_type = action.get("action", "")
     response_text = action.get("response_text", "")
     goal_brief = extract_goal_brief_from_action(action)
+    goal_value = extract_goal_from_action(action)
 
     # Always set response
     state["pending_response"] = response_text
@@ -174,7 +175,7 @@ async def _apply_onboarding_action(
 
     # Handle specific actions
     if action_type == "goal_confirmed":
-        goal = extract_goal_from_action(action)
+        goal = goal_value
         if goal:
             state["confirmed_goal"] = goal
             state["goal_needs_confirmation"] = False
@@ -182,8 +183,11 @@ async def _apply_onboarding_action(
             if goal_brief:
                 merged_goal_brief.update(goal_brief)
             if merged_goal_brief:
-                state["goal_brief"] = merged_goal_brief
-                state["goal_setup_complete"] = bool(merged_goal_brief.get("status") == "confirmed")
+                normalized_goal_brief = _coerce_goal_brief_state(merged_goal_brief)
+                state["goal_brief"] = normalized_goal_brief
+                state["goal_setup_complete"] = bool(normalized_goal_brief.get("status") == "confirmed")
+                if not state["goal_setup_complete"]:
+                    state["pending_response"] = _build_goal_followup_question(normalized_goal_brief, goal)
 
             agent_v2_goal_detection.labels(detected="true").inc()
 
@@ -195,7 +199,7 @@ async def _apply_onboarding_action(
             logger.info(f"[Onboarding] Goal confirmed: {goal}")
 
     elif action_type == "confirm_goal":
-        goal = extract_goal_from_action(action)
+        goal = goal_value
         if goal:
             # Check confidence threshold before confirming goal detection
             if validate_confidence(action, "goal_detection"):
@@ -204,8 +208,11 @@ async def _apply_onboarding_action(
                 if goal_brief:
                     merged_goal_brief = dict(state.get("goal_brief") or {})
                     merged_goal_brief.update(goal_brief)
-                    state["goal_brief"] = merged_goal_brief
-                    state["goal_setup_complete"] = bool(merged_goal_brief.get("status") == "confirmed")
+                    normalized_goal_brief = _coerce_goal_brief_state(merged_goal_brief)
+                    state["goal_brief"] = normalized_goal_brief
+                    state["goal_setup_complete"] = bool(normalized_goal_brief.get("status") == "confirmed")
+                    if not state["goal_setup_complete"]:
+                        state["pending_response"] = _build_goal_followup_question(normalized_goal_brief, goal)
 
                 agent_v2_goal_detection.labels(detected="true").inc()
 
@@ -224,14 +231,20 @@ async def _apply_onboarding_action(
                 agent_v2_goal_detection.labels(detected="false").inc()
 
     elif action_type == "goal_skipped":
-        state["confirmed_goal"] = "General Fluency"
+        state["confirmed_goal"] = None
+        state["detected_goal"] = None
         state["goal_needs_confirmation"] = False
         state["goal_setup_complete"] = False
+        state["goal_brief"] = _coerce_goal_brief_state(state.get("goal_brief") or {})
+        state["pending_response"] = (
+            "Let’s make it concrete first. Which is closer right now: "
+            "an ML/AI interview, explaining your projects, or speaking in an international team?"
+        )
 
         pedagogy.log_goal_defaulted(
             user_id=state["user_id"],
-            default_goal="General Fluency",
-            reason="User skipped goal setting",
+            default_goal="goal_setup_retry",
+            reason="User stayed vague, so onboarding asked for a more concrete career target",
         )
 
     elif action_type == "interests_confirmed":
@@ -260,6 +273,15 @@ async def _apply_onboarding_action(
         )
 
     elif action_type == "transition_to_learning":
+        if not state.get("goal_setup_complete"):
+            state["pending_response"] = _build_goal_followup_question(
+                state.get("goal_brief") or {},
+                state.get("confirmed_goal") or state.get("detected_goal"),
+            )
+            return state
+        if not state.get("assessed_level") and not state.get("_skip_assessment", False):
+            state["pending_response"] = _build_assessment_followup_question(state)
+            return state
         state["current_phase"] = AgentPhase.LEARNING_SESSION
 
         pedagogy.log_phase_transition(
@@ -270,6 +292,64 @@ async def _apply_onboarding_action(
         )
 
     return state
+
+
+def _goal_brief_missing_fields(goal_brief: dict[str, Any]) -> list[str]:
+    required = {
+        "primary_goal": "goal",
+        "target_role": "target role",
+        "domain": "domain",
+        "target_market": "company context",
+        "deadline_type": "timeline",
+        "main_contexts": "practice context",
+    }
+    missing: list[str] = []
+    for key, label in required.items():
+        if not goal_brief.get(key):
+            missing.append(label)
+    return missing
+
+
+def _coerce_goal_brief_state(goal_brief: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(goal_brief)
+    missing = _goal_brief_missing_fields(normalized)
+    contexts = normalized.get("main_contexts") or []
+    if not missing and "general_fluency" not in contexts:
+        normalized["status"] = "confirmed"
+    else:
+        normalized["status"] = "incomplete"
+    return normalized
+
+
+def _build_goal_followup_question(goal_brief: dict[str, Any], goal_text: Optional[str]) -> str:
+    normalized = _coerce_goal_brief_state(goal_brief)
+    missing = _goal_brief_missing_fields(normalized)
+    if not missing:
+        return "I have your goal. One more quick step before practice: let me measure your current level."
+
+    first_missing = missing[0]
+    if first_missing == "target role":
+        return (
+            f'I understand the direction: "{goal_text or normalized.get("primary_goal") or "career English"}". '
+            "Which role is closest right now: ML engineer, data scientist, or applied scientist?"
+        )
+    if first_missing == "domain":
+        return "Which domain should the program optimize for: machine learning, data science, or software engineering?"
+    if first_missing == "company context":
+        return "What company context matters most: western company, global remote team, or international startup?"
+    if first_missing == "timeline":
+        return "What is your timeline: 1-3 months, 3-6 months, or open-ended?"
+    if first_missing == "practice context":
+        return "Which situations matter most first: interviews, project walkthroughs, or workplace communication?"
+    return "Before I build your program, I need a more concrete job target. Tell me the role, company context, and main speaking situations."
+
+
+def _build_assessment_followup_question(state: AgentState) -> str:
+    target_role = (state.get("goal_brief") or {}).get("target_role") or "your target role"
+    return (
+        f"Before I build the program for {target_role}, I need a quick speaking baseline. "
+        "Answer in English: what do you do now, what kind of role are you aiming for, and why?"
+    )
 
 
 def _build_template_context(state: AgentState) -> dict:
@@ -310,15 +390,17 @@ def _get_fallback_prompt(state: AgentState) -> str:
     skip_assessment = state.get("_skip_assessment", False)
     missing_goal_fields = [
         name
-        for name in ["primary_goal", "target_role", "target_market", "main_contexts"]
+        for name in ["primary_goal", "target_role", "domain", "target_market", "deadline_type", "main_contexts"]
         if not goal_brief.get(name)
     ]
 
     if not skip_goal and not goal_setup_complete:
         next_hint = {
-            "primary_goal": "Ask what concrete English outcome they want: interview, job, workplace communication, or something similar.",
-            "target_role": "Ask what role they are aiming for, for example ML engineer, data scientist, or software engineer.",
-            "target_market": "Ask what kind of company context they target: international company, western company, remote global team, and so on.",
+            "primary_goal": "Ask what concrete career-English outcome they want. If they are passive, offer short options like ML interview, project walkthrough, or workplace communication.",
+            "target_role": "Ask what role they are aiming for, for example ML engineer, data scientist, or applied scientist.",
+            "domain": "Ask which domain matters most for the program: machine learning, data science, or software engineering.",
+            "target_market": "Ask what company context they target: western company, international startup, or global remote team.",
+            "deadline_type": "Ask for the timeline: 1-3 months, 3-6 months, or open-ended.",
             "main_contexts": "Ask which situations matter most right now: interviews, project walkthroughs, or workplace communication.",
         }.get(missing_goal_fields[0] if missing_goal_fields else "primary_goal")
         return f"""You are English Friend, a patient English tutor.
@@ -336,7 +418,7 @@ Respond with JSON:
         return f"""You are English Friend.
 Student: {username}, Goal: {state.get('confirmed_goal')}, Level: {state.get('language_level', 'B1')}
 
-Ask 2-3 questions to assess their English level. Start simple, then increase difficulty.
+Ask 2-3 questions to assess their English level for the target job context. Start simple, then increase difficulty.
 Return both the CEFR level and numeric scores for fluency, grammar, vocabulary, and comprehension.
 
 Respond with JSON:

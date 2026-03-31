@@ -63,6 +63,7 @@ class MissionSummary(BaseModel):
     linked_goal_context: Optional[str] = None
     linked_skill_gap: Optional[str] = None
     from_interview: bool = False
+    interview_track_id: Optional[str] = None
 
 
 class ProgramStage(BaseModel):

@@ -191,7 +191,19 @@ function App() {
     }
 
     if (snapshot.mission.mode === 'mock_interview') {
-      setScreen('interview');
+      const recommendedTrackId = snapshot.mission.interview_track_id ?? snapshot.interview.recommended_track.id;
+      const track: InterviewTrack = {
+        id: recommendedTrackId,
+        title: snapshot.mission.title,
+        subtitle: snapshot.mission.reason,
+        description: '',
+        prompt_focus: '',
+        starter_question: '',
+        rubric_focus: [],
+        recommended: recommendedTrackId === snapshot.interview.recommended_track.id,
+        completed_runs: 0,
+      };
+      startInterviewTrack(track);
       return;
     }
 
@@ -224,14 +236,6 @@ function App() {
       title: track.title,
       subtitle: track.subtitle,
       returnScreen: 'interview',
-    });
-    setScreen('session');
-  }
-
-  function openDefaultSession() {
-    setSessionConfig({
-      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
-      returnScreen: 'progress',
     });
     setScreen('session');
   }
@@ -385,12 +389,11 @@ function App() {
         <button className={screen === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('home')}>
           Home
         </button>
-        <button className={screen === 'session' ? 'nav-item active' : 'nav-item'} onClick={openDefaultSession}>
-          Session
-        </button>
-        <button className={screen === 'interview' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('interview')}>
-          Interview
-        </button>
+        {snapshot?.setup.assessment_complete ? (
+          <button className={screen === 'interview' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('interview')}>
+            Career
+          </button>
+        ) : null}
         <button className={screen === 'review' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('review')}>
           Review
         </button>

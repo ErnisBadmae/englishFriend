@@ -7,11 +7,12 @@ interface ProgressPageProps {
 export function ProgressPage({ snapshot }: ProgressPageProps) {
   const readiness = snapshot.assessment?.goal_readiness;
   const skillAxes = snapshot.assessment?.skill_axes ?? {};
+  const goalBrief = snapshot.goal.brief;
 
   return (
     <div className="miniapp-page">
       <section className="content-card">
-        <div className="section-label">Progress trajectory</div>
+        <div className="section-label">Target trajectory</div>
         <h1>
           {snapshot.assessment
             ? `CEFR ${snapshot.assessment.level}${readiness ? ` · readiness ${readiness}/10` : ''}`
@@ -19,9 +20,22 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
         </h1>
         <p>
           {snapshot.assessment
-            ? 'The coach is now routing practice from a measured baseline instead of generic conversation.'
+            ? 'The coach is now routing practice from a measured baseline toward your target role.'
             : 'Complete the baseline assessment to unlock a real program instead of generic practice.'}
         </p>
+      </section>
+
+      <section className="content-card">
+        <div className="section-label">Target role</div>
+        <h3>{goalBrief?.target_role || 'Not confirmed yet'}</h3>
+        <p>{goalBrief?.summary || 'The coach is still clarifying the job target and context.'}</p>
+        <div className="pill-row">
+          {goalBrief?.target_market && <span className="pill">{goalBrief.target_market.replace(/_/g, ' ')}</span>}
+          {goalBrief?.deadline_type && <span className="pill">{goalBrief.deadline_type.replace(/_/g, ' ')}</span>}
+          {(goalBrief?.main_contexts || []).map((context) => (
+            <span key={context} className="pill">{context.replace(/_/g, ' ')}</span>
+          ))}
+        </div>
       </section>
 
       <section className="content-card">
@@ -35,6 +49,7 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
             </span>
           ))}
         </div>
+        <p className="muted-line">Next milestone: {snapshot.program.next_milestone}</p>
       </section>
 
       <section className="stats-grid">

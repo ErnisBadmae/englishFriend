@@ -87,4 +87,31 @@ def test_get_goal_setup_missing_returns_human_labels():
     missing = service.get_goal_setup_missing(plan)
 
     assert "target role" in missing
+    assert "domain" in missing
     assert "target company context" in missing
+    assert "timeline" in missing
+
+
+@pytest.mark.asyncio
+async def test_set_goal_requires_domain_and_timeline_before_completion():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {}
+    plan.level_target = None
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    await service.set_goal(
+        1,
+        "I want better English at work",
+        goal_brief={
+            "primary_goal": "Speak better at work",
+            "target_role": "Specialist",
+            "target_market": "international_company",
+            "main_contexts": ["interviews", "project_walkthrough"],
+        },
+    )
+
+    assert plan.roadmap["goal_brief"]["status"] == "incomplete"
+    assert plan.roadmap["program_plan"]["current_stage"] == "goal_setup"

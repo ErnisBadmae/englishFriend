@@ -1,41 +1,30 @@
-"""Сервис для управления планом обучения.
-
-Отвечает за:
-- Создание плана на основе цели пользователя
-- Хранение прогресса и milestone'ов
-- Запись результатов assessment
-- Обновление roadmap
-"""
+from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Optional
+import re
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Optional
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.extended_tables import LearningPlan
 from app.models.enums_and_dimensions import CEFRLevel
+from app.models.extended_tables import LearningPlan
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class GoalTemplate:
-    """Шаблон цели обучения."""
     goal: str
-    focus_areas: list[dict]
-    milestones: list[dict]
+    focus_areas: list[dict[str, str]]
+    milestones: list[dict[str, Any]]
     preferred_mode: str
     recommended_vocabulary: list[str]
 
-
-# =============================================================================
-# Шаблоны целей
-# DEPRECATED: Используйте app.agent.nodes.program_build.ROADMAP_TEMPLATES
-# вместо этого. Эти шаблоны сохранены для обратной совместимости с /chat.
-# =============================================================================
 
 GOAL_TEMPLATES = {
     "ml_interview": GoalTemplate(
@@ -43,29 +32,27 @@ GOAL_TEMPLATES = {
         focus_areas=[
             {"area": "technical_vocabulary", "description": "ML terms and concepts"},
             {"area": "behavioral_questions", "description": "STAR method answers"},
-            {"area": "explain_concepts", "description": "Simplifying complex ideas"},
-            {"area": "project_walkthrough", "description": "Describing your work"},
+            {"area": "explain_concepts", "description": "Explaining projects and decisions"},
+            {"area": "project_walkthrough", "description": "Describing your work clearly"},
         ],
         milestones=[
             {"name": "Complete assessment", "type": "assessment", "done": False},
             {"name": "Master 50 ML terms", "type": "vocabulary", "target": 50, "progress": 0},
             {"name": "Complete 5 mock interviews", "type": "mock_interview", "target": 5, "count": 0},
-            {"name": "Practice STAR method", "type": "skill", "done": False},
         ],
         preferred_mode="mock_interview",
         recommended_vocabulary=[
-            "implementation", "deployment", "inference", "training", "validation",
-            "feature engineering", "cross-validation", "hyperparameter", "overfitting",
-            "precision", "recall", "accuracy", "pipeline", "scalability", "optimization",
-            "architecture", "framework", "algorithm", "dataset", "preprocessing",
+            "deployment", "inference", "feature engineering", "overfitting", "pipeline",
+            "scalability", "optimization", "architecture", "algorithm", "dataset",
         ],
     ),
     "software_interview": GoalTemplate(
         goal="Software Engineering Interview Preparation",
         focus_areas=[
-            {"area": "technical_discussion", "description": "System design, algorithms"},
+            {"area": "technical_discussion", "description": "System design and trade-offs"},
             {"area": "behavioral_questions", "description": "Team collaboration stories"},
-            {"area": "code_explanation", "description": "Walking through your code"},
+            {"area": "code_explanation", "description": "Walking through your projects"},
+            {"area": "workplace_communication", "description": "Standups, blockers, updates"},
         ],
         milestones=[
             {"name": "Complete assessment", "type": "assessment", "done": False},
@@ -75,8 +62,7 @@ GOAL_TEMPLATES = {
         preferred_mode="mock_interview",
         recommended_vocabulary=[
             "scalability", "architecture", "microservices", "deployment", "debugging",
-            "refactoring", "optimization", "dependency", "integration", "abstraction",
-            "inheritance", "encapsulation", "polymorphism", "asynchronous", "concurrent",
+            "refactoring", "optimization", "dependency", "integration", "asynchronous",
         ],
     ),
     "general_fluency": GoalTemplate(
@@ -97,43 +83,100 @@ GOAL_TEMPLATES = {
 }
 
 
-class LearningPlanService:
-    """Сервис для управления планом обучения."""
+_LEVEL_BASELINE = {"A1": 2.0, "A2": 3.5, "B1": 5.0, "B2": 6.8, "C1": 8.3, "C2": 9.2}
+_GOAL_BRIEF_REQUIRED_FIELDS = {
+    "primary_goal": "goal",
+    "target_role": "target role",
+    "domain": "domain",
+    "target_market": "target company context",
+    "deadline_type": "timeline",
+    "main_contexts": "practice contexts",
+}
+_ROLE_KEYWORDS = {
+    "ml engineer": ("ML Engineer", "machine_learning"),
+    "machine learning": ("ML Engineer", "machine_learning"),
+    "data scientist": ("Data Scientist", "data_science"),
+    "data science": ("Data Scientist", "data_science"),
+    "software engineer": ("Software Engineer", "software_engineering"),
+    "backend engineer": ("Backend Engineer", "software_engineering"),
+    "frontend engineer": ("Frontend Engineer", "software_engineering"),
+    "developer": ("Software Engineer", "software_engineering"),
+    "engineer": ("Software Engineer", "software_engineering"),
+}
 
+
+def _utcnow_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+def _round_score(value: float) -> float:
+    return round(max(1.0, min(10.0, value)), 1)
+
+
+def _normalize_score(value: Any, fallback: float) -> float:
+    if value is None:
+        return fallback
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if score <= 1.0:
+        score *= 10.0
+    return _round_score(score)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        normalized = item.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+    return result
+
+
+class LearningPlanService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
     async def get_or_create_plan(self, user_id: int) -> LearningPlan:
-        """Получить или создать план обучения.
-
-        Args:
-            user_id: ID пользователя
-
-        Returns:
-            LearningPlan
-        """
-        result = await self.db.execute(
-            select(LearningPlan).where(LearningPlan.user_id == user_id)
-        )
+        result = await self.db.execute(select(LearningPlan).where(LearningPlan.user_id == user_id))
         plan = result.scalar_one_or_none()
+        if plan:
+            return plan
 
-        if not plan:
-            plan = LearningPlan(
-                user_id=user_id,
-                roadmap={
-                    "goal": None,
-                    "focus_areas": [],
-                    "milestones": [],
-                    "preferred_mode": "free_conversation",
-                    "sessions_completed": 0,
-                    "total_practice_minutes": 0,
-                    "assessment_history": [],
+        plan = LearningPlan(
+            user_id=user_id,
+            roadmap={
+                "goal": None,
+                "goal_brief": None,
+                "focus_areas": [],
+                "milestones": [],
+                "preferred_mode": "free_conversation",
+                "sessions_completed": 0,
+                "total_practice_minutes": 0,
+                "assessment_history": [],
+                "proficiency_profile": None,
+                "program_plan": {
+                    "title": "Complete your career English setup",
+                    "time_horizon_days": 90,
+                    "current_stage": "goal_setup",
+                    "stage_label": "Goal Setup",
+                    "weekly_focus": ["Clarify your target role and context"],
+                    "success_metric": "Turn a vague goal into a concrete target",
+                    "next_milestone": "Confirm your goal",
+                    "stages": [],
                 },
-            )
-            self.db.add(plan)
-            await self.db.commit()
-            await self.db.refresh(plan)
-
+            },
+        )
+        self.db.add(plan)
+        await self.db.commit()
+        await self.db.refresh(plan)
         return plan
 
     async def set_goal(
@@ -141,94 +184,78 @@ class LearningPlanService:
         user_id: int,
         goal_text: str,
         target_level: Optional[str] = None,
+        goal_brief: Optional[dict[str, Any]] = None,
     ) -> LearningPlan:
-        """Установить цель обучения.
-
-        Анализирует текст цели и применяет подходящий шаблон.
-
-        Args:
-            user_id: ID пользователя
-            goal_text: Текст цели (например, "ML interview preparation")
-            target_level: Целевой CEFR уровень
-
-        Returns:
-            Обновленный LearningPlan
-        """
         plan = await self.get_or_create_plan(user_id)
-
-        # Определяем шаблон на основе текста цели
         template = self._match_goal_template(goal_text)
+        roadmap = deepcopy(plan.roadmap or {})
+        merged_goal_brief = self._build_goal_brief(goal_text, template, roadmap.get("goal_brief"), goal_brief)
 
-        # Обновляем roadmap
-        roadmap = plan.roadmap or {}
-        roadmap.update({
-            "goal": goal_text,
-            "goal_template": template.goal if template else "custom",
-            "focus_areas": template.focus_areas if template else [],
-            "milestones": template.milestones if template else [],
-            "preferred_mode": template.preferred_mode if template else "free_conversation",
-            "recommended_vocabulary": template.recommended_vocabulary if template else [],
-            "created_at": datetime.utcnow().isoformat(),
-        })
+        roadmap.update(
+            {
+                "goal": goal_text,
+                "goal_template": template.goal if template else "custom",
+                "goal_brief": merged_goal_brief,
+                "focus_areas": template.focus_areas if template else roadmap.get("focus_areas", []),
+                "milestones": template.milestones if template and not roadmap.get("milestones") else roadmap.get("milestones", []),
+                "preferred_mode": template.preferred_mode if template else roadmap.get("preferred_mode", "free_conversation"),
+                "recommended_vocabulary": template.recommended_vocabulary if template else roadmap.get("recommended_vocabulary", []),
+                "created_at": roadmap.get("created_at") or _utcnow_iso(),
+            }
+        )
+        roadmap["program_plan"] = self._build_program_plan(
+            merged_goal_brief,
+            roadmap.get("proficiency_profile"),
+            roadmap.get("focus_areas") or [],
+            roadmap.get("preferred_mode") or "free_conversation",
+        )
 
-        # Обновляем план - важно: создаём новый dict чтобы SQLAlchemy увидел изменение
-        plan.roadmap = dict(roadmap)  # Новый объект для отслеживания изменений
-        flag_modified(plan, 'roadmap')  # Явно помечаем как изменённое
-
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
         if target_level:
-            plan.level_target = CEFRLevel(target_level)
+            try:
+                plan.level_target = CEFRLevel(target_level)
+            except ValueError:
+                logger.warning("Ignoring unknown target level: %s", target_level)
         plan.updated_at = datetime.utcnow()
-
         await self.db.commit()
         await self.db.refresh(plan)
-
         return plan
 
     async def record_assessment(
         self,
         user_id: int,
         assessed_level: str,
-        scores: Optional[dict] = None,
+        scores: Optional[dict[str, Any]] = None,
         notes: Optional[str] = None,
     ) -> LearningPlan:
-        """Записать результат assessment.
-
-        Args:
-            user_id: ID пользователя
-            assessed_level: Оценённый CEFR уровень
-            scores: Детальные оценки (vocabulary, grammar, fluency, etc.)
-            notes: Заметки от assessment
-
-        Returns:
-            Обновленный LearningPlan
-        """
         plan = await self.get_or_create_plan(user_id)
-
-        roadmap = plan.roadmap or {}
-
-        # Добавляем в историю assessment
-        assessment_history = roadmap.get("assessment_history", [])
-        assessment_history.append({
-            "date": datetime.utcnow().isoformat(),
-            "level": assessed_level,
-            "scores": scores or {},
-            "notes": notes,
-        })
-        roadmap["assessment_history"] = assessment_history
-
-        # Обновляем текущий уровень
+        roadmap = deepcopy(plan.roadmap or {})
+        history = roadmap.get("assessment_history", [])
+        history.append({"date": _utcnow_iso(), "level": assessed_level, "scores": scores or {}, "notes": notes})
+        roadmap["assessment_history"] = history
         roadmap["current_level"] = assessed_level
-        roadmap["last_assessment"] = datetime.utcnow().isoformat()
+        roadmap["last_assessment"] = _utcnow_iso()
 
-        # Отмечаем milestone
+        goal_brief = roadmap.get("goal_brief") or self._build_goal_brief(
+            roadmap.get("goal") or "Career English",
+            self._match_goal_template(roadmap.get("goal") or ""),
+        )
+        roadmap["goal_brief"] = goal_brief
+        roadmap["proficiency_profile"] = self._build_proficiency_profile(assessed_level, scores or {}, goal_brief, notes)
+        roadmap["program_plan"] = self._build_program_plan(
+            goal_brief,
+            roadmap["proficiency_profile"],
+            roadmap.get("focus_areas") or [],
+            roadmap.get("preferred_mode") or "free_conversation",
+        )
         self._update_milestone(roadmap, "assessment", done=True)
 
-        plan.roadmap = roadmap
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
         plan.updated_at = datetime.utcnow()
-
         await self.db.commit()
         await self.db.refresh(plan)
-
         return plan
 
     async def increment_session_count(
@@ -237,227 +264,496 @@ class LearningPlanService:
         mode: str,
         duration_minutes: int = 0,
     ) -> LearningPlan:
-        """Увеличить счётчик сессий.
-
-        Args:
-            user_id: ID пользователя
-            mode: Режим сессии
-            duration_minutes: Длительность в минутах
-
-        Returns:
-            Обновленный LearningPlan
-        """
         plan = await self.get_or_create_plan(user_id)
-
-        roadmap = plan.roadmap or {}
+        roadmap = deepcopy(plan.roadmap or {})
         roadmap["sessions_completed"] = roadmap.get("sessions_completed", 0) + 1
         roadmap["total_practice_minutes"] = roadmap.get("total_practice_minutes", 0) + duration_minutes
-
-        # Update milestones
         if mode == "mock_interview":
             self._update_milestone(roadmap, "mock_interview", increment=1)
         self._update_milestone(roadmap, "practice", minutes=roadmap.get("total_practice_minutes", 0))
 
-        plan.roadmap = roadmap
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
         plan.updated_at = datetime.utcnow()
-
         await self.db.commit()
         await self.db.refresh(plan)
-
         return plan
 
-    async def add_vocabulary_progress(
-        self,
-        user_id: int,
-        words_learned: int,
-    ) -> LearningPlan:
-        """Добавить прогресс по словарному запасу.
-
-        Args:
-            user_id: ID пользователя
-            words_learned: Количество новых слов
-
-        Returns:
-            Обновленный LearningPlan
-        """
+    async def add_vocabulary_progress(self, user_id: int, words_learned: int) -> LearningPlan:
         plan = await self.get_or_create_plan(user_id)
-
-        roadmap = plan.roadmap or {}
-
-        # Update milestone
+        roadmap = deepcopy(plan.roadmap or {})
         self._update_milestone(roadmap, "vocabulary", increment=words_learned)
-
-        plan.roadmap = roadmap
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
         plan.updated_at = datetime.utcnow()
-
         await self.db.commit()
         await self.db.refresh(plan)
-
         return plan
 
     def get_goal(self, plan: LearningPlan) -> Optional[str]:
-        """Получить цель из плана."""
-        if not plan.roadmap:
+        return (plan.roadmap or {}).get("goal")
+
+    def get_goal_brief(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
+        roadmap = plan.roadmap or {}
+        goal_brief = roadmap.get("goal_brief")
+        if goal_brief:
+            return goal_brief
+        goal = roadmap.get("goal")
+        if not goal:
             return None
-        return plan.roadmap.get("goal")
+        return self._build_goal_brief(goal, self._match_goal_template(goal))
+
+    def is_goal_setup_complete(self, plan: LearningPlan) -> bool:
+        goal_brief = self.get_goal_brief(plan)
+        return bool(goal_brief and goal_brief.get("status") == "confirmed")
+
+    def get_goal_setup_missing(self, plan: LearningPlan) -> list[str]:
+        goal_brief = self.get_goal_brief(plan) or {}
+        missing: list[str] = []
+        for key, label in _GOAL_BRIEF_REQUIRED_FIELDS.items():
+            if not goal_brief.get(key):
+                missing.append(label)
+        return missing
 
     def get_focus_areas(self, plan: LearningPlan) -> list[str]:
-        """Получить области фокуса."""
-        if not plan.roadmap:
-            return []
-        areas = plan.roadmap.get("focus_areas", [])
-        return [a.get("area", "") for a in areas if isinstance(a, dict)]
+        areas = (plan.roadmap or {}).get("focus_areas", [])
+        return [area.get("area", "") for area in areas if isinstance(area, dict)]
 
     def get_preferred_mode(self, plan: LearningPlan) -> str:
-        """Получить предпочтительный режим."""
-        if not plan.roadmap:
-            return "free_conversation"
-        return plan.roadmap.get("preferred_mode", "free_conversation")
+        return (plan.roadmap or {}).get("preferred_mode", "free_conversation")
 
     def get_last_assessment_date(self, plan: LearningPlan) -> Optional[datetime]:
-        """Получить дату последнего assessment."""
-        if not plan.roadmap:
+        last_assessment = (plan.roadmap or {}).get("last_assessment")
+        if not last_assessment:
             return None
-        last_assessment = plan.roadmap.get("last_assessment")
-        if last_assessment:
+        try:
             return datetime.fromisoformat(last_assessment)
-        return None
+        except ValueError:
+            return None
+
+    def get_current_level(self, plan: LearningPlan) -> Optional[str]:
+        roadmap = plan.roadmap or {}
+        return roadmap.get("current_level") or (roadmap.get("proficiency_profile") or {}).get("cefr_level")
 
     def get_session_count(self, plan: LearningPlan) -> int:
-        """Получить количество завершённых сессий."""
-        if not plan.roadmap:
-            return 0
-        return plan.roadmap.get("sessions_completed", 0)
+        return (plan.roadmap or {}).get("sessions_completed", 0)
 
     def get_recommended_vocabulary(self, plan: LearningPlan) -> list[str]:
-        """Получить рекомендованный словарный запас."""
-        if not plan.roadmap:
-            return []
-        return plan.roadmap.get("recommended_vocabulary", [])
+        return (plan.roadmap or {}).get("recommended_vocabulary", [])
+
+    def get_proficiency_profile(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
+        roadmap = plan.roadmap or {}
+        profile = roadmap.get("proficiency_profile")
+        if profile:
+            return profile
+        current_level = roadmap.get("current_level")
+        if not current_level:
+            return None
+        return self._build_proficiency_profile(current_level, {}, self.get_goal_brief(plan), None)
+
+    def get_program_plan(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
+        roadmap = plan.roadmap or {}
+        program = roadmap.get("program_plan")
+        if program:
+            return program
+        goal_brief = self.get_goal_brief(plan)
+        if not goal_brief:
+            return None
+        return self._build_program_plan(
+            goal_brief,
+            self.get_proficiency_profile(plan),
+            roadmap.get("focus_areas") or [],
+            roadmap.get("preferred_mode") or "free_conversation",
+        )
 
     def _match_goal_template(self, goal_text: str) -> Optional[GoalTemplate]:
-        """Найти подходящий шаблон для цели."""
         goal_lower = goal_text.lower()
-
-        # ML/Data Science
-        if any(kw in goal_lower for kw in ["ml", "machine learning", "data science", "data scientist"]):
+        if any(keyword in goal_lower for keyword in ["ml", "machine learning", "data science", "data scientist"]):
             return GOAL_TEMPLATES["ml_interview"]
-
-        # Software Engineering
-        if any(kw in goal_lower for kw in ["software", "developer", "engineer", "programming"]):
+        if any(keyword in goal_lower for keyword in ["software", "developer", "engineer", "programming", "backend", "frontend"]):
             return GOAL_TEMPLATES["software_interview"]
-
-        # Interview (general tech)
-        if any(kw in goal_lower for kw in ["interview", "интервью", "собеседование"]):
-            return GOAL_TEMPLATES["ml_interview"]  # Default to ML for now
-
-        # General fluency
+        if any(keyword in goal_lower for keyword in ["interview", "job", "career", "abroad", "international", "remote"]):
+            return GOAL_TEMPLATES["software_interview"]
         return GOAL_TEMPLATES["general_fluency"]
 
     def _update_milestone(
         self,
-        roadmap: dict,
+        roadmap: dict[str, Any],
         milestone_type: str,
         done: bool = False,
         increment: Optional[int] = None,
-        **kwargs,
-    ):
-        """Update milestone in roadmap (handles both setting values and incrementing)."""
+        **kwargs: Any,
+    ) -> None:
         milestones = roadmap.get("milestones", [])
         for milestone in milestones:
             if not (isinstance(milestone, dict) and milestone.get("type") == milestone_type):
                 continue
-
             if done:
                 milestone["done"] = True
-
-            # Handle incrementing counters
             if increment is not None:
                 field = "progress" if milestone_type == "vocabulary" else "count"
                 milestone[field] = milestone.get(field, 0) + increment
-                # Auto-complete if target reached
                 target = milestone.get("target")
                 if target and milestone[field] >= target:
                     milestone["done"] = True
-
-            # Apply other updates
             milestone.update(kwargs)
-
         roadmap["milestones"] = milestones
+
+    def _build_goal_brief(
+        self,
+        goal_text: str,
+        template: Optional[GoalTemplate],
+        existing: Optional[dict[str, Any]] = None,
+        incoming: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        merged = deepcopy(existing or {})
+        if incoming:
+            merged.update({key: value for key, value in incoming.items() if value not in (None, "", [])})
+
+        role, domain = self._infer_role_and_domain(goal_text, template, merged)
+        contexts = self._infer_contexts(goal_text, template, merged)
+        target_market = merged.get("target_market") or self._infer_target_market(goal_text)
+        deadline_type = merged.get("deadline_type") or self._infer_deadline_type(goal_text)
+        blockers = merged.get("current_blockers") or self._infer_blockers(goal_text)
+
+        brief = {
+            "primary_goal": merged.get("primary_goal") or goal_text.strip(),
+            "target_role": merged.get("target_role") or role,
+            "domain": merged.get("domain") or domain,
+            "target_market": target_market,
+            "deadline_type": deadline_type,
+            "main_contexts": _dedupe(merged.get("main_contexts") or contexts),
+            "current_blockers": _dedupe(blockers),
+            "motivation": merged.get("motivation") or "Use English to unlock a better career outcome.",
+            "confidence": round(float(merged.get("confidence") or self._goal_confidence(goal_text, role, contexts)), 2),
+        }
+        brief["status"] = "confirmed" if self._is_goal_brief_complete(brief) else "incomplete"
+        brief["summary"] = self._build_goal_summary(brief)
+        return brief
+
+    def _build_proficiency_profile(
+        self,
+        assessed_level: str,
+        scores: dict[str, Any],
+        goal_brief: Optional[dict[str, Any]],
+        notes: Optional[str],
+    ) -> dict[str, Any]:
+        baseline = _LEVEL_BASELINE.get(assessed_level, 5.0)
+        fluency = _normalize_score(scores.get("fluency"), baseline)
+        grammar = _normalize_score(scores.get("grammar"), baseline)
+        listening = _normalize_score(scores.get("comprehension"), baseline)
+        vocabulary = _normalize_score(scores.get("vocabulary"), baseline)
+        avg = _round_score((fluency + grammar + listening + vocabulary) / 4)
+        return {
+            "cefr_level": assessed_level,
+            "confidence": round(min(0.95, 0.55 + avg / 20), 2),
+            "fluency": fluency,
+            "grammar_accuracy": grammar,
+            "listening_comprehension": listening,
+            "professional_vocabulary": vocabulary,
+            "goal_readiness": self._estimate_goal_readiness(assessed_level, fluency, grammar, listening, vocabulary, goal_brief),
+            "critical_gaps": self._build_critical_gaps(fluency, grammar, listening, vocabulary, goal_brief),
+            "notes": notes,
+            "updated_at": _utcnow_iso(),
+        }
+
+    def _build_program_plan(
+        self,
+        goal_brief: Optional[dict[str, Any]],
+        proficiency_profile: Optional[dict[str, Any]],
+        focus_areas: list[dict[str, Any]] | list[str],
+        preferred_mode: str,
+    ) -> dict[str, Any]:
+        if not goal_brief:
+            return {
+                "title": "Complete your career English setup",
+                "time_horizon_days": 90,
+                "current_stage": "goal_setup",
+                "stage_label": "Goal Setup",
+                "weekly_focus": ["Clarify your target role and context"],
+                "success_metric": "Turn a vague goal into a concrete target",
+                "next_milestone": "Confirm your goal",
+                "stages": [],
+                "preferred_mode": "free_conversation",
+                "focus_areas": [],
+            }
+
+        stage_id = "goal_setup"
+        stage_label = "Goal Setup"
+        weekly_focus = ["Clarify your target role, company context, and practice situations"]
+        success_metric = "Complete setup so the coach can route practice correctly"
+        next_milestone = "Confirm the goal brief"
+        if goal_brief.get("status") == "confirmed" and not proficiency_profile:
+            stage_id = "baseline_assessment"
+            stage_label = "Baseline Assessment"
+            weekly_focus = ["Measure your level before building practice intensity"]
+            success_metric = "Get a reliable speaking baseline"
+            next_milestone = "Complete the baseline assessment"
+        elif goal_brief.get("status") == "confirmed" and proficiency_profile:
+            readiness = float(proficiency_profile.get("goal_readiness") or 0.0)
+            grammar = float(proficiency_profile.get("grammar_accuracy") or 0.0)
+            fluency = float(proficiency_profile.get("fluency") or 0.0)
+            if readiness < 5.5 or grammar < 5.5 or fluency < 5.5:
+                stage_id = "foundation"
+                stage_label = "Foundation for Career English"
+                weekly_focus = self._build_foundation_focus(goal_brief)
+                success_metric = "Speak more accurately in career-related situations"
+                next_milestone = "Stabilize grammar, fluency, and core workplace answers"
+            elif readiness < 7.2:
+                stage_id = "career_scenarios"
+                stage_label = "Career Scenario Practice"
+                weekly_focus = self._build_scenario_focus(goal_brief)
+                success_metric = "Handle common interview and workplace scenarios with structure"
+                next_milestone = "Complete focused career scenario drills"
+            else:
+                stage_id = "target_role_simulation"
+                stage_label = "Target Role Simulation"
+                weekly_focus = self._build_simulation_focus(goal_brief)
+                success_metric = "Perform close to real interview and workplace expectations"
+                next_milestone = "Run target-role simulations and raise readiness"
+
+        order = [
+            ("goal_setup", "Goal Setup"),
+            ("baseline_assessment", "Baseline Assessment"),
+            ("foundation", "Foundation"),
+            ("career_scenarios", "Career Scenarios"),
+            ("target_role_simulation", "Target Role Simulation"),
+        ]
+        current_idx = next((idx for idx, item in enumerate(order) if item[0] == stage_id), 0)
+        stages = []
+        for idx, (item_id, label) in enumerate(order):
+            status = "current" if idx == current_idx else ("completed" if idx < current_idx else "upcoming")
+            stages.append({"id": item_id, "label": label, "status": status})
+
+        return {
+            "title": self._build_program_title(goal_brief),
+            "time_horizon_days": 90,
+            "current_stage": stage_id,
+            "stage_label": stage_label,
+            "weekly_focus": weekly_focus[:3],
+            "success_metric": success_metric,
+            "next_milestone": next_milestone,
+            "stages": stages,
+            "preferred_mode": "mock_interview" if stage_id in {"career_scenarios", "target_role_simulation"} else preferred_mode,
+            "focus_areas": self._normalize_focus_areas(focus_areas),
+        }
+
+    def _infer_role_and_domain(
+        self,
+        goal_text: str,
+        template: Optional[GoalTemplate],
+        goal_brief: dict[str, Any],
+    ) -> tuple[Optional[str], Optional[str]]:
+        goal_lower = goal_text.lower()
+        for keyword, value in _ROLE_KEYWORDS.items():
+            if keyword in goal_lower:
+                return value
+        if goal_brief.get("target_role") and goal_brief.get("domain"):
+            return goal_brief["target_role"], goal_brief["domain"]
+        if template is GOAL_TEMPLATES["ml_interview"]:
+            return "ML Engineer", "machine_learning"
+        if template is GOAL_TEMPLATES["software_interview"]:
+            return "Software Engineer", "software_engineering"
+        return None, None
+
+    def _infer_contexts(
+        self,
+        goal_text: str,
+        template: Optional[GoalTemplate],
+        goal_brief: dict[str, Any],
+    ) -> list[str]:
+        if goal_brief.get("main_contexts"):
+            return list(goal_brief["main_contexts"])
+        goal_lower = goal_text.lower()
+        contexts: list[str] = []
+        if "interview" in goal_lower or "job" in goal_lower:
+            contexts.append("interviews")
+        if any(keyword in goal_lower for keyword in ["project", "architecture", "system design", "explain"]):
+            contexts.append("project_walkthrough")
+        if any(keyword in goal_lower for keyword in ["team", "meeting", "company", "abroad", "international", "remote"]):
+            contexts.append("workplace_communication")
+        if any(keyword in goal_lower for keyword in ["fluency", "speaking", "speak better"]):
+            contexts.append("general_fluency")
+        if not contexts and template in (GOAL_TEMPLATES["ml_interview"], GOAL_TEMPLATES["software_interview"]):
+            contexts = ["interviews", "project_walkthrough", "workplace_communication"]
+        return contexts or ["general_fluency"]
+
+    def _infer_target_market(self, goal_text: str) -> Optional[str]:
+        goal_lower = goal_text.lower()
+        if any(keyword in goal_lower for keyword in ["abroad", "western", "international", "global", "remote", "interview", "job", "career"]):
+            return "international_company"
+        return None
+
+    def _infer_deadline_type(self, goal_text: str) -> str:
+        goal_lower = goal_text.lower()
+        if re.search(r"\b(1|2|3)\s*(month|months)\b", goal_lower) or "soon" in goal_lower:
+            return "urgent_1_3m"
+        if re.search(r"\b(4|5|6)\s*(month|months)\b", goal_lower):
+            return "medium_3_6m"
+        return "open_ended"
+
+    def _infer_blockers(self, goal_text: str) -> list[str]:
+        goal_lower = goal_text.lower()
+        blockers: list[str] = []
+        if "interview" in goal_lower:
+            blockers.append("Need structured answers under pressure")
+        if any(keyword in goal_lower for keyword in ["job", "career", "abroad", "international"]):
+            blockers.append("Need confident workplace English for international settings")
+        return blockers
+
+    def _goal_confidence(self, goal_text: str, role: Optional[str], contexts: list[str]) -> float:
+        score = 0.45
+        if role:
+            score += 0.2
+        if contexts and "general_fluency" not in contexts:
+            score += 0.2
+        if any(keyword in goal_text.lower() for keyword in ["job", "career", "interview", "abroad", "international"]):
+            score += 0.1
+        return min(score, 0.95)
+
+    def _is_goal_brief_complete(self, goal_brief: dict[str, Any]) -> bool:
+        return bool(
+            goal_brief.get("primary_goal")
+            and goal_brief.get("target_role")
+            and goal_brief.get("domain")
+            and goal_brief.get("target_market")
+            and goal_brief.get("deadline_type")
+            and goal_brief.get("main_contexts")
+            and "general_fluency" not in (goal_brief.get("main_contexts") or [])
+        )
+
+    def _build_goal_summary(self, goal_brief: dict[str, Any]) -> str:
+        role = goal_brief.get("target_role") or "target role"
+        market = (goal_brief.get("target_market") or "context not set").replace("_", " ")
+        contexts = ", ".join(item.replace("_", " ") for item in (goal_brief.get("main_contexts") or []))
+        deadline = (goal_brief.get("deadline_type") or "open_ended").replace("_", " ")
+        return f"Target {role} role in {market}. Focus: {contexts or 'to clarify'}. Timeline: {deadline}."
+
+    def _estimate_goal_readiness(
+        self,
+        assessed_level: str,
+        fluency: float,
+        grammar: float,
+        listening: float,
+        vocabulary: float,
+        goal_brief: Optional[dict[str, Any]],
+    ) -> float:
+        baseline = _LEVEL_BASELINE.get(assessed_level, 5.0)
+        contexts = (goal_brief or {}).get("main_contexts") or []
+        weighted = baseline * 0.35 + fluency * 0.2 + grammar * 0.2 + listening * 0.1 + vocabulary * 0.15
+        if "project_walkthrough" in contexts or "interviews" in contexts:
+            weighted = baseline * 0.25 + fluency * 0.15 + grammar * 0.2 + listening * 0.1 + vocabulary * 0.3
+        if not (goal_brief or {}).get("target_role"):
+            weighted -= 0.5
+        return _round_score(weighted)
+
+    def _build_critical_gaps(
+        self,
+        fluency: float,
+        grammar: float,
+        listening: float,
+        vocabulary: float,
+        goal_brief: Optional[dict[str, Any]],
+    ) -> list[str]:
+        gaps: list[tuple[float, str]] = [
+            (fluency, "Fluency under pressure"),
+            (grammar, "Grammar accuracy in speech"),
+            (listening, "Listening comprehension in fast conversation"),
+            (vocabulary, "Professional vocabulary for work and interviews"),
+        ]
+        if goal_brief and goal_brief.get("domain") == "machine_learning":
+            gaps.append((vocabulary - 0.5, "Explaining ML projects, metrics, and trade-offs"))
+        if goal_brief and "project_walkthrough" in (goal_brief.get("main_contexts") or []):
+            gaps.append((vocabulary - 0.3, "Explaining projects with technical precision"))
+        if goal_brief and "interviews" in (goal_brief.get("main_contexts") or []):
+            gaps.append((fluency - 0.2, "Structured interview answers"))
+        gaps.sort(key=lambda item: item[0])
+        return [label for _, label in gaps[:3]]
+
+    def _build_foundation_focus(self, goal_brief: dict[str, Any]) -> list[str]:
+        focus = [
+            "Build short, accurate answers about your background and current work",
+            "Reduce grammar friction in spoken English",
+            "Strengthen core workplace vocabulary",
+        ]
+        if goal_brief.get("domain") == "machine_learning":
+            focus.append("Explain one ML project in simple English: problem, model, metric, impact")
+        if "project_walkthrough" in (goal_brief.get("main_contexts") or []):
+            focus.append("Practice explaining one project in simple, clear English")
+        return _dedupe(focus)
+
+    def _build_scenario_focus(self, goal_brief: dict[str, Any]) -> list[str]:
+        focus: list[str] = []
+        contexts = goal_brief.get("main_contexts") or []
+        if "interviews" in contexts:
+            focus.append("Run structured interview answers with STAR")
+        if "project_walkthrough" in contexts:
+            focus.append("Explain architecture, trade-offs, and impact")
+        if "workplace_communication" in contexts:
+            focus.append("Practice standups, blockers, and stakeholder updates")
+        if goal_brief.get("domain") == "machine_learning":
+            focus.append("Talk about datasets, models, metrics, and production decisions clearly")
+        focus.append("Turn weak areas into repeatable speaking patterns")
+        return _dedupe(focus)
+
+    def _build_simulation_focus(self, goal_brief: dict[str, Any]) -> list[str]:
+        role = goal_brief.get("target_role") or "your target role"
+        focus = [
+            f"Simulate realistic conversations for {role}",
+            "Push for sharper vocabulary and cleaner delivery",
+            "Build confidence in high-stakes career situations",
+        ]
+        if goal_brief.get("domain") == "machine_learning":
+            focus.insert(1, "Defend ML decisions with trade-offs, metrics, and impact")
+        return focus[:3]
+
+    def _build_program_title(self, goal_brief: dict[str, Any]) -> str:
+        role = goal_brief.get("target_role")
+        domain = goal_brief.get("domain")
+        if role and domain == "machine_learning":
+            return "90-day ML career English roadmap"
+        if role:
+            return f"90-day {role} English roadmap"
+        return "90-day career English roadmap"
+
+    def _normalize_focus_areas(self, focus_areas: list[dict[str, Any]] | list[str]) -> list[str]:
+        normalized: list[str] = []
+        for item in focus_areas:
+            if isinstance(item, dict):
+                normalized.append(str(item.get("description") or item.get("area") or ""))
+            else:
+                normalized.append(str(item))
+        return _dedupe(normalized)
 
 
 async def detect_goal_from_message(message: str) -> Optional[str]:
-    """Определить цель из сообщения пользователя.
-
-    DEPRECATED: Использует hardcoded паттерны. Используйте LangGraph agent
-    (app.agent.nodes.goal_discovery) для LLM-based определения с подтверждением.
-
-    Использует fuzzy matching для обработки STT искажений.
-
-    Args:
-        message: Сообщение пользователя
-
-    Returns:
-        Определённая цель или None
-    """
     import warnings
+
     warnings.warn(
-        "detect_goal_from_message() is deprecated. "
-        "Use LangGraph agent (app.agent.nodes.goal_discovery) instead.",
+        "detect_goal_from_message() is deprecated. Use LangGraph goal discovery instead.",
         DeprecationWarning,
         stacklevel=2,
     )
 
     message_lower = message.lower()
-
-    logger.debug(f"GoalDetect analyzing: '{message_lower[:80]}...'")
-
-    # Паттерны для определения цели (расширенные для STT искажений)
     patterns = {
         "ML/Data Science Interview": [
-            "ml interview", "machine learning", "data science", "data scientist",
-            "ds interview", "ai interview", "neural network", "deep learning",
-            # Fuzzy варианты для STT
-            "ml", "and ml", "for ml", "in ml",
-            "machine", "learning interview",
+            "ml interview", "machine learning", "data science", "data scientist", "ai interview", "ml",
         ],
         "Software Engineering Interview": [
-            "software interview", "developer interview", "engineer interview",
-            "coding interview", "tech interview", "programmer",
+            "software interview", "developer interview", "engineer interview", "coding interview",
             "software engineer", "backend", "frontend", "fullstack",
         ],
         "Job Interview": [
-            "job interview", "собеседование", "интервью на работу",
-            "найти работу", "find a job", "new job", "get a job",
-            # Расширенные паттерны для любого interview
-            "prepare for interview", "prepare to interview", "prepare interview",
-            "want to interview", "going to interview", "have an interview",
-            "interview preparation", "interview prep",
+            "job interview", "find a job", "new job", "get a job", "prepare for interview", "interview prep",
         ],
-        "IELTS/TOEFL Preparation": [
-            "ielts", "toefl", "экзамен", "exam preparation", "english exam",
-        ],
-        "Business English": [
-            "business english", "деловой английский", "бизнес",
-            "corporate", "meetings", "presentations",
-        ],
-        "General Fluency": [
-            "fluency", "improve english", "улучшить английский",
-            "practice speaking", "разговорный", "speak better",
-            "improve my english", "learn english",
-        ],
+        "IELTS/TOEFL Preparation": ["ielts", "toefl", "exam preparation", "english exam"],
+        "Business English": ["business english", "corporate", "meetings", "presentations"],
+        "General Fluency": ["fluency", "improve english", "practice speaking", "speak better", "learn english"],
     }
-
-    # Сначала ищем точные совпадения
     for goal, keywords in patterns.items():
-        if any(kw in message_lower for kw in keywords):
-            logger.debug(f"GoalDetect matched: {goal}")
+        if any(keyword in message_lower for keyword in keywords):
             return goal
-
-    # Fallback: если есть слово "interview" - это Job Interview
     if "interview" in message_lower:
-        logger.debug("GoalDetect fallback: Job Interview")
         return "Job Interview"
-
-    logger.debug("GoalDetect: no goal detected")
     return None

@@ -409,8 +409,7 @@ body {
 .bottom-nav {
   position: sticky;
   bottom: 0;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
   gap: 10px;
   padding: 14px 20px 18px;
   background: linear-gradient(180deg, rgba(247, 244, 236, 0), rgba(247, 244, 236, 0.94) 35%);
@@ -418,6 +417,7 @@ body {
 }
 
 .nav-item {
+  flex: 1 1 0;
   padding: 12px 10px;
   background: rgba(255, 255, 255, 0.82);
   color: var(--app-muted);

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections import Counter
 from datetime import datetime
 from typing import Any, Optional
@@ -12,10 +14,91 @@ from app.services.gamification import StreakService, XPService
 from app.services.interview_service import build_interview_summary
 from app.services.learning_plan_service import LearningPlanService
 
+_WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
+    "structure": {
+        "mode": "mock_interview",
+        "launch_mode": "mock_interview",
+        "title": "Run a STAR structure drill",
+        "reason": "Structure was the weakest area in your latest interview run.",
+        "why_now": "Cleaner structure makes every future interview answer easier to follow and easier to trust.",
+        "linked_goal_context": "interviews",
+        "linked_skill_gap": "structure",
+        "interview_track_id": "hr_intro",
+        "from_interview": True,
+    },
+    "vocabulary": {
+        "mode": "vocabulary_drill",
+        "launch_mode": "vocabulary_drill",
+        "title": "Reinforce interview vocabulary",
+        "reason": "Vocabulary was the weakest area in your latest interview run.",
+        "why_now": "Tightening vocabulary now makes the next interview run noticeably easier.",
+        "linked_goal_context": "interviews",
+        "linked_skill_gap": "professional_vocabulary",
+        "interview_track_id": None,
+        "from_interview": True,
+    },
+    "accuracy": {
+        "mode": "free_conversation",
+        "launch_mode": "free_conversation",
+        "title": "Run a grammar rescue drill",
+        "reason": "Accuracy was the weakest area in your latest interview run.",
+        "why_now": "Cleaning up grammar now raises credibility across interviews and workplace communication.",
+        "linked_goal_context": "grammar",
+        "linked_skill_gap": "grammar_accuracy",
+        "interview_track_id": None,
+        "from_interview": True,
+    },
+    "confidence": {
+        "mode": "mock_interview",
+        "launch_mode": "mock_interview",
+        "title": "Build confidence with a workplace run",
+        "reason": "Confidence was the weakest area in your latest interview run.",
+        "why_now": "A shorter workplace-style run lowers pressure while training decisive speaking.",
+        "linked_goal_context": "workplace_communication",
+        "linked_skill_gap": "confidence",
+        "interview_track_id": "workplace_communication",
+        "from_interview": True,
+    },
+    "clarity": {
+        "mode": "mock_interview",
+        "launch_mode": "mock_interview",
+        "title": "Practice clearer project explanations",
+        "reason": "Clarity was the weakest area in your latest interview run.",
+        "why_now": "Sharper project explanations transfer directly to interviews and real work conversations.",
+        "linked_goal_context": "project_walkthrough",
+        "linked_skill_gap": "clarity",
+        "interview_track_id": "project_walkthrough",
+        "from_interview": True,
+    },
+}
+
 
 def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not roadmap:
         return None
+
+    profile = roadmap.get("proficiency_profile") or {}
+    if profile:
+        return {
+            "date": roadmap.get("last_assessment"),
+            "level": profile.get("cefr_level"),
+            "scores": {
+                "fluency": profile.get("fluency"),
+                "grammar": profile.get("grammar_accuracy"),
+                "vocabulary": profile.get("professional_vocabulary"),
+                "comprehension": profile.get("listening_comprehension"),
+            },
+            "notes": profile.get("notes"),
+            "confidence": profile.get("confidence"),
+            "goal_readiness": profile.get("goal_readiness"),
+            "critical_gaps": profile.get("critical_gaps") or [],
+            "skill_axes": {
+                "fluency": profile.get("fluency"),
+                "grammar_accuracy": profile.get("grammar_accuracy"),
+                "listening_comprehension": profile.get("listening_comprehension"),
+                "professional_vocabulary": profile.get("professional_vocabulary"),
+            },
+        }
 
     history = roadmap.get("assessment_history") or []
     if history:
@@ -25,24 +108,17 @@ def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[
             "level": latest.get("level"),
             "scores": latest.get("scores") or {},
             "notes": latest.get("notes"),
+            "confidence": None,
+            "goal_readiness": None,
+            "critical_gaps": [],
+            "skill_axes": {},
         }
-
-    current_level = roadmap.get("current_level")
-    if not current_level:
-        return None
-
-    return {
-        "date": roadmap.get("last_assessment"),
-        "level": current_level,
-        "scores": {},
-        "notes": None,
-    }
+    return None
 
 
 def extract_focus_areas(roadmap: Optional[dict[str, Any]], limit: int = 3) -> list[str]:
     if not roadmap:
         return []
-
     focus_areas = roadmap.get("focus_areas") or []
     result: list[str] = []
     for item in focus_areas:
@@ -52,52 +128,125 @@ def extract_focus_areas(roadmap: Optional[dict[str, Any]], limit: int = 3) -> li
                 result.append(str(area))
         elif item:
             result.append(str(item))
-
     return result[:limit]
 
 
 def recommend_next_mission(
-    goal: Optional[str],
-    preferred_mode: Optional[str],
+    goal_brief: Optional[dict[str, Any]],
+    program_plan: Optional[dict[str, Any]],
     due_count: int,
     error_patterns: list[dict[str, Any]],
     has_assessment: bool,
-) -> dict[str, str]:
-    goal_lower = (goal or "").lower()
-    preferred_mode = preferred_mode or "free_conversation"
+    weakest_interview_area: Optional[str] = None,
+) -> dict[str, Any]:
+    if not goal_brief or goal_brief.get("status") != "confirmed":
+        missing = []
+        if goal_brief:
+            if not goal_brief.get("target_role"):
+                missing.append("target role")
+            if not goal_brief.get("domain"):
+                missing.append("domain")
+            if not goal_brief.get("target_market"):
+                missing.append("company context")
+            if not goal_brief.get("deadline_type"):
+                missing.append("timeline")
+            if not goal_brief.get("main_contexts"):
+                missing.append("practice context")
+        why_now = "The coach still needs a concrete role and context before it can build a useful program."
+        if missing:
+            why_now = f"Missing: {', '.join(missing)}."
+        return {
+            "mode": "guided_setup",
+            "launch_mode": None,
+            "title": "Complete your goal setup",
+            "reason": "Turn your goal into a clear career-English target.",
+            "why_now": why_now,
+            "linked_goal_context": "goal_setup",
+            "linked_skill_gap": None,
+            "from_interview": False,
+            "interview_track_id": None,
+        }
 
     if not has_assessment:
         return {
             "mode": "assessment",
+            "launch_mode": "assessment",
             "title": "Take your baseline assessment",
-            "reason": "You need a starting level before the coach can route practice well.",
+            "reason": "You need a measured starting point before the coach can route practice well.",
+            "why_now": "Without a baseline, the program cannot know whether to focus on fluency, grammar, or career scenarios first.",
+            "linked_goal_context": "baseline",
+            "linked_skill_gap": None,
+            "from_interview": False,
+            "interview_track_id": None,
         }
+
+    if weakest_interview_area and weakest_interview_area in _WEAKEST_AREA_MISSIONS:
+        return dict(_WEAKEST_AREA_MISSIONS[weakest_interview_area])
 
     if due_count >= 5:
         return {
             "mode": "vocabulary_drill",
+            "launch_mode": "vocabulary_drill",
             "title": "Clear your review queue",
             "reason": f"You have {due_count} vocabulary cards due right now.",
+            "why_now": "Keeping recall fresh prevents new practice from collapsing under forgotten vocabulary.",
+            "linked_goal_context": "vocabulary",
+            "linked_skill_gap": "professional_vocabulary",
+            "from_interview": False,
+            "interview_track_id": None,
         }
 
-    if "interview" in goal_lower or preferred_mode == "mock_interview":
+    current_stage = (program_plan or {}).get("current_stage")
+    weekly_focus = (program_plan or {}).get("weekly_focus") or []
+    if current_stage == "foundation":
+        return {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Run a foundation speaking drill",
+            "reason": weekly_focus[0] if weekly_focus else "Stabilize grammar and fluency before higher-pressure scenarios.",
+            "why_now": "Your baseline says the fastest path forward is cleaner spoken English under low pressure.",
+            "linked_goal_context": "foundation",
+            "linked_skill_gap": "grammar_accuracy" if error_patterns else "fluency",
+            "from_interview": False,
+            "interview_track_id": None,
+        }
+
+    if current_stage in {"career_scenarios", "target_role_simulation"}:
         return {
             "mode": "mock_interview",
-            "title": "Run one interview mission",
-            "reason": "Your current goal is career-oriented, so interview fluency is the fastest path to value.",
+            "launch_mode": "mock_interview",
+            "title": "Run one career mission",
+            "reason": weekly_focus[0] if weekly_focus else "Career-focused speaking is your highest-leverage next step.",
+            "why_now": "The current stage of the program is about practicing real work and interview situations, not generic chatting.",
+            "linked_goal_context": (goal_brief.get("main_contexts") or ["interviews"])[0],
+            "linked_skill_gap": weakest_interview_area,
+            "from_interview": False,
+            "interview_track_id": None,
         }
 
     if error_patterns:
         return {
             "mode": "free_conversation",
+            "launch_mode": "free_conversation",
             "title": "Do a grammar rescue session",
             "reason": f"Your most frequent issue right now is {error_patterns[0]['label']}.",
+            "why_now": "Cleaning up the most common error gives immediate lift across all future speaking tasks.",
+            "linked_goal_context": "grammar",
+            "linked_skill_gap": error_patterns[0]["label"],
+            "from_interview": False,
+            "interview_track_id": None,
         }
 
     return {
-        "mode": preferred_mode,
+        "mode": (program_plan or {}).get("preferred_mode") or "free_conversation",
+        "launch_mode": (program_plan or {}).get("preferred_mode") or "free_conversation",
         "title": "Do a focused speaking session",
-        "reason": "You are ready for another guided practice session.",
+        "reason": weekly_focus[0] if weekly_focus else "You are ready for another guided practice session.",
+        "why_now": "This keeps momentum on the current stage of your program.",
+        "linked_goal_context": (goal_brief.get("main_contexts") or ["general_fluency"])[0],
+        "linked_skill_gap": None,
+        "from_interview": False,
+        "interview_track_id": None,
     }
 
 
@@ -116,6 +265,8 @@ class ProgramSnapshotService:
 
         plan = await self.learning_plan_service.get_or_create_plan(user_id)
         roadmap = plan.roadmap or {}
+        goal_brief = self.learning_plan_service.get_goal_brief(plan)
+        program_plan = self.learning_plan_service.get_program_plan(plan)
         interview_runs = roadmap.get("interview_runs") or []
 
         vocabulary_stats = await self.vocabulary_service.get_vocabulary_stats(user_id)
@@ -125,49 +276,48 @@ class ProgramSnapshotService:
         error_patterns = await self._get_top_error_patterns(user_id)
         recent_sessions = await self._get_recent_sessions(user_id)
         total_sessions = await self._get_total_sessions(user_id)
+
         latest_assessment = build_latest_assessment(roadmap)
-        preferred_mode = self.learning_plan_service.get_preferred_mode(plan)
         goal = self.learning_plan_service.get_goal(plan)
+        weakest_interview_area = roadmap.get("weakest_interview_area")
         interview_summary = build_interview_summary(interview_runs, goal=goal)
+        interview_summary["weakest_area"] = weakest_interview_area
+        interview_summary["interview_focus"] = roadmap.get("interview_focus") or []
+        interview_summary["last_track"] = roadmap.get("last_interview_track")
+
         mission = recommend_next_mission(
-            goal=goal,
-            preferred_mode=preferred_mode,
+            goal_brief=goal_brief,
+            program_plan=program_plan,
             due_count=vocabulary_stats["due_now"],
             error_patterns=error_patterns,
             has_assessment=latest_assessment is not None,
+            weakest_interview_area=weakest_interview_area,
         )
-
-        if mission["mode"] == "mock_interview":
+        if mission["mode"] == "mock_interview" and not mission.get("from_interview"):
             recommended_track = interview_summary["recommended_track"]
-            mission = {
-                "mode": "mock_interview",
-                "title": f"Run {recommended_track['title']}",
-                "reason": (
-                    "Career-focused practice is your highest-leverage next step right now."
-                    if interview_summary["completed_runs"] == 0
-                    else f"Your next best drill is {recommended_track['title'].lower()} to keep interview readiness moving."
-                ),
-            }
+            mission["title"] = f"Run {recommended_track['title']}"
+            mission["reason"] = recommended_track["subtitle"]
+            mission["interview_track_id"] = recommended_track["id"]
 
         return {
             "user": {
                 "id": user.id,
                 "telegram_id": user.telegram_id,
                 "username": user.username,
-                "language_level": user.language_level,
+                "language_level": self.learning_plan_service.get_current_level(plan) or user.language_level,
             },
             "goal": {
                 "text": goal,
-                "preferred_mode": preferred_mode,
+                "preferred_mode": self.learning_plan_service.get_preferred_mode(plan),
                 "target_level": plan.level_target,
                 "focus_areas": extract_focus_areas(roadmap),
+                "brief": goal_brief,
+                "missing_fields": self.learning_plan_service.get_goal_setup_missing(plan),
             },
             "assessment": latest_assessment,
+            "program": program_plan,
             "mission": mission,
-            "gamification": {
-                "xp": xp_info,
-                "streak": streak_info,
-            },
+            "gamification": {"xp": xp_info, "streak": streak_info},
             "interview": interview_summary,
             "vocabulary": {
                 "stats": vocabulary_stats,
@@ -190,12 +340,15 @@ class ProgramSnapshotService:
                 "top_error_patterns": error_patterns,
                 "recent_sessions": recent_sessions,
             },
+            "setup": {
+                "goal_complete": self.learning_plan_service.is_goal_setup_complete(plan),
+                "assessment_complete": latest_assessment is not None,
+                "needs_attention": not self.learning_plan_service.is_goal_setup_complete(plan) or latest_assessment is None,
+            },
         }
 
     async def _get_total_sessions(self, user_id: int) -> int:
-        result = await self.db.execute(
-            select(func.count(Session.id)).where(Session.user_id == user_id)
-        )
+        result = await self.db.execute(select(func.count(Session.id)).where(Session.user_id == user_id))
         return int(result.scalar() or 0)
 
     async def _get_top_error_patterns(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
@@ -209,75 +362,34 @@ class ProgramSnapshotService:
             .limit(limit)
         )
         result = await self.db.execute(stmt)
-        rows = result.all()
-        if rows:
-            return [
-                {"label": str(row.rule_tag).replace("_", " "), "count": int(row.count)}
-                for row in rows
-                if row.rule_tag
-            ]
-
-        fallback_stmt = (
-            select(Correction.explanation_md)
-            .join(Session, Correction.session_id == Session.id)
-            .where(Session.user_id == user_id)
-            .order_by(Session.started_at.desc())
-            .limit(30)
-        )
-        fallback_result = await self.db.execute(fallback_stmt)
-        counter = Counter()
-        for explanation in fallback_result.scalars().all():
-            if not explanation:
-                continue
-            first_line = explanation.splitlines()[0].strip()
-            if first_line:
-                counter[first_line[:80]] += 1
-
         return [
-            {"label": label, "count": count}
-            for label, count in counter.most_common(limit)
+            {"label": str(row.rule_tag).replace("_", " "), "count": int(row.count)}
+            for row in result.all()
+            if row.rule_tag
         ]
 
-    async def _get_recent_sessions(self, user_id: int, limit: int = 3) -> list[dict[str, Any]]:
+    async def _get_recent_sessions(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
         stmt = (
             select(Session)
-            .options(selectinload(Session.feedback), selectinload(Session.corrections))
+            .options(selectinload(Session.corrections), selectinload(Session.feedback))
             .where(Session.user_id == user_id)
             .order_by(Session.started_at.desc())
             .limit(limit)
         )
         result = await self.db.execute(stmt)
-        sessions = list(result.scalars().all())
-
-        feedback_stmt = (
-            select(Feedback)
-            .join(Session, Feedback.session_id == Session.id)
-            .where(Session.user_id == user_id)
-            .order_by(Session.started_at.desc())
-            .limit(limit)
-        )
-        feedback_result = await self.db.execute(feedback_stmt)
-        feedback_by_session = {feedback.session_id: feedback for feedback in feedback_result.scalars().all()}
-
-        items: list[dict[str, Any]] = []
+        sessions = result.scalars().all()
+        response: list[dict[str, Any]] = []
         for session in sessions:
-            feedback = feedback_by_session.get(session.id)
-            duration_minutes = None
-            if session.ended_at:
-                duration_minutes = max(
-                    1,
-                    int((session.ended_at - session.started_at).total_seconds() // 60 or 1),
-                )
-
-            items.append(
+            feedback_items = [item.content for item in (session.feedback or []) if getattr(item, "content", None)]
+            summary = feedback_items[0] if feedback_items else None
+            response.append(
                 {
-                    "id": session.id,
+                    "id": str(session.id),
                     "started_at": session.started_at,
                     "ended_at": session.ended_at,
-                    "duration_minutes": duration_minutes,
+                    "duration_minutes": session.duration_minutes,
                     "corrections_count": len(session.corrections or []),
-                    "summary": feedback.summary_md if feedback and feedback.summary_md else None,
+                    "summary": summary,
                 }
             )
-
-        return items
+        return response
