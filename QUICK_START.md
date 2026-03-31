@@ -155,7 +155,7 @@ pip install -r requirements.txt
 # Скопировать файл окружения
 copy .env.example .env
 
-# Отредактировать .env: добавить GROQ_API_KEY, настроить DATABASE_URL если нужно
+# Отредактировать .env: выбрать LLM_PROVIDER и настроить VLLM_/LLAMA_CPP_/OPENAI_ переменные
 ```
 
 #### Linux / Mac
@@ -173,7 +173,7 @@ pip install -r requirements.txt
 # Скопировать файл окружения
 cp .env.example .env
 
-# Отредактировать .env: добавить GROQ_API_KEY, настроить DATABASE_URL если нужно
+# Отредактировать .env: выбрать LLM_PROVIDER и настроить VLLM_/LLAMA_CPP_/OPENAI_ переменные
 ```
 
 ---
@@ -185,6 +185,57 @@ cd frontend
 npm install
 cd ..
 ```
+
+---
+
+### 3.1. Настройка LLM backend
+
+Для тестов через корпоративный кластер по умолчанию используется `LLM_PROVIDER=vllm`.
+
+#### GPU vLLM (Qwen 32B)
+
+```env
+LLM_PROVIDER=vllm
+VLLM_BASE_URL=http://192.168.0.27:8000/v1
+VLLM_API_KEY=token-abc123
+VLLM_MODEL=qwen32b-32k
+```
+
+#### CPU llama.cpp (Qwen 3.5 35B, большой контекст)
+
+```env
+LLM_PROVIDER=llama_cpp
+LLAMA_CPP_BASE_URL=http://192.168.0.18:8001/v1
+LLAMA_CPP_MODEL=qwen3.5-35b
+```
+
+#### OpenAI fallback
+
+```env
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_CHAT_MODEL=gpt-4o-mini
+```
+
+#### PersonaPlex speech-to-speech
+
+```env
+PERSONAPLEX_ENABLED=true
+PERSONAPLEX_HOST=192.168.0.18
+PERSONAPLEX_PORT=8998
+PERSONAPLEX_DEFAULT_VOICE=NATM0
+PERSONAPLEX_QUANTIZATION=int8
+```
+
+- Health check: `curl http://192.168.0.18:8998/health`
+- Voice WebSocket: `ws://192.168.0.18:8998/api/chat`
+- Node3 already runs `Open WebUI`, `Docling`, and `llama.cpp`, so if GPU pressure appears reduce PersonaPlex concurrency first.
+
+#### Важно про embeddings / RAG
+
+- Чат и voice path могут работать через корпоративный кластер без OpenAI.
+- Векторная память и embeddings по-прежнему используют `OPENAI_API_KEY`.
+- Если `OPENAI_API_KEY` не задан или `VECTOR_MEMORY_ENABLED=false`, приложение переходит в DB-only режим для памяти и не должно ломать основной chat flow.
 
 ---
 
@@ -433,7 +484,7 @@ englishFriend/
 - [ ] Virtual environment создан и активирован
 - [ ] Python зависимости установлены (`pip install -r requirements.txt`)
 - [ ] Frontend зависимости установлены (`npm install` в папке frontend)
-- [ ] Файл `.env` создан и настроен (GROQ_API_KEY добавлен)
+- [ ] Файл `.env` создан и настроен (выбран `LLM_PROVIDER`, cluster/OpenAI переменные заполнены по сценарию)
 - [ ] Docker контейнеры запущены (`docker-compose -f docker-compose.cdc.yml up -d`)
 - [ ] PostgreSQL работает (`docker exec englishfriend-postgres-1 pg_isready`)
 - [ ] Vosk модель загружена (`frontend/public/vosk-model-small-en-us-0.15.zip`)
