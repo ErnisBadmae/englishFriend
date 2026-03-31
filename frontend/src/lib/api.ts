@@ -273,6 +273,235 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function normalizeInterviewRun(raw: unknown): InterviewRun | null {
+  const record = asRecord(raw);
+  if (!record.id || !record.session_id || !record.track_id) {
+    return null;
+  }
+
+  const scores = asRecord(record.scores);
+  const meta = asRecord(record.meta);
+
+  return {
+    id: String(record.id),
+    session_id: String(record.session_id),
+    track_id: String(record.track_id),
+    track_title: typeof record.track_title === 'string' ? record.track_title : 'Interview run',
+    track_subtitle: typeof record.track_subtitle === 'string' ? record.track_subtitle : '',
+    recorded_at: typeof record.recorded_at === 'string' ? record.recorded_at : new Date().toISOString(),
+    scores: {
+      overall: Number(scores.overall ?? 0),
+      clarity: Number(scores.clarity ?? 0),
+      structure: Number(scores.structure ?? 0),
+      accuracy: Number(scores.accuracy ?? 0),
+      vocabulary: Number(scores.vocabulary ?? 0),
+      confidence: Number(scores.confidence ?? 0),
+    },
+    strengths: asStringArray(record.strengths),
+    next_focus: asStringArray(record.next_focus),
+    rubric_notes: asStringArray(record.rubric_notes),
+    summary: typeof record.summary === 'string' ? record.summary : '',
+    meta: {
+      user_turns: Number(meta.user_turns ?? 0),
+      avg_words_per_turn: Number(meta.avg_words_per_turn ?? 0),
+      corrections_count: Number(meta.corrections_count ?? 0),
+      weakest_area: typeof meta.weakest_area === 'string' ? meta.weakest_area : 'unknown',
+      strongest_area: typeof meta.strongest_area === 'string' ? meta.strongest_area : 'unknown',
+    },
+    delta_vs_previous: record.delta_vs_previous == null ? null : Number(record.delta_vs_previous),
+  };
+}
+
+function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): ProgramSnapshot {
+  const record = asRecord(raw);
+  const goal = asRecord(record.goal);
+  const brief = asRecord(goal.brief);
+  const assessmentRecord = record.assessment ? asRecord(record.assessment) : null;
+  const program = asRecord(record.program);
+  const mission = asRecord(record.mission);
+  const gamification = asRecord(record.gamification);
+  const xp = asRecord(gamification.xp);
+  const streak = asRecord(gamification.streak);
+  const interview = asRecord(record.interview);
+  const vocabulary = asRecord(record.vocabulary);
+  const vocabularyStats = asRecord(vocabulary.stats);
+  const progress = asRecord(record.progress);
+  const setup = asRecord(record.setup);
+
+  const goalBrief = Object.keys(brief).length > 0 ? {
+    primary_goal: typeof brief.primary_goal === 'string' ? brief.primary_goal : null,
+    target_role: typeof brief.target_role === 'string' ? brief.target_role : null,
+    domain: typeof brief.domain === 'string' ? brief.domain : null,
+    target_market: typeof brief.target_market === 'string' ? brief.target_market : null,
+    deadline_type: typeof brief.deadline_type === 'string' ? brief.deadline_type : null,
+    main_contexts: asStringArray(brief.main_contexts),
+    current_blockers: asStringArray(brief.current_blockers),
+    motivation: typeof brief.motivation === 'string' ? brief.motivation : null,
+    confidence: brief.confidence == null ? null : Number(brief.confidence),
+    status: typeof brief.status === 'string' ? brief.status : null,
+    summary: typeof brief.summary === 'string' ? brief.summary : null,
+  } : null;
+
+  const assessment = assessmentRecord ? {
+    date: typeof assessmentRecord.date === 'string' ? assessmentRecord.date : null,
+    level: typeof assessmentRecord.level === 'string' ? assessmentRecord.level : 'Unknown',
+    scores: asRecord(assessmentRecord.scores) as Record<string, number>,
+    notes: typeof assessmentRecord.notes === 'string' ? assessmentRecord.notes : null,
+    confidence: assessmentRecord.confidence == null ? null : Number(assessmentRecord.confidence),
+    goal_readiness: assessmentRecord.goal_readiness == null ? null : Number(assessmentRecord.goal_readiness),
+    critical_gaps: asStringArray(assessmentRecord.critical_gaps),
+    skill_axes: asRecord(assessmentRecord.skill_axes) as Record<string, number | null>,
+  } : null;
+
+  const goalMissingFields = asStringArray(goal.missing_fields);
+  const goalComplete = typeof setup.goal_complete === 'boolean'
+    ? setup.goal_complete
+    : Boolean(goalBrief && goalBrief.status === 'confirmed' && goalMissingFields.length === 0);
+  const assessmentComplete = typeof setup.assessment_complete === 'boolean'
+    ? setup.assessment_complete
+    : Boolean(assessment?.level && assessment.level !== 'Unknown');
+  const needsAttention = typeof setup.needs_attention === 'boolean'
+    ? setup.needs_attention
+    : !(goalComplete && assessmentComplete);
+
+  const defaultMission: MissionSummary = needsAttention
+    ? {
+        mode: 'guided_setup',
+        launch_mode: 'assessment',
+        title: 'Complete your setup',
+        reason: 'Clarify your goal and baseline so the coach can build a useful program.',
+        why_now: 'Without a confirmed target and baseline, daily practice is too generic.',
+        linked_goal_context: null,
+        linked_skill_gap: null,
+        from_interview: false,
+        interview_track_id: null,
+      }
+    : {
+        mode: 'free_conversation',
+        launch_mode: 'free_conversation',
+        title: 'Start today’s mission',
+        reason: 'Use the next session to reinforce your current program stage.',
+        why_now: 'A short focused session keeps your program moving forward.',
+        linked_goal_context: null,
+        linked_skill_gap: null,
+        from_interview: false,
+        interview_track_id: null,
+      };
+
+  const latestRun = normalizeInterviewRun(interview.latest_run);
+  const recentRuns = Array.isArray(interview.recent_runs)
+    ? interview.recent_runs.map(normalizeInterviewRun).filter((item): item is InterviewRun => Boolean(item))
+    : [];
+
+  return {
+    user: {
+      id: Number(asRecord(record.user).id ?? fallbackUserId),
+      telegram_id: asRecord(record.user).telegram_id == null ? null : Number(asRecord(record.user).telegram_id),
+      username: typeof asRecord(record.user).username === 'string' ? String(asRecord(record.user).username) : null,
+      language_level: typeof asRecord(record.user).language_level === 'string' ? String(asRecord(record.user).language_level) : null,
+    },
+    goal: {
+      text: typeof goal.text === 'string' ? goal.text : goalBrief?.primary_goal ?? null,
+      preferred_mode: typeof goal.preferred_mode === 'string' ? goal.preferred_mode : 'free_conversation',
+      target_level: typeof goal.target_level === 'string' ? goal.target_level : null,
+      focus_areas: asStringArray(goal.focus_areas),
+      brief: goalBrief,
+      missing_fields: goalMissingFields,
+    },
+    assessment,
+    program: {
+      title: typeof program.title === 'string' ? program.title : 'Career English Program',
+      time_horizon_days: Number(program.time_horizon_days ?? 90),
+      current_stage: typeof program.current_stage === 'string' ? program.current_stage : (needsAttention ? 'setup' : 'core_career_communication'),
+      stage_label: typeof program.stage_label === 'string' ? program.stage_label : (needsAttention ? 'Setup' : 'Core Career Communication'),
+      weekly_focus: asStringArray(program.weekly_focus),
+      success_metric: typeof program.success_metric === 'string'
+        ? program.success_metric
+        : (needsAttention ? 'Lock your goal and baseline before daily missions.' : 'Build confidence toward your target role.'),
+      next_milestone: typeof program.next_milestone === 'string'
+        ? program.next_milestone
+        : (needsAttention ? 'Complete setup' : 'Finish your next mission'),
+      stages: Array.isArray(program.stages) ? program.stages as Array<{ id: string; label: string; status: string }> : [],
+      preferred_mode: typeof program.preferred_mode === 'string' ? program.preferred_mode : 'free_conversation',
+      focus_areas: asStringArray(program.focus_areas),
+    },
+    mission: {
+      mode: typeof mission.mode === 'string' ? mission.mode : defaultMission.mode,
+      launch_mode: typeof mission.launch_mode === 'string' ? mission.launch_mode : defaultMission.launch_mode ?? null,
+      title: typeof mission.title === 'string' ? mission.title : defaultMission.title,
+      reason: typeof mission.reason === 'string' ? mission.reason : defaultMission.reason,
+      why_now: typeof mission.why_now === 'string' ? mission.why_now : defaultMission.why_now ?? null,
+      linked_goal_context: typeof mission.linked_goal_context === 'string' ? mission.linked_goal_context : defaultMission.linked_goal_context ?? null,
+      linked_skill_gap: typeof mission.linked_skill_gap === 'string' ? mission.linked_skill_gap : defaultMission.linked_skill_gap ?? null,
+      from_interview: typeof mission.from_interview === 'boolean' ? mission.from_interview : false,
+      interview_track_id: typeof mission.interview_track_id === 'string' ? mission.interview_track_id : null,
+    },
+    gamification: {
+      xp: {
+        total_xp: Number(xp.total_xp ?? 0),
+        level: Number(xp.level ?? 1),
+        current_level_xp: Number(xp.current_level_xp ?? 0),
+        next_level_xp: Number(xp.next_level_xp ?? 100),
+        progress: Number(xp.progress ?? 0),
+      },
+      streak: {
+        current: Number(streak.current ?? 0),
+        max: Number(streak.max ?? 0),
+        at_risk: Boolean(streak.at_risk),
+        last_activity: typeof streak.last_activity === 'string' ? streak.last_activity : null,
+      },
+    },
+    interview: {
+      completed_runs: Number(interview.completed_runs ?? recentRuns.length),
+      readiness_score: interview.readiness_score == null
+        ? assessment?.goal_readiness ?? null
+        : Number(interview.readiness_score),
+      trend: typeof interview.trend === 'string' ? interview.trend : 'Not enough data yet',
+      recommended_track: {
+        id: typeof asRecord(interview.recommended_track).id === 'string' ? String(asRecord(interview.recommended_track).id) : 'hr_intro',
+        title: typeof asRecord(interview.recommended_track).title === 'string' ? String(asRecord(interview.recommended_track).title) : 'HR Interview',
+        subtitle: typeof asRecord(interview.recommended_track).subtitle === 'string' ? String(asRecord(interview.recommended_track).subtitle) : 'Practice concise career answers',
+      },
+      latest_run: latestRun,
+      recent_runs: recentRuns,
+      weakest_area: typeof interview.weakest_area === 'string' ? interview.weakest_area : null,
+      interview_focus: asStringArray(interview.interview_focus),
+      last_track: typeof interview.last_track === 'string' ? interview.last_track : null,
+    },
+    vocabulary: {
+      stats: {
+        total: Number(vocabularyStats.total ?? 0),
+        new: Number(vocabularyStats.new ?? 0),
+        learning: Number(vocabularyStats.learning ?? 0),
+        review: Number(vocabularyStats.review ?? 0),
+        relearning: Number(vocabularyStats.relearning ?? 0),
+        due_now: Number(vocabularyStats.due_now ?? 0),
+      },
+      due_preview: Array.isArray(vocabulary.due_preview) ? vocabulary.due_preview as VocabularyCard[] : [],
+    },
+    progress: {
+      sessions_completed: Number(progress.sessions_completed ?? 0),
+      milestones: Array.isArray(progress.milestones) ? progress.milestones as Array<Record<string, unknown>> : [],
+      recommended_vocabulary: asStringArray(progress.recommended_vocabulary),
+      top_error_patterns: Array.isArray(progress.top_error_patterns) ? progress.top_error_patterns as ErrorPattern[] : [],
+      recent_sessions: Array.isArray(progress.recent_sessions) ? progress.recent_sessions as RecentSession[] : [],
+    },
+    setup: {
+      goal_complete: goalComplete,
+      assessment_complete: assessmentComplete,
+      needs_attention: needsAttention,
+    },
+  };
+}
+
 export async function resolveOrCreateUser(telegramId: number, username?: string): Promise<UserIdentity> {
   try {
     return await fetchJson<UserIdentity>(`/api/v1/users/telegram/${telegramId}`);
@@ -293,7 +522,8 @@ export async function resolveOrCreateUser(telegramId: number, username?: string)
 }
 
 export async function getProgramSnapshot(userId: number): Promise<ProgramSnapshot> {
-  return fetchJson<ProgramSnapshot>(`/api/v1/programs/${userId}/snapshot`);
+  const raw = await fetchJson<unknown>(`/api/v1/programs/${userId}/snapshot`);
+  return normalizeProgramSnapshot(raw, userId);
 }
 
 export async function getDueVocabulary(userId: number, limit = 10): Promise<VocabularyCard[]> {

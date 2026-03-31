@@ -389,7 +389,7 @@ function App() {
         <button className={screen === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('home')}>
           Home
         </button>
-        {snapshot?.setup.assessment_complete ? (
+        {snapshot?.setup?.assessment_complete ? (
           <button className={screen === 'interview' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('interview')}>
             Career
           </button>
