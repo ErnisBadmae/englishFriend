@@ -94,6 +94,7 @@ from app.api.voice_helpers import (
     handle_goal_setting,
     award_session_gamification,
     rebuild_system_prompt,
+    persist_interview_run_if_needed,
 )
 
 # PersonaPlex speech-to-speech
@@ -121,6 +122,7 @@ async def voice_chat(
     websocket: WebSocket,
     user_id: int = Query(..., description="ID пользователя"),
     mode: Optional[str] = Query(None, description="Режим обучения"),
+    interview_track: Optional[str] = Query(None, description="ID трека интервью"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -133,7 +135,7 @@ async def voice_chat(
     """
     # Redirect to v2 (LangGraph) implementation
     logger.info(f"[Voice] /chat redirecting to v2 (LangGraph) for user {user_id}")
-    await voice_chat_v2(websocket, user_id, db)
+    await voice_chat_v2(websocket, user_id=user_id, mode=mode, interview_track=interview_track, db=db)
 
 
 @router.websocket("/chat-legacy")
@@ -642,6 +644,8 @@ async def voice_chat_legacy(
 async def voice_chat_v2(
     websocket: WebSocket,
     user_id: int = Query(..., description="ID пользователя"),
+    mode: Optional[str] = Query(None, description="Режим обучения"),
+    interview_track: Optional[str] = Query(None, description="ID трека интервью"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -717,6 +721,7 @@ async def voice_chat_v2(
             learning_plan = await learning_plan_service.get_or_create_plan(user_id)
             confirmed_goal = learning_plan_service.get_goal(learning_plan)
             roadmap = learning_plan.roadmap
+            language_level = learning_plan_service.get_current_level(learning_plan) or language_level
 
             # Determine if new user
             total_sessions = learning_plan_service.get_session_count(learning_plan)
@@ -759,6 +764,8 @@ async def voice_chat_v2(
                 due_vocabulary_count=due_vocabulary_count,
                 due_vocabulary_words=due_vocabulary_words,
                 memory_section=memory_section,
+                explicit_mode=mode,
+                interview_track_id=interview_track,
             )
         else:
             agent_state = await initialize_session(
@@ -948,7 +955,9 @@ async def voice_chat_v2(
                         # Save goal if confirmed
                         if agent_state.get("confirmed_goal") and not confirmed_goal:
                             await learning_plan_service.set_goal(
-                                user_id, agent_state["confirmed_goal"]
+                                user_id,
+                                agent_state["confirmed_goal"],
+                                goal_brief=agent_state.get("goal_brief"),
                             )
 
                         # Update session count
@@ -978,6 +987,18 @@ async def voice_chat_v2(
                         # Gamification
                         await award_session_gamification(db, user_id, session_id)
 
+                        # Persist interview run if this was a mock_interview session
+                        await persist_interview_run_if_needed(
+                            db=db,
+                            user_id=user_id,
+                            session_id=session_id,
+                            current_mode=current_mode.value,
+                            interview_track_id=agent_state.get("interview_track_id"),
+                            conversation_history=agent_state.get("conversation_history", []),
+                            corrections_made=len(agent_state.get("corrections_made", [])),
+                            vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                        )
+
                     except Exception as e:
                         logger.warning(f"Error persisting session data: {e}")
 
@@ -991,7 +1012,15 @@ async def voice_chat_v2(
                 try:
                     if agent_state.get("confirmed_goal") and not confirmed_goal:
                         await learning_plan_service.set_goal(
-                            user_id, agent_state["confirmed_goal"]
+                            user_id,
+                            agent_state["confirmed_goal"],
+                            goal_brief=agent_state.get("goal_brief"),
+                        )
+                    if agent_state.get("assessed_level"):
+                        await learning_plan_service.record_assessment(
+                            user_id,
+                            assessed_level=agent_state["assessed_level"],
+                            scores=agent_state.get("assessment_scores"),
                         )
                     await learning_plan_service.increment_session_count(
                         user_id,
@@ -1000,6 +1029,16 @@ async def voice_chat_v2(
                     )
                     if agent_state.get("turn_count", 0) > 0:
                         await award_session_gamification(db, user_id, session_id)
+                    await persist_interview_run_if_needed(
+                        db=db,
+                        user_id=user_id,
+                        session_id=session_id,
+                        current_mode=current_mode.value,
+                        interview_track_id=agent_state.get("interview_track_id"),
+                        conversation_history=agent_state.get("conversation_history", []),
+                        corrections_made=len(agent_state.get("corrections_made", [])),
+                        vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                    )
                 except Exception:
                     pass
 
@@ -1146,7 +1185,7 @@ async def voice_chat_plex(
         logger.info(f"[PersonaPlex] Unavailable for user {user_id}, falling back to v2")
         personaplex_fallback_total.labels(reason="health_check_failed").inc()
         data_logger.log_personaplex_fallback(user_id, reason="health_check_failed")
-        return await voice_chat_v2(websocket, user_id, db)
+        return await voice_chat_v2(websocket, user_id=user_id, db=db)
 
     await websocket.accept()
 
@@ -1199,6 +1238,7 @@ async def voice_chat_plex(
             learning_plan = await learning_plan_service.get_or_create_plan(user_id)
             confirmed_goal = learning_plan_service.get_goal(learning_plan)
             roadmap = learning_plan.roadmap
+            language_level = learning_plan_service.get_current_level(learning_plan) or language_level
             total_sessions = learning_plan_service.get_session_count(learning_plan)
             is_new_user = total_sessions == 0 and not confirmed_goal
 
@@ -1451,7 +1491,11 @@ async def voice_chat_plex(
         # === POST-SESSION PERSISTENCE ===
         try:
             if agent_state.get("confirmed_goal") and not confirmed_goal:
-                await learning_plan_service.set_goal(user_id, agent_state["confirmed_goal"])
+                await learning_plan_service.set_goal(
+                    user_id,
+                    agent_state["confirmed_goal"],
+                    goal_brief=agent_state.get("goal_brief"),
+                )
 
             await learning_plan_service.increment_session_count(
                 user_id,
@@ -1524,3 +1568,89 @@ async def voice_chat_plex(
             await websocket.close()
         except Exception:
             pass
+
+
+# Legacy endpoint для обратной совместимости с OpenAI Realtime
+@router.websocket("/stream")
+async def voice_stream_legacy(
+    websocket: WebSocket,
+    user_id: int = Query(..., description="ID пользователя"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Legacy WebSocket endpoint для потокового аудио.
+
+    Использует старые провайдеры (OpenAI Realtime, Hume EVI).
+    Для нового Vosk + Groq используйте /chat.
+    """
+    from app.services.ai import get_ai_provider, VoiceSession
+
+    await websocket.accept()
+
+    user_service = UserService(db)
+    user = await user_service.get_user(user_id)
+    if not user:
+        await websocket.send_json({"type": "error", "message": "User not found"})
+        await websocket.close()
+        return
+
+    session = VoiceSession(
+        session_id=str(uuid.uuid4()),
+        user_id=user_id,
+        system_prompt=build_simple_prompt(),
+    )
+
+    provider = get_ai_provider()
+
+    try:
+        await provider.connect(session)
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session.session_id,
+            "message": "Ready to talk!",
+        })
+
+        import asyncio
+
+        async def forward_ai_events():
+            async for event in provider.receive():
+                if event["type"] == "audio":
+                    await websocket.send_json({
+                        "type": "audio",
+                        "data": base64.b64encode(event["data"]).decode(),
+                    })
+                elif event["type"] == "transcript":
+                    session.transcript.append({
+                        "role": event["role"],
+                        "text": event["text"],
+                    })
+                    await websocket.send_json(event)
+                elif event["type"] == "error":
+                    await websocket.send_json(event)
+                    break
+
+        ai_task = asyncio.create_task(forward_ai_events())
+
+        try:
+            while True:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+
+                if message.get("type") == "audio":
+                    audio_bytes = base64.b64decode(message["data"])
+                    await provider.send_audio(audio_bytes)
+
+                elif message.get("type") == "end":
+                    break
+
+        except WebSocketDisconnect:
+            pass
+        finally:
+            ai_task.cancel()
+
+    except Exception as e:
+        await websocket.send_json({"type": "error", "message": str(e)})
+
+    finally:
+        await provider.disconnect()
+        await websocket.close()

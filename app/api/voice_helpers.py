@@ -12,6 +12,7 @@ from app.services.ai.post_session_service import create_initial_vocabulary_cards
 from app.services.gamification import XPService, StreakService
 from app.services.gamification.xp_service import XPEventKind
 from app.services.data_flow_logger import data_logger
+from app.services.interview_service import InterviewService
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +149,43 @@ async def award_session_gamification(
 
     except Exception as e:
         logger.warning(f"Gamification error: {e}")
+
+
+async def persist_interview_run_if_needed(
+    db: AsyncSession,
+    user_id: int,
+    session_id: str,
+    current_mode: str,
+    interview_track_id: Optional[str],
+    conversation_history: list[dict],
+    corrections_made: int = 0,
+    vocabulary_reviewed: Optional[list[dict]] = None,
+) -> Optional[dict]:
+    """Persist interview run at session end if this was a mock_interview session.
+
+    No-op if:
+    - mode is not mock_interview
+    - fewer than 2 user messages (not a meaningful conversation)
+    """
+    if current_mode != "mock_interview":
+        return None
+
+    user_messages = [m for m in conversation_history if m.get("role") == "user"]
+    if len(user_messages) < 2:
+        return None
+
+    try:
+        service = InterviewService(db)
+        run = await service.record_run(
+            user_id=user_id,
+            session_id=session_id,
+            conversation_history=conversation_history,
+            corrections_count=corrections_made,
+            reviewed_words=vocabulary_reviewed or [],
+            track_id=interview_track_id,
+        )
+        logger.info(f"[Interview] Persisted run {run['id']} for session {session_id}, track={run['track_id']}")
+        return run
+    except Exception as e:
+        logger.warning(f"[Interview] Failed to persist run for session {session_id}: {e}")
+        return None
