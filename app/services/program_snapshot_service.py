@@ -13,6 +13,7 @@ from app.services.ai.vocabulary_service import VocabularyService
 from app.services.gamification import StreakService, XPService
 from app.services.interview_service import build_interview_summary
 from app.services.learning_plan_service import LearningPlanService
+from app.services.pronunciation_assessment_service import build_pronunciation_summary
 
 _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
     "structure": {
@@ -284,6 +285,7 @@ class ProgramSnapshotService:
         interview_summary["weakest_area"] = weakest_interview_area
         interview_summary["interview_focus"] = roadmap.get("interview_focus") or []
         interview_summary["last_track"] = roadmap.get("last_interview_track")
+        pronunciation_summary = build_pronunciation_summary(roadmap.get("pronunciation_assessments") or [])
 
         mission = recommend_next_mission(
             goal_brief=goal_brief,
@@ -319,6 +321,7 @@ class ProgramSnapshotService:
             "mission": mission,
             "gamification": {"xp": xp_info, "streak": streak_info},
             "interview": interview_summary,
+            "pronunciation": pronunciation_summary,
             "vocabulary": {
                 "stats": vocabulary_stats,
                 "due_preview": [

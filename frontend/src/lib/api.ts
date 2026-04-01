@@ -101,6 +101,44 @@ export interface InterviewRunMeta {
   strongest_area: string;
 }
 
+export interface PronunciationWordFeedback {
+  word: string;
+  issue: string;
+  severity: string;
+  tip: string;
+}
+
+export interface InterviewPronunciationResult {
+  session_id: string;
+  track_id?: string | null;
+  recorded_at: string;
+  provider: string;
+  assessment_mode: string;
+  overall_score: number;
+  accuracy_score: number;
+  fluency_score: number;
+  prosody_score?: number | null;
+  confidence: number;
+  notes: string;
+  recommended_focus: string[];
+  word_feedback: PronunciationWordFeedback[];
+}
+
+export interface PronunciationSummary {
+  latest_score?: number | null;
+  accuracy_score?: number | null;
+  fluency_score?: number | null;
+  prosody_score?: number | null;
+  focus: string[];
+  word_feedback: PronunciationWordFeedback[];
+  source?: string | null;
+  assessment_mode?: string | null;
+  confidence?: number | null;
+  last_assessed_at?: string | null;
+  trend: string;
+  history_count: number;
+}
+
 export interface InterviewRun {
   id: string;
   session_id: string;
@@ -115,6 +153,7 @@ export interface InterviewRun {
   summary: string;
   meta: InterviewRunMeta;
   delta_vs_previous?: number | null;
+  pronunciation?: InterviewPronunciationResult | null;
 }
 
 export interface InterviewTrack {
@@ -203,6 +242,7 @@ export interface ProgramSnapshot {
     };
   };
   interview: InterviewSummary;
+  pronunciation: PronunciationSummary;
   vocabulary: {
     stats: VocabularyStats;
     due_preview: VocabularyCard[];
@@ -289,6 +329,7 @@ function normalizeInterviewRun(raw: unknown): InterviewRun | null {
 
   const scores = asRecord(record.scores);
   const meta = asRecord(record.meta);
+  const pronunciationRecord = record.pronunciation ? asRecord(record.pronunciation) : null;
 
   return {
     id: String(record.id),
@@ -317,6 +358,31 @@ function normalizeInterviewRun(raw: unknown): InterviewRun | null {
       strongest_area: typeof meta.strongest_area === 'string' ? meta.strongest_area : 'unknown',
     },
     delta_vs_previous: record.delta_vs_previous == null ? null : Number(record.delta_vs_previous),
+    pronunciation: pronunciationRecord ? {
+      session_id: typeof pronunciationRecord.session_id === 'string' ? pronunciationRecord.session_id : String(record.session_id),
+      track_id: typeof pronunciationRecord.track_id === 'string' ? pronunciationRecord.track_id : null,
+      recorded_at: typeof pronunciationRecord.recorded_at === 'string' ? pronunciationRecord.recorded_at : new Date().toISOString(),
+      provider: typeof pronunciationRecord.provider === 'string' ? pronunciationRecord.provider : 'heuristic_text',
+      assessment_mode: typeof pronunciationRecord.assessment_mode === 'string' ? pronunciationRecord.assessment_mode : 'text_heuristic',
+      overall_score: Number(pronunciationRecord.overall_score ?? 0),
+      accuracy_score: Number(pronunciationRecord.accuracy_score ?? 0),
+      fluency_score: Number(pronunciationRecord.fluency_score ?? 0),
+      prosody_score: pronunciationRecord.prosody_score == null ? null : Number(pronunciationRecord.prosody_score),
+      confidence: Number(pronunciationRecord.confidence ?? 0),
+      notes: typeof pronunciationRecord.notes === 'string' ? pronunciationRecord.notes : '',
+      recommended_focus: asStringArray(pronunciationRecord.recommended_focus),
+      word_feedback: Array.isArray(pronunciationRecord.word_feedback)
+        ? pronunciationRecord.word_feedback.map((item) => {
+            const feedback = asRecord(item);
+            return {
+              word: typeof feedback.word === 'string' ? feedback.word : '',
+              issue: typeof feedback.issue === 'string' ? feedback.issue : '',
+              severity: typeof feedback.severity === 'string' ? feedback.severity : 'medium',
+              tip: typeof feedback.tip === 'string' ? feedback.tip : '',
+            };
+          }).filter((item) => item.word)
+        : [],
+    } : null,
   };
 }
 
@@ -331,6 +397,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const xp = asRecord(gamification.xp);
   const streak = asRecord(gamification.streak);
   const interview = asRecord(record.interview);
+  const pronunciation = asRecord(record.pronunciation);
   const vocabulary = asRecord(record.vocabulary);
   const vocabularyStats = asRecord(vocabulary.stats);
   const progress = asRecord(record.progress);
@@ -475,6 +542,30 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       weakest_area: typeof interview.weakest_area === 'string' ? interview.weakest_area : null,
       interview_focus: asStringArray(interview.interview_focus),
       last_track: typeof interview.last_track === 'string' ? interview.last_track : null,
+    },
+    pronunciation: {
+      latest_score: pronunciation.latest_score == null ? null : Number(pronunciation.latest_score),
+      accuracy_score: pronunciation.accuracy_score == null ? null : Number(pronunciation.accuracy_score),
+      fluency_score: pronunciation.fluency_score == null ? null : Number(pronunciation.fluency_score),
+      prosody_score: pronunciation.prosody_score == null ? null : Number(pronunciation.prosody_score),
+      focus: asStringArray(pronunciation.focus),
+      word_feedback: Array.isArray(pronunciation.word_feedback)
+        ? pronunciation.word_feedback.map((item) => {
+            const feedback = asRecord(item);
+            return {
+              word: typeof feedback.word === 'string' ? feedback.word : '',
+              issue: typeof feedback.issue === 'string' ? feedback.issue : '',
+              severity: typeof feedback.severity === 'string' ? feedback.severity : 'medium',
+              tip: typeof feedback.tip === 'string' ? feedback.tip : '',
+            };
+          }).filter((item) => item.word)
+        : [],
+      source: typeof pronunciation.source === 'string' ? pronunciation.source : null,
+      assessment_mode: typeof pronunciation.assessment_mode === 'string' ? pronunciation.assessment_mode : null,
+      confidence: pronunciation.confidence == null ? null : Number(pronunciation.confidence),
+      last_assessed_at: typeof pronunciation.last_assessed_at === 'string' ? pronunciation.last_assessed_at : null,
+      trend: typeof pronunciation.trend === 'string' ? pronunciation.trend : 'building',
+      history_count: Number(pronunciation.history_count ?? 0),
     },
     vocabulary: {
       stats: {

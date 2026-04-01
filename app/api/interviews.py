@@ -36,6 +36,29 @@ class InterviewScores(BaseModel):
     confidence: float
 
 
+class PronunciationWordFeedback(BaseModel):
+    word: str
+    issue: str
+    severity: str
+    tip: str
+
+
+class InterviewPronunciationResult(BaseModel):
+    session_id: str
+    track_id: Optional[str] = None
+    recorded_at: str
+    provider: str
+    assessment_mode: str
+    overall_score: float
+    accuracy_score: float
+    fluency_score: float
+    prosody_score: Optional[float] = None
+    confidence: float
+    notes: str
+    recommended_focus: list[str] = []
+    word_feedback: list[PronunciationWordFeedback] = []
+
+
 class InterviewRun(BaseModel):
     id: str
     session_id: str
@@ -50,6 +73,7 @@ class InterviewRun(BaseModel):
     summary: str
     meta: InterviewRunMeta
     delta_vs_previous: Optional[float] = None
+    pronunciation: Optional[InterviewPronunciationResult] = None
 
 
 class InterviewSummary(BaseModel):

@@ -8,6 +8,10 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
   const readiness = snapshot.assessment?.goal_readiness;
   const skillAxes = snapshot.assessment?.skill_axes ?? {};
   const goalBrief = snapshot.goal.brief;
+  const pronunciationSourceLabel =
+    snapshot.pronunciation.assessment_mode === 'text_heuristic'
+      ? 'text-based estimate'
+      : snapshot.pronunciation.source || 'speech assessment';
 
   return (
     <div className="miniapp-page">
@@ -96,6 +100,39 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
             ))
           ) : (
             <div className="list-empty">No critical gaps surfaced yet.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="content-card">
+        <div className="section-label">Speech evidence</div>
+        <h3>
+          {snapshot.pronunciation.latest_score != null
+            ? `${snapshot.pronunciation.latest_score.toFixed(1)}/10`
+            : 'No speech evidence yet'}
+        </h3>
+        <p>
+          {snapshot.pronunciation.latest_score != null
+            ? `Latest ${pronunciationSourceLabel}. This gives the coach a concrete speaking signal alongside grammar and interview scores.`
+            : 'The first pronunciation estimate appears after a meaningful spoken answer in an interview-style session.'}
+        </p>
+        <div className="pill-row">
+          {snapshot.pronunciation.source && <span className="pill">{pronunciationSourceLabel}</span>}
+          <span className="pill">{snapshot.pronunciation.trend.replace(/_/g, ' ')}</span>
+        </div>
+        <div className="list-stack">
+          {snapshot.pronunciation.focus.length > 0 ? (
+            snapshot.pronunciation.focus.map((focus) => (
+              <div key={focus} className="list-item">{focus}</div>
+            ))
+          ) : snapshot.pronunciation.word_feedback.length > 0 ? (
+            snapshot.pronunciation.word_feedback.slice(0, 3).map((item) => (
+              <div key={`${item.word}-${item.issue}`} className="list-item">
+                <strong>{item.word}</strong>: {item.tip}
+              </div>
+            ))
+          ) : (
+            <div className="list-empty">No pronunciation focus surfaced yet.</div>
           )}
         </div>
       </section>

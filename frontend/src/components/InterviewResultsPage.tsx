@@ -32,6 +32,10 @@ export function InterviewResultsPage({ run, mission, onRunAgain, onBack, onStart
     { key: 'vocabulary', label: 'Vocabulary' },
     { key: 'confidence', label: 'Confidence' },
   ];
+  const pronunciationSourceLabel =
+    run.pronunciation?.assessment_mode === 'text_heuristic'
+      ? 'text-based estimate'
+      : run.pronunciation?.provider || 'speech assessment';
 
   return (
     <div className="miniapp-page">
@@ -105,6 +109,40 @@ export function InterviewResultsPage({ run, mission, onRunAgain, onBack, onStart
             {run.next_focus.slice(0, 3).map((f, i) => (
               <div key={i} className="list-item results-feedback-item results-next-focus">
                 {f}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {run.pronunciation && (
+        <section className="content-card">
+          <div className="section-label">Speech feedback</div>
+          <h3>{run.pronunciation.overall_score.toFixed(1)}/10 speech signal</h3>
+          <p>{run.pronunciation.notes}</p>
+          <div className="pill-row">
+            <span className="pill">{pronunciationSourceLabel}</span>
+            <span className="pill">{run.pronunciation.confidence.toFixed(2)} confidence</span>
+          </div>
+          <div className="stats-grid">
+            <div className="stat-card">
+              <span className="stat-label">Accuracy</span>
+              <strong>{run.pronunciation.accuracy_score.toFixed(1)}</strong>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Fluency</span>
+              <strong>{run.pronunciation.fluency_score.toFixed(1)}</strong>
+            </div>
+          </div>
+          <div className="list-stack">
+            {run.pronunciation.recommended_focus.slice(0, 3).map((item) => (
+              <div key={item} className="list-item results-feedback-item results-next-focus">
+                {item}
+              </div>
+            ))}
+            {!run.pronunciation.recommended_focus.length && run.pronunciation.word_feedback.slice(0, 3).map((item) => (
+              <div key={`${item.word}-${item.issue}`} className="list-item results-feedback-item">
+                <strong>{item.word}</strong>: {item.tip}
               </div>
             ))}
           </div>

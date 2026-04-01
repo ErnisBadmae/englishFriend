@@ -23,6 +23,10 @@ export function HomePage({
   const goalBrief = snapshot.goal.brief;
   const setupIncomplete = snapshot.setup.needs_attention;
   const missionLabel = setupIncomplete ? 'Next step' : "Today's mission";
+  const pronunciationSourceLabel =
+    snapshot.pronunciation.assessment_mode === 'text_heuristic'
+      ? 'text-based estimate'
+      : snapshot.pronunciation.source || 'speech assessment';
 
   return (
     <div className="miniapp-page">
@@ -88,6 +92,35 @@ export function HomePage({
           <span className="pill">{snapshot.program.stage_label}</span>
           <span className="pill">{snapshot.program.time_horizon_days} days</span>
           {goalBrief?.domain && <span className="pill">{goalBrief.domain.replace(/_/g, ' ')}</span>}
+        </div>
+      </section>
+
+      <section className="content-card">
+        <div className="section-label">Speech evidence</div>
+        <h2>
+          {snapshot.pronunciation.latest_score != null
+            ? `${snapshot.pronunciation.latest_score.toFixed(1)}/10 speech signal`
+            : 'No speech signal yet'}
+        </h2>
+        <p>
+          {snapshot.pronunciation.latest_score != null
+            ? `Latest ${pronunciationSourceLabel}. Focus is based on your recent spoken answers, not generic advice.`
+            : 'Speech evidence appears after a meaningful interview-style answer. Then the coach can point to concrete pronunciation risks.'}
+        </p>
+        <div className="pill-row">
+          {snapshot.pronunciation.source && (
+            <span className="pill">{pronunciationSourceLabel}</span>
+          )}
+          {snapshot.pronunciation.trend && <span className="pill">{snapshot.pronunciation.trend.replace(/_/g, ' ')}</span>}
+        </div>
+        <div className="list-stack">
+          {snapshot.pronunciation.focus.length > 0 ? (
+            snapshot.pronunciation.focus.slice(0, 2).map((focus) => (
+              <div key={focus} className="list-item">{focus}</div>
+            ))
+          ) : (
+            <div className="list-empty">No pronunciation focus surfaced yet.</div>
+          )}
         </div>
       </section>
 

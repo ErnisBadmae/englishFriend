@@ -384,25 +384,29 @@ async def test_record_run_updates_adaptation_fields():
         from app.services.interview_service import InterviewService
         service = InterviewService(db)
 
-        await service.record_run(
+        result = await service.record_run(
             user_id=1,
             session_id="s-adapt",
             conversation_history=[
                 {"role": "assistant", "content": "Tell me about yourself."},
-                {"role": "user", "content": "I am a software engineer with years of experience."},
+                {"role": "user", "content": "I am a software engineer with years of experience working on web platforms."},
                 {"role": "assistant", "content": "What is your main strength?"},
-                {"role": "user", "content": "I am good at solving hard problems quickly."},
+                {"role": "user", "content": "I am good at solving hard problems quickly and improving workflow reliability."},
             ],
             corrections_count=3,
             track_id="hr_intro",
         )
 
     roadmap = mock_plan.roadmap
+    assert result["pronunciation"] is not None
+    assert result["pronunciation"]["provider"] == "heuristic_text"
     assert roadmap["weakest_interview_area"] in ("clarity", "structure", "accuracy", "vocabulary", "confidence")
     assert roadmap["last_interview_track"] == "hr_intro"
     assert isinstance(roadmap["interview_focus"], list)
     assert len(roadmap["interview_focus"]) <= 2
     assert roadmap["interview_track_stats"]["hr_intro"] == 1
+    assert roadmap["pronunciation_summary"]["latest_score"] is not None
+    assert isinstance(roadmap["pronunciation_focus"], list)
 
 
 @pytest.mark.asyncio

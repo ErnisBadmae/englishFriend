@@ -14,6 +14,10 @@ from app.data.interview_tracks import (
     recommend_interview_track,
 )
 from app.services.learning_plan_service import LearningPlanService
+from app.services.pronunciation_assessment_service import (
+    PronunciationAssessmentService,
+    build_pronunciation_summary,
+)
 
 
 def _clamp_score(value: float) -> float:
@@ -383,6 +387,12 @@ class InterviewService:
             corrections_count=corrections_count,
             reviewed_words=reviewed_words,
         )
+        pronunciation_service = PronunciationAssessmentService(self.db)
+        pronunciation = await pronunciation_service.assess_conversation(
+            session_id=session_id,
+            conversation_history=conversation_history,
+            track_id=track["id"],
+        )
 
         prev_same_track = next(
             (r for r in existing_runs if r.get("track_id") == track["id"]),
@@ -408,6 +418,7 @@ class InterviewService:
             "summary": scored["summary"],
             "meta": scored["meta"],
             "delta_vs_previous": delta_vs_previous,
+            "pronunciation": pronunciation,
         }
 
         # Update roadmap adaptation fields
@@ -425,6 +436,18 @@ class InterviewService:
 
         roadmap["interview_runs"] = runs
         roadmap["interview_summary"] = summary
+        if pronunciation:
+            pronunciation_assessments = [
+                pronunciation,
+                *[
+                    item
+                    for item in (roadmap.get("pronunciation_assessments") or [])
+                    if isinstance(item, dict)
+                ],
+            ][:20]
+            roadmap["pronunciation_assessments"] = pronunciation_assessments
+            roadmap["pronunciation_summary"] = build_pronunciation_summary(pronunciation_assessments)
+            roadmap["pronunciation_focus"] = pronunciation.get("recommended_focus", [])[:2]
 
         plan.roadmap = roadmap
         flag_modified(plan, "roadmap")

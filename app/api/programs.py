@@ -108,6 +108,44 @@ class InterviewRunMeta(BaseModel):
     strongest_area: str
 
 
+class PronunciationWordFeedback(BaseModel):
+    word: str
+    issue: str
+    severity: str
+    tip: str
+
+
+class PronunciationSummary(BaseModel):
+    latest_score: Optional[float] = None
+    accuracy_score: Optional[float] = None
+    fluency_score: Optional[float] = None
+    prosody_score: Optional[float] = None
+    focus: list[str] = []
+    word_feedback: list[PronunciationWordFeedback] = []
+    source: Optional[str] = None
+    assessment_mode: Optional[str] = None
+    confidence: Optional[float] = None
+    last_assessed_at: Optional[str] = None
+    trend: str = "building"
+    history_count: int = 0
+
+
+class InterviewPronunciationResult(BaseModel):
+    session_id: str
+    track_id: Optional[str] = None
+    recorded_at: str
+    provider: str
+    assessment_mode: str
+    overall_score: float
+    accuracy_score: float
+    fluency_score: float
+    prosody_score: Optional[float] = None
+    confidence: float
+    notes: str
+    recommended_focus: list[str] = []
+    word_feedback: list[PronunciationWordFeedback] = []
+
+
 class InterviewRun(BaseModel):
     id: str
     session_id: str
@@ -122,6 +160,7 @@ class InterviewRun(BaseModel):
     summary: str
     meta: InterviewRunMeta
     delta_vs_previous: Optional[float] = None
+    pronunciation: Optional[InterviewPronunciationResult] = None
 
 
 class InterviewSnapshot(BaseModel):
@@ -186,6 +225,7 @@ class ProgramSnapshotResponse(BaseModel):
     mission: MissionSummary
     gamification: dict[str, Any]
     interview: InterviewSnapshot
+    pronunciation: PronunciationSummary
     vocabulary: VocabularySnapshot
     progress: ProgressSnapshot
     setup: SetupSnapshot

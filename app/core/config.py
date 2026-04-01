@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     # TTS
     tts_voice: str = "american_female"
 
+    # Pronunciation assessment
+    pronunciation_provider: Literal["heuristic", "azure"] = "heuristic"
+    pronunciation_locale: str = "en-US"
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+
     # Langfuse
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
