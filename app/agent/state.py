@@ -68,7 +68,7 @@ class AgentState(TypedDict, total=False):
     confirmed_goal: Optional[str]  # User-confirmed goal
     goal_needs_confirmation: bool  # Flag: waiting for user to confirm
     goal_brief: Optional[dict[str, Any]]  # Structured goal brief for product routing
-    goal_setup_complete: bool  # Whether the goal is specific enough for the program
+    goal_setup_complete: bool  # Whether the goal is routing-ready enough for baseline/program flow
     detected_interests: list[str]
     confirmed_interests: list[str]
     interests_need_confirmation: bool

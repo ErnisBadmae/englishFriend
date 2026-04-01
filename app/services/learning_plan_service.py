@@ -95,6 +95,8 @@ _GOAL_BRIEF_REQUIRED_FIELDS = {
 _ROLE_KEYWORDS = {
     "ml engineer": ("ML Engineer", "machine_learning"),
     "machine learning": ("ML Engineer", "machine_learning"),
+    "ai engineer": ("ML Engineer", "machine_learning"),
+    "artificial intelligence": ("ML Engineer", "machine_learning"),
     "data scientist": ("Data Scientist", "data_science"),
     "data science": ("Data Scientist", "data_science"),
     "software engineer": ("Software Engineer", "software_engineering"),
@@ -138,6 +140,12 @@ def _dedupe(items: list[str]) -> list[str]:
         seen.add(key)
         result.append(normalized)
     return result
+
+
+def _humanize_key(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return str(value).replace("_", " ").strip()
 
 
 class LearningPlanService:
@@ -290,6 +298,53 @@ class LearningPlanService:
         await self.db.refresh(plan)
         return plan
 
+    async def record_session_evidence(
+        self,
+        *,
+        user_id: int,
+        session_id: str,
+        mode: str,
+        duration_minutes: int = 0,
+        conversation_history: Optional[list[dict[str, Any]]] = None,
+        corrections_made: Optional[list[dict[str, Any]] | int] = None,
+        vocabulary_reviewed: Optional[list[dict[str, Any]]] = None,
+        assessed_level: Optional[str] = None,
+        assessment_scores: Optional[dict[str, Any]] = None,
+        interview_run: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        plan = await self.get_or_create_plan(user_id)
+        roadmap = deepcopy(plan.roadmap or {})
+        existing_items = [
+            dict(item)
+            for item in (roadmap.get("session_evidence") or [])
+            if isinstance(item, dict)
+        ]
+        for existing in existing_items:
+            if existing.get("session_id") == session_id:
+                return existing
+
+        evidence = self._build_session_evidence(
+            session_id=session_id,
+            mode=mode,
+            duration_minutes=duration_minutes,
+            conversation_history=conversation_history or [],
+            corrections_made=corrections_made,
+            vocabulary_reviewed=vocabulary_reviewed or [],
+            assessed_level=assessed_level,
+            assessment_scores=assessment_scores or {},
+            interview_run=interview_run,
+        )
+        if not evidence:
+            return None
+
+        roadmap["session_evidence"] = [evidence, *existing_items][:20]
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
+        plan.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(plan)
+        return evidence
+
     def get_goal(self, plan: LearningPlan) -> Optional[str]:
         return (plan.roadmap or {}).get("goal")
 
@@ -305,7 +360,7 @@ class LearningPlanService:
 
     def is_goal_setup_complete(self, plan: LearningPlan) -> bool:
         goal_brief = self.get_goal_brief(plan)
-        return bool(goal_brief and goal_brief.get("status") == "confirmed")
+        return bool(goal_brief and goal_brief.get("status") in {"draft", "confirmed"})
 
     def get_goal_setup_missing(self, plan: LearningPlan) -> list[str]:
         goal_brief = self.get_goal_brief(plan) or {}
@@ -357,8 +412,6 @@ class LearningPlanService:
         if program:
             return program
         goal_brief = self.get_goal_brief(plan)
-        if not goal_brief:
-            return None
         return self._build_program_plan(
             goal_brief,
             self.get_proficiency_profile(plan),
@@ -366,9 +419,17 @@ class LearningPlanService:
             roadmap.get("preferred_mode") or "free_conversation",
         )
 
+    def get_session_evidence(self, plan: LearningPlan) -> list[dict[str, Any]]:
+        roadmap = plan.roadmap or {}
+        return [
+            dict(item)
+            for item in (roadmap.get("session_evidence") or [])
+            if isinstance(item, dict) and item.get("session_id")
+        ]
+
     def _match_goal_template(self, goal_text: str) -> Optional[GoalTemplate]:
         goal_lower = goal_text.lower()
-        if any(keyword in goal_lower for keyword in ["ml", "machine learning", "data science", "data scientist"]):
+        if any(keyword in goal_lower for keyword in ["ml", "machine learning", "data science", "data scientist", " ai ", "artificial intelligence", "model"]):
             return GOAL_TEMPLATES["ml_interview"]
         if any(keyword in goal_lower for keyword in ["software", "developer", "engineer", "programming", "backend", "frontend"]):
             return GOAL_TEMPLATES["software_interview"]
@@ -427,7 +488,14 @@ class LearningPlanService:
             "motivation": merged.get("motivation") or "Use English to unlock a better career outcome.",
             "confidence": round(float(merged.get("confidence") or self._goal_confidence(goal_text, role, contexts)), 2),
         }
-        brief["status"] = "confirmed" if self._is_goal_brief_complete(brief) else "incomplete"
+        if merged.get("confirmed_by_user") or merged.get("status") == "confirmed":
+            brief["confirmed_by_user"] = True
+        if self._is_goal_brief_complete(brief) and brief.get("confirmed_by_user"):
+            brief["status"] = "confirmed"
+        elif self._is_goal_brief_routing_ready(brief):
+            brief["status"] = "draft"
+        else:
+            brief["status"] = "incomplete"
         brief["summary"] = self._build_goal_summary(brief)
         return brief
 
@@ -483,13 +551,13 @@ class LearningPlanService:
         weekly_focus = ["Clarify your target role, company context, and practice situations"]
         success_metric = "Complete setup so the coach can route practice correctly"
         next_milestone = "Confirm the goal brief"
-        if goal_brief.get("status") == "confirmed" and not proficiency_profile:
+        if goal_brief.get("status") in {"draft", "confirmed"} and not proficiency_profile:
             stage_id = "baseline_assessment"
             stage_label = "Baseline Assessment"
             weekly_focus = ["Measure your level before building practice intensity"]
             success_metric = "Get a reliable speaking baseline"
             next_milestone = "Complete the baseline assessment"
-        elif goal_brief.get("status") == "confirmed" and proficiency_profile:
+        elif goal_brief.get("status") in {"draft", "confirmed"} and proficiency_profile:
             readiness = float(proficiency_profile.get("goal_readiness") or 0.0)
             grammar = float(proficiency_profile.get("grammar_accuracy") or 0.0)
             fluency = float(proficiency_profile.get("fluency") or 0.0)
@@ -609,17 +677,24 @@ class LearningPlanService:
             score += 0.2
         if any(keyword in goal_text.lower() for keyword in ["job", "career", "interview", "abroad", "international"]):
             score += 0.1
+        if any(keyword in goal_text.lower() for keyword in ["ml", "machine learning", "ai", "data scientist"]):
+            score += 0.05
         return min(score, 0.95)
 
-    def _is_goal_brief_complete(self, goal_brief: dict[str, Any]) -> bool:
+    def _is_goal_brief_routing_ready(self, goal_brief: dict[str, Any]) -> bool:
         return bool(
             goal_brief.get("primary_goal")
             and goal_brief.get("target_role")
             and goal_brief.get("domain")
             and goal_brief.get("target_market")
-            and goal_brief.get("deadline_type")
             and goal_brief.get("main_contexts")
             and "general_fluency" not in (goal_brief.get("main_contexts") or [])
+        )
+
+    def _is_goal_brief_complete(self, goal_brief: dict[str, Any]) -> bool:
+        return bool(
+            self._is_goal_brief_routing_ready(goal_brief)
+            and goal_brief.get("deadline_type")
         )
 
     def _build_goal_summary(self, goal_brief: dict[str, Any]) -> str:
@@ -724,6 +799,195 @@ class LearningPlanService:
             else:
                 normalized.append(str(item))
         return _dedupe(normalized)
+
+    def _build_session_evidence(
+        self,
+        *,
+        session_id: str,
+        mode: str,
+        duration_minutes: int,
+        conversation_history: list[dict[str, Any]],
+        corrections_made: Optional[list[dict[str, Any]] | int],
+        vocabulary_reviewed: list[dict[str, Any]],
+        assessed_level: Optional[str],
+        assessment_scores: dict[str, Any],
+        interview_run: Optional[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        user_messages = [
+            str(message.get("content") or "").strip()
+            for message in conversation_history
+            if message.get("role") == "user" and message.get("content")
+        ]
+        user_turns = len(user_messages)
+        vocab_words = [
+            str(item.get("word") or "").strip()
+            for item in vocabulary_reviewed
+            if isinstance(item, dict) and item.get("word")
+        ]
+        if isinstance(corrections_made, list):
+            corrections = [item for item in corrections_made if isinstance(item, dict)]
+            corrections_count = len(corrections)
+        else:
+            corrections = []
+            corrections_count = int(corrections_made or 0)
+
+        meaningful = bool(user_turns or corrections_count or vocab_words or assessed_level or interview_run)
+        if not meaningful:
+            return None
+
+        mode_label = _humanize_key(mode) or "guided session"
+        recorded_at = _utcnow_iso()
+
+        if interview_run:
+            overall = (interview_run.get("scores") or {}).get("overall")
+            pronunciation = interview_run.get("pronunciation") or {}
+            evidence_signals = []
+            if overall is not None:
+                evidence_signals.append(f"Interview score {overall}/10")
+            if pronunciation.get("overall_score") is not None:
+                evidence_signals.append(f"Speech signal {pronunciation['overall_score']}/10")
+            if interview_run.get("delta_vs_previous") not in (None, 0):
+                delta = float(interview_run["delta_vs_previous"])
+                direction = "up" if delta > 0 else "down"
+                evidence_signals.append(f"Interview trend {direction} {abs(delta):.1f}")
+            return {
+                "id": session_id,
+                "session_id": session_id,
+                "mission_type": mode,
+                "mission_title": interview_run.get("track_title") or "Career interview run",
+                "summary": interview_run.get("summary") or "Interview run saved with score and next focus.",
+                "what_was_trained": interview_run.get("track_subtitle") or "Interview delivery under realistic pressure.",
+                "what_went_well": (interview_run.get("strengths") or [])[:3],
+                "main_issue": _humanize_key((interview_run.get("meta") or {}).get("weakest_area")) or "Interview delivery needs another repetition.",
+                "next_focus": (interview_run.get("next_focus") or [])[:3],
+                "evidence_signals": evidence_signals,
+                "recorded_at": recorded_at,
+                "duration_minutes": duration_minutes,
+            }
+
+        if mode == "assessment" or assessed_level:
+            weakest_axis = self._find_weakest_assessment_axis(assessment_scores)
+            next_focus = []
+            if weakest_axis:
+                next_focus.append(f"Start the first mission around {weakest_axis}.")
+            next_focus.append("Use the next guided mission to collect stronger speaking evidence.")
+            evidence_signals = [f"Baseline level {assessed_level or 'captured'}"]
+            if weakest_axis:
+                evidence_signals.append(f"Weakest axis: {weakest_axis}")
+            return {
+                "id": session_id,
+                "session_id": session_id,
+                "mission_type": "assessment",
+                "mission_title": "Baseline assessment",
+                "summary": f"Baseline captured at CEFR {assessed_level or 'level pending'}. The program can now route practice from real evidence.",
+                "what_was_trained": "Measured your speaking baseline against the career goal.",
+                "what_went_well": ["You completed the baseline flow and unlocked program routing."],
+                "main_issue": weakest_axis or "Need more speaking evidence to isolate the weakest area.",
+                "next_focus": next_focus[:3],
+                "evidence_signals": evidence_signals,
+                "recorded_at": recorded_at,
+                "duration_minutes": duration_minutes,
+            }
+
+        if mode == "vocabulary_drill":
+            vocab_count = len(vocab_words)
+            return {
+                "id": session_id,
+                "session_id": session_id,
+                "mission_type": mode,
+                "mission_title": "Vocabulary reinforcement",
+                "summary": f"You reinforced {vocab_count} job-relevant word{'s' if vocab_count != 1 else ''} in context.",
+                "what_was_trained": "Active recall on vocabulary linked to your current program.",
+                "what_went_well": [
+                    "You cleared part of the review queue.",
+                    "You kept vocabulary practice tied to speaking, not isolated memorization.",
+                ][: 1 if vocab_count <= 0 else 2],
+                "main_issue": "Keep using the reviewed words inside full answers, not one-word recall.",
+                "next_focus": [
+                    "Use the same words in one short career answer.",
+                    "Revisit the next due cards before they pile up again.",
+                ],
+                "evidence_signals": [
+                    f"{vocab_count} words reinforced",
+                    f"{user_turns} speaking turn{'s' if user_turns != 1 else ''}",
+                ],
+                "recorded_at": recorded_at,
+                "duration_minutes": duration_minutes,
+            }
+
+        correction_issue = self._extract_correction_issue(corrections)
+        what_went_well = ["You completed a full guided speaking mission."]
+        if user_turns >= 2:
+            what_went_well.append("You stayed in English across multiple turns.")
+        if corrections_count <= 2 and user_turns >= 2:
+            what_went_well.append("Your answers stayed relatively clean under practice pressure.")
+
+        next_focus = []
+        if correction_issue:
+            next_focus.append(f"Repeat one more drill focusing on {correction_issue}.")
+        if vocab_words:
+            next_focus.append(f"Reuse {vocab_words[0]} in your next answer.")
+        next_focus.append("Keep answers short, clear, and tied to your target job context.")
+
+        evidence_signals = [
+            f"{user_turns} user turn{'s' if user_turns != 1 else ''}",
+            f"{corrections_count} correction signal{'s' if corrections_count != 1 else ''}",
+        ]
+        if vocab_words:
+            evidence_signals.append(f"{len(vocab_words)} vocabulary cue{'s' if len(vocab_words) != 1 else ''} reinforced")
+
+        summary = "You completed a guided speaking mission with live coaching."
+        if correction_issue:
+            summary = f"You practiced {mode_label} and surfaced a repeatable issue around {correction_issue}."
+        elif vocab_words:
+            summary = f"You practiced {mode_label} and reinforced vocabulary in context."
+
+        return {
+            "id": session_id,
+            "session_id": session_id,
+            "mission_type": mode,
+            "mission_title": _humanize_key(mode_label).title(),
+            "summary": summary,
+            "what_was_trained": self._describe_trained_area(mode),
+            "what_went_well": what_went_well[:3],
+            "main_issue": correction_issue or "Need more repetitions before a clear weak point emerges.",
+            "next_focus": next_focus[:3],
+            "evidence_signals": evidence_signals,
+            "recorded_at": recorded_at,
+            "duration_minutes": duration_minutes,
+        }
+
+    def _find_weakest_assessment_axis(self, assessment_scores: dict[str, Any]) -> Optional[str]:
+        axes: list[tuple[str, float]] = []
+        for key in ("fluency", "grammar", "vocabulary", "comprehension"):
+            raw = assessment_scores.get(key)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value <= 1.0:
+                value *= 10.0
+            axes.append((_humanize_key(key) or key, value))
+        if not axes:
+            return None
+        axes.sort(key=lambda item: item[1])
+        return axes[0][0]
+
+    def _extract_correction_issue(self, corrections: list[dict[str, Any]]) -> Optional[str]:
+        if not corrections:
+            return None
+        first = corrections[0]
+        label = first.get("type") or first.get("rule_tag") or first.get("label")
+        return _humanize_key(str(label)) if label else "grammar accuracy"
+
+    def _describe_trained_area(self, mode: str) -> str:
+        if mode == "guided_setup":
+            return "Clarified your goal and learning context."
+        if mode == "free_conversation":
+            return "Spoken English in a lower-pressure career context."
+        return f"Guided {(_humanize_key(mode) or 'practice')} linked to your career program."
 
 
 async def detect_goal_from_message(message: str) -> Optional[str]:

@@ -69,6 +69,10 @@ export interface MissionSummary {
   linked_skill_gap?: string | null;
   from_interview?: boolean;
   interview_track_id?: string | null;
+  task_type: string;
+  expected_outcome: string;
+  estimated_minutes: number;
+  success_signal: string;
 }
 
 export interface ProgramSummary {
@@ -220,6 +224,21 @@ export interface RecentSession {
   summary?: string | null;
 }
 
+export interface SessionEvidence {
+  id: string;
+  session_id: string;
+  mission_type: string;
+  mission_title: string;
+  summary: string;
+  what_was_trained: string;
+  what_went_well: string[];
+  main_issue?: string | null;
+  next_focus: string[];
+  evidence_signals: string[];
+  recorded_at: string;
+  duration_minutes: number;
+}
+
 export interface ProgramSnapshot {
   user: UserIdentity;
   goal: GoalSummary;
@@ -253,11 +272,17 @@ export interface ProgramSnapshot {
     recommended_vocabulary: string[];
     top_error_patterns: ErrorPattern[];
     recent_sessions: RecentSession[];
+    improvement_signals: string[];
+  };
+  session_evidence: {
+    latest?: SessionEvidence | null;
+    recent: SessionEvidence[];
   };
   setup: {
     goal_complete: boolean;
     assessment_complete: boolean;
     needs_attention: boolean;
+    state: string;
   };
 }
 
@@ -386,6 +411,28 @@ function normalizeInterviewRun(raw: unknown): InterviewRun | null {
   };
 }
 
+function normalizeSessionEvidence(raw: unknown): SessionEvidence | null {
+  const record = asRecord(raw);
+  if (!record.session_id) {
+    return null;
+  }
+
+  return {
+    id: typeof record.id === 'string' ? record.id : String(record.session_id),
+    session_id: String(record.session_id),
+    mission_type: typeof record.mission_type === 'string' ? record.mission_type : 'free_conversation',
+    mission_title: typeof record.mission_title === 'string' ? record.mission_title : 'Guided mission',
+    summary: typeof record.summary === 'string' ? record.summary : '',
+    what_was_trained: typeof record.what_was_trained === 'string' ? record.what_was_trained : '',
+    what_went_well: asStringArray(record.what_went_well),
+    main_issue: typeof record.main_issue === 'string' ? record.main_issue : null,
+    next_focus: asStringArray(record.next_focus),
+    evidence_signals: asStringArray(record.evidence_signals),
+    recorded_at: typeof record.recorded_at === 'string' ? record.recorded_at : new Date().toISOString(),
+    duration_minutes: Number(record.duration_minutes ?? 0),
+  };
+}
+
 function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): ProgramSnapshot {
   const record = asRecord(raw);
   const goal = asRecord(record.goal);
@@ -401,6 +448,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const vocabulary = asRecord(record.vocabulary);
   const vocabularyStats = asRecord(vocabulary.stats);
   const progress = asRecord(record.progress);
+  const sessionEvidenceRecord = asRecord(record.session_evidence);
   const setup = asRecord(record.setup);
 
   const goalBrief = Object.keys(brief).length > 0 ? {
@@ -431,7 +479,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const goalMissingFields = asStringArray(goal.missing_fields);
   const goalComplete = typeof setup.goal_complete === 'boolean'
     ? setup.goal_complete
-    : Boolean(goalBrief && goalBrief.status === 'confirmed' && goalMissingFields.length === 0);
+    : Boolean(goalBrief && ['draft', 'confirmed'].includes(goalBrief.status || '') && goalMissingFields.length === 0);
   const assessmentComplete = typeof setup.assessment_complete === 'boolean'
     ? setup.assessment_complete
     : Boolean(assessment?.level && assessment.level !== 'Unknown');
@@ -450,6 +498,10 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
         linked_skill_gap: null,
         from_interview: false,
         interview_track_id: null,
+        task_type: 'goal_setup',
+        expected_outcome: 'A confirmed goal and baseline.',
+        estimated_minutes: 4,
+        success_signal: 'Your next mission becomes concrete instead of generic.',
       }
     : {
         mode: 'free_conversation',
@@ -461,6 +513,10 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
         linked_skill_gap: null,
         from_interview: false,
         interview_track_id: null,
+        task_type: 'guided_speaking_session',
+        expected_outcome: 'One useful guided repetition tied to your program.',
+        estimated_minutes: 8,
+        success_signal: 'You finish with one clearer next step.',
       };
 
   const latestRun = normalizeInterviewRun(interview.latest_run);
@@ -510,6 +566,10 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       linked_skill_gap: typeof mission.linked_skill_gap === 'string' ? mission.linked_skill_gap : defaultMission.linked_skill_gap ?? null,
       from_interview: typeof mission.from_interview === 'boolean' ? mission.from_interview : false,
       interview_track_id: typeof mission.interview_track_id === 'string' ? mission.interview_track_id : null,
+      task_type: typeof mission.task_type === 'string' ? mission.task_type : defaultMission.task_type,
+      expected_outcome: typeof mission.expected_outcome === 'string' ? mission.expected_outcome : defaultMission.expected_outcome,
+      estimated_minutes: Number(mission.estimated_minutes ?? defaultMission.estimated_minutes),
+      success_signal: typeof mission.success_signal === 'string' ? mission.success_signal : defaultMission.success_signal,
     },
     gamification: {
       xp: {
@@ -584,11 +644,23 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       recommended_vocabulary: asStringArray(progress.recommended_vocabulary),
       top_error_patterns: Array.isArray(progress.top_error_patterns) ? progress.top_error_patterns as ErrorPattern[] : [],
       recent_sessions: Array.isArray(progress.recent_sessions) ? progress.recent_sessions as RecentSession[] : [],
+      improvement_signals: asStringArray(progress.improvement_signals),
+    },
+    session_evidence: {
+      latest: normalizeSessionEvidence(sessionEvidenceRecord.latest),
+      recent: Array.isArray(sessionEvidenceRecord.recent)
+        ? sessionEvidenceRecord.recent
+          .map(normalizeSessionEvidence)
+          .filter((item): item is SessionEvidence => Boolean(item))
+        : [],
     },
     setup: {
       goal_complete: goalComplete,
       assessment_complete: assessmentComplete,
       needs_attention: needsAttention,
+      state: typeof setup.state === 'string'
+        ? setup.state
+        : (goalComplete ? (assessmentComplete ? 'ready_for_program' : 'needs_assessment') : 'needs_goal'),
     },
   };
 }

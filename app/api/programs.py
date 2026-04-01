@@ -64,6 +64,10 @@ class MissionSummary(BaseModel):
     linked_skill_gap: Optional[str] = None
     from_interview: bool = False
     interview_track_id: Optional[str] = None
+    task_type: str
+    expected_outcome: str
+    estimated_minutes: int
+    success_signal: str
 
 
 class ProgramStage(BaseModel):
@@ -209,12 +213,34 @@ class ProgressSnapshot(BaseModel):
     recommended_vocabulary: list[str]
     top_error_patterns: list[ErrorPattern]
     recent_sessions: list[RecentSession]
+    improvement_signals: list[str] = []
+
+
+class SessionEvidence(BaseModel):
+    id: str
+    session_id: str
+    mission_type: str
+    mission_title: str
+    summary: str
+    what_was_trained: str
+    what_went_well: list[str] = []
+    main_issue: Optional[str] = None
+    next_focus: list[str] = []
+    evidence_signals: list[str] = []
+    recorded_at: str
+    duration_minutes: int = 0
+
+
+class SessionEvidenceSnapshot(BaseModel):
+    latest: Optional[SessionEvidence] = None
+    recent: list[SessionEvidence] = []
 
 
 class SetupSnapshot(BaseModel):
     goal_complete: bool
     assessment_complete: bool
     needs_attention: bool
+    state: str
 
 
 class ProgramSnapshotResponse(BaseModel):
@@ -228,6 +254,7 @@ class ProgramSnapshotResponse(BaseModel):
     pronunciation: PronunciationSummary
     vocabulary: VocabularySnapshot
     progress: ProgressSnapshot
+    session_evidence: SessionEvidenceSnapshot
     setup: SetupSnapshot
 
 

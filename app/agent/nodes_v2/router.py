@@ -31,8 +31,10 @@ async def router_node(state: AgentState) -> AgentState:
     pedagogy = get_pedagogy_logger(state["user_id"])
 
     is_new = state.get("is_new_user", True)
-    has_goal = bool(state.get("confirmed_goal"))
-    goal_setup_complete = state.get("goal_setup_complete", has_goal)
+    goal_brief = state.get("goal_brief") or {}
+    goal_status = goal_brief.get("status")
+    has_goal = bool(state.get("confirmed_goal") or state.get("detected_goal") or goal_brief.get("primary_goal"))
+    goal_setup_complete = state.get("goal_setup_complete", goal_status in {"draft", "confirmed"})
     has_assessment = bool(state.get("assessed_level"))
     should_end = state.get("should_end_session", False)
 
@@ -49,11 +51,11 @@ async def router_node(state: AgentState) -> AgentState:
         return state
 
     # Decision 2: Missing or incomplete goal brief -> onboarding
-    if (is_new and not has_goal) or not goal_setup_complete:
+    if (is_new and not has_goal) or goal_status not in {"draft", "confirmed"} or not goal_setup_complete:
         state["_route"] = "onboarding"
         state["_skip_goal"] = False
         state["_skip_interests"] = True
-        state["_skip_assessment"] = True if not goal_setup_complete else False
+        state["_skip_assessment"] = True
 
         pedagogy.log_phase_transition(
             user_id=state["user_id"],
@@ -67,13 +69,18 @@ async def router_node(state: AgentState) -> AgentState:
             node="router",
             action="route_onboarding_goal_setup",
             reason="User needs concrete goal setup before practice",
-            data={"is_new": is_new, "has_goal": has_goal, "goal_setup_complete": goal_setup_complete},
+            data={
+                "is_new": is_new,
+                "has_goal": has_goal,
+                "goal_setup_complete": goal_setup_complete,
+                "goal_status": goal_status,
+            },
         )
         logger.info(f"[Router] User {state['user_id']}: route=onboarding (goal setup)")
         return state
 
-    # Decision 3: Has complete goal but no assessment -> assessment only
-    if has_goal and not has_assessment:
+    # Decision 3: Has routing-ready draft/confirmed goal but no assessment -> assessment only
+    if goal_status in {"draft", "confirmed"} and not has_assessment:
         state["_route"] = "onboarding"
         state["_skip_goal"] = True
         state["_skip_interests"] = True
@@ -83,13 +90,18 @@ async def router_node(state: AgentState) -> AgentState:
             state,
             node="router",
             action="route_onboarding_assessment",
-            reason="User has goal but needs assessment",
-            data={"has_goal": has_goal, "has_assessment": has_assessment, "goal_setup_complete": goal_setup_complete},
+            reason="User has a routing-ready goal but still needs baseline assessment",
+            data={
+                "has_goal": has_goal,
+                "has_assessment": has_assessment,
+                "goal_setup_complete": goal_setup_complete,
+                "goal_status": goal_status,
+            },
         )
         logger.info(f"[Router] User {state['user_id']}: route=onboarding (assessment only)")
         return state
 
-    # Decision 4: Returning user with complete profile -> learning
+    # Decision 4: Returning user with routing-ready goal and assessment -> learning
     state["_route"] = "learning"
     state["current_phase"] = AgentPhase.LEARNING_SESSION
 
@@ -104,8 +116,12 @@ async def router_node(state: AgentState) -> AgentState:
         state,
         node="router",
         action="route_learning",
-        reason="Returning user with complete profile",
-        data={"goal": state.get("confirmed_goal"), "level": state.get("assessed_level")},
+        reason="Returning user with routing-ready profile",
+        data={
+            "goal": state.get("confirmed_goal") or state.get("detected_goal"),
+            "level": state.get("assessed_level"),
+            "goal_status": goal_status,
+        },
     )
     logger.info(f"[Router] User {state['user_id']}: route=learning (returning user)")
     return state
@@ -124,6 +140,6 @@ def route_after_router(state: AgentState) -> str:
     logger.info(
         f"[route_after_router] _route={route}, "
         f"is_new_user={state.get('is_new_user')}, "
-        f"has_goal={bool(state.get('confirmed_goal'))}"
+        f"goal_status={(state.get('goal_brief') or {}).get('status')}"
     )
     return route

@@ -4,6 +4,7 @@ import { InterviewPage } from './components/InterviewPage';
 import { InterviewResultsPage } from './components/InterviewResultsPage';
 import { ProgressPage } from './components/ProgressPage';
 import { ReviewPage } from './components/ReviewPage';
+import { SessionResultsPage } from './components/SessionResultsPage';
 import { VoiceChatV2 } from './components/VoiceChatV2';
 import {
   API_BASE,
@@ -14,10 +15,11 @@ import {
   type InterviewTrack,
   type MissionSummary,
   type ProgramSnapshot,
+  type SessionEvidence,
 } from './lib/api';
 import './App.css';
 
-type Screen = 'home' | 'session' | 'interview' | 'review' | 'progress' | 'interview_results';
+type Screen = 'home' | 'session' | 'interview' | 'review' | 'progress' | 'interview_results' | 'session_results';
 
 interface SessionConfig {
   wsUrl: string;
@@ -25,6 +27,7 @@ interface SessionConfig {
   interviewTrackId?: string;
   title?: string;
   subtitle?: string;
+  reviewBeforeSend?: boolean;
   returnScreen: Screen;
 }
 
@@ -36,6 +39,7 @@ function readScreenFromHash(): Screen {
     || normalized === 'review'
     || normalized === 'progress'
     || normalized === 'interview_results'
+    || normalized === 'session_results'
   ) {
     return normalized as Screen;
   }
@@ -50,9 +54,11 @@ function App() {
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>({
     wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+    reviewBeforeSend: false,
     returnScreen: 'progress',
   });
   const [lastInterviewRun, setLastInterviewRun] = useState<InterviewRun | null>(null);
+  const [lastSessionEvidence, setLastSessionEvidence] = useState<SessionEvidence | null>(null);
   const [lastMission, setLastMission] = useState<MissionSummary | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [isResolvingUser, setIsResolvingUser] = useState(true);
@@ -212,6 +218,7 @@ function App() {
         wsUrl: `${WS_BASE}/api/v1/voice/chat`,
         title: snapshot.mission.title,
         subtitle: snapshot.mission.reason,
+        reviewBeforeSend: true,
         returnScreen: 'home',
       });
       setScreen('session');
@@ -223,6 +230,7 @@ function App() {
       mode: snapshot.mission.launch_mode ?? snapshot.mission.mode,
       title: snapshot.mission.title,
       subtitle: snapshot.mission.reason,
+      reviewBeforeSend: snapshot.mission.mode === 'assessment',
       returnScreen: 'progress',
     });
     setScreen('session');
@@ -235,6 +243,7 @@ function App() {
       interviewTrackId: track.id,
       title: track.title,
       subtitle: track.subtitle,
+      reviewBeforeSend: false,
       returnScreen: 'interview',
     });
     setScreen('session');
@@ -249,6 +258,10 @@ function App() {
       setLastInterviewRun(fresh.interview.latest_run);
       setLastMission(fresh.mission);
       setScreen('interview_results');
+    } else if (fresh?.session_evidence.latest) {
+      setLastSessionEvidence(fresh.session_evidence.latest);
+      setLastMission(fresh.mission);
+      setScreen('session_results');
     } else {
       setScreen(sessionConfig.returnScreen);
     }
@@ -301,8 +314,6 @@ function App() {
               <HomePage
                 snapshot={snapshot}
                 onStartSession={startGuidedSession}
-                onOpenInterview={() => setScreen('interview')}
-                onOpenReview={() => setScreen('review')}
                 onOpenProgress={() => setScreen('progress')}
                 onRefresh={() => {
                   void refreshSnapshot();
@@ -317,6 +328,7 @@ function App() {
                 interviewTrackId={sessionConfig.interviewTrackId}
                 title={sessionConfig.title}
                 subtitle={sessionConfig.subtitle}
+                reviewBeforeSend={sessionConfig.reviewBeforeSend}
                 onSessionEnded={(payload) => {
                   void handleSessionEnded(payload);
                 }}
@@ -357,10 +369,34 @@ function App() {
                       mode: lastMission.launch_mode ?? undefined,
                       title: lastMission.title,
                       subtitle: lastMission.reason,
+                      reviewBeforeSend: lastMission.mode === 'assessment' || lastMission.mode === 'guided_setup',
                       returnScreen: 'progress',
                     });
                     setScreen('session');
                   }
+                }}
+              />
+            )}
+            {screen === 'session_results' && lastSessionEvidence && (
+              <SessionResultsPage
+                evidence={lastSessionEvidence}
+                mission={lastMission ?? undefined}
+                onBack={() => setScreen('home')}
+                onStartMission={() => {
+                  if (!lastMission) return;
+                  if (lastMission.mode === 'mock_interview') {
+                    setScreen('interview');
+                    return;
+                  }
+                  setSessionConfig({
+                    wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+                    mode: lastMission.launch_mode ?? undefined,
+                    title: lastMission.title,
+                    subtitle: lastMission.reason,
+                    reviewBeforeSend: lastMission.mode === 'assessment' || lastMission.mode === 'guided_setup',
+                    returnScreen: 'progress',
+                  });
+                  setScreen('session');
                 }}
               />
             )}
@@ -389,17 +425,21 @@ function App() {
         <button className={screen === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('home')}>
           Home
         </button>
+        {snapshot?.vocabulary?.stats?.due_now ? (
+          <button className={screen === 'review' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('review')}>
+            Review
+          </button>
+        ) : null}
         {snapshot?.setup?.assessment_complete ? (
+          <button className={screen === 'progress' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('progress')}>
+            Progress
+          </button>
+        ) : null}
+        {snapshot?.setup?.state === 'ready_for_program' ? (
           <button className={screen === 'interview' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('interview')}>
             Career
           </button>
         ) : null}
-        <button className={screen === 'review' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('review')}>
-          Review
-        </button>
-        <button className={screen === 'progress' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('progress')}>
-          Progress
-        </button>
       </nav>
     </div>
   );

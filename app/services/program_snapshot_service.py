@@ -26,6 +26,10 @@ _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
         "linked_skill_gap": "structure",
         "interview_track_id": "hr_intro",
         "from_interview": True,
+        "task_type": "hr_intro_drill",
+        "expected_outcome": "One tighter STAR-style answer you can reuse in future interviews.",
+        "estimated_minutes": 10,
+        "success_signal": "Your answer has a clear situation, action, and result.",
     },
     "vocabulary": {
         "mode": "vocabulary_drill",
@@ -37,6 +41,10 @@ _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
         "linked_skill_gap": "professional_vocabulary",
         "interview_track_id": None,
         "from_interview": True,
+        "task_type": "vocabulary_reinforcement",
+        "expected_outcome": "Stronger recall of role-specific terms in live speaking.",
+        "estimated_minutes": 8,
+        "success_signal": "You can use at least 3 due words in full answers without hesitation.",
     },
     "accuracy": {
         "mode": "free_conversation",
@@ -48,6 +56,10 @@ _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
         "linked_skill_gap": "grammar_accuracy",
         "interview_track_id": None,
         "from_interview": True,
+        "task_type": "grammar_rescue",
+        "expected_outcome": "Cleaner sentence control in high-value career answers.",
+        "estimated_minutes": 9,
+        "success_signal": "The same grammar issue appears less often in your next answer.",
     },
     "confidence": {
         "mode": "mock_interview",
@@ -59,6 +71,10 @@ _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
         "linked_skill_gap": "confidence",
         "interview_track_id": "workplace_communication",
         "from_interview": True,
+        "task_type": "workplace_update_drill",
+        "expected_outcome": "A shorter, more decisive workplace-style update.",
+        "estimated_minutes": 8,
+        "success_signal": "You can explain done / next / blocked without trailing off.",
     },
     "clarity": {
         "mode": "mock_interview",
@@ -70,8 +86,45 @@ _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
         "linked_skill_gap": "clarity",
         "interview_track_id": "project_walkthrough",
         "from_interview": True,
+        "task_type": "project_walkthrough_drill",
+        "expected_outcome": "One clearer project explanation with trade-offs and impact.",
+        "estimated_minutes": 10,
+        "success_signal": "You can explain the project in one clean flow without drifting.",
     },
 }
+
+
+def _mission_payload(
+    *,
+    mode: str,
+    launch_mode: Optional[str],
+    title: str,
+    reason: str,
+    why_now: str,
+    linked_goal_context: Optional[str],
+    linked_skill_gap: Optional[str],
+    task_type: str,
+    expected_outcome: str,
+    estimated_minutes: int,
+    success_signal: str,
+    from_interview: bool = False,
+    interview_track_id: Optional[str] = None,
+) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "launch_mode": launch_mode,
+        "title": title,
+        "reason": reason,
+        "why_now": why_now,
+        "linked_goal_context": linked_goal_context,
+        "linked_skill_gap": linked_skill_gap,
+        "from_interview": from_interview,
+        "interview_track_id": interview_track_id,
+        "task_type": task_type,
+        "expected_outcome": expected_outcome,
+        "estimated_minutes": estimated_minutes,
+        "success_signal": success_signal,
+    }
 
 
 def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -132,6 +185,59 @@ def extract_focus_areas(roadmap: Optional[dict[str, Any]], limit: int = 3) -> li
     return result[:limit]
 
 
+def build_setup_state(goal_status: Optional[str], assessment_complete: bool) -> str:
+    if goal_status not in {"draft", "confirmed"}:
+        return "needs_goal"
+    if not assessment_complete:
+        return "needs_assessment"
+    return "ready_for_program"
+
+
+def build_improvement_signals(
+    interview_summary: dict[str, Any],
+    pronunciation_summary: dict[str, Any],
+    session_evidence: list[dict[str, Any]],
+    latest_assessment: Optional[dict[str, Any]],
+    milestones: list[dict[str, Any]],
+) -> list[str]:
+    signals: list[str] = []
+
+    latest_run = interview_summary.get("latest_run")
+    if isinstance(latest_run, dict) and latest_run.get("delta_vs_previous") not in (None, 0):
+        delta = float(latest_run["delta_vs_previous"])
+        direction = "up" if delta > 0 else "down"
+        signals.append(f"Interview score moved {direction} {abs(delta):.1f} vs the previous run.")
+
+    if pronunciation_summary.get("latest_score") is not None:
+        latest_score = float(pronunciation_summary["latest_score"])
+        focus = (pronunciation_summary.get("focus") or [])
+        if focus:
+            signals.append(f"Speech signal is {latest_score:.1f}/10; current pronunciation focus: {focus[0]}.")
+        else:
+            signals.append(f"Speech signal is {latest_score:.1f}/10 from recent spoken answers.")
+
+    latest_evidence = session_evidence[0] if session_evidence else None
+    if isinstance(latest_evidence, dict):
+        main_issue = latest_evidence.get("main_issue")
+        if main_issue:
+            signals.append(f"Latest mission surfaced one repeatable issue: {main_issue}.")
+        elif latest_evidence.get("summary"):
+            signals.append(str(latest_evidence["summary"]))
+
+    completed_milestones = [
+        str(item.get("name"))
+        for item in milestones
+        if isinstance(item, dict) and item.get("done") and item.get("name")
+    ]
+    if completed_milestones:
+        signals.append(f"Completed milestone: {completed_milestones[-1]}.")
+
+    if latest_assessment and latest_assessment.get("goal_readiness") is not None:
+        signals.append(f"Current goal readiness sits at {float(latest_assessment['goal_readiness']):.1f}/10.")
+
+    return signals[:4]
+
+
 def recommend_next_mission(
     goal_brief: Optional[dict[str, Any]],
     program_plan: Optional[dict[str, Any]],
@@ -140,7 +246,7 @@ def recommend_next_mission(
     has_assessment: bool,
     weakest_interview_area: Optional[str] = None,
 ) -> dict[str, Any]:
-    if not goal_brief or goal_brief.get("status") != "confirmed":
+    if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
         missing = []
         if goal_brief:
             if not goal_brief.get("target_role"):
@@ -156,99 +262,113 @@ def recommend_next_mission(
         why_now = "The coach still needs a concrete role and context before it can build a useful program."
         if missing:
             why_now = f"Missing: {', '.join(missing)}."
-        return {
-            "mode": "guided_setup",
-            "launch_mode": None,
-            "title": "Complete your goal setup",
-            "reason": "Turn your goal into a clear career-English target.",
-            "why_now": why_now,
-            "linked_goal_context": "goal_setup",
-            "linked_skill_gap": None,
-            "from_interview": False,
-            "interview_track_id": None,
-        }
+        return _mission_payload(
+            mode="guided_setup",
+            launch_mode=None,
+            title="Complete your goal setup",
+            reason="Turn your goal into a clear career-English target.",
+            why_now=why_now,
+            linked_goal_context="goal_setup",
+            linked_skill_gap=None,
+            task_type="goal_setup",
+            expected_outcome="A confirmed goal brief with role, context, and timeline.",
+            estimated_minutes=4,
+            success_signal="Your target role, company context, and practice situations are locked in.",
+        )
 
     if not has_assessment:
-        return {
-            "mode": "assessment",
-            "launch_mode": "assessment",
-            "title": "Take your baseline assessment",
-            "reason": "You need a measured starting point before the coach can route practice well.",
-            "why_now": "Without a baseline, the program cannot know whether to focus on fluency, grammar, or career scenarios first.",
-            "linked_goal_context": "baseline",
-            "linked_skill_gap": None,
-            "from_interview": False,
-            "interview_track_id": None,
-        }
+        return _mission_payload(
+            mode="assessment",
+            launch_mode="assessment",
+            title="Take your baseline assessment",
+            reason="You need a measured starting point before the coach can route practice well.",
+            why_now="Without a baseline, the program cannot know whether to focus on fluency, grammar, or career scenarios first.",
+            linked_goal_context="baseline",
+            linked_skill_gap=None,
+            task_type="baseline_assessment",
+            expected_outcome="A clear starting level and the first program stage.",
+            estimated_minutes=8,
+            success_signal="You finish with a CEFR estimate and a first mission tied to your goal.",
+        )
 
     if weakest_interview_area and weakest_interview_area in _WEAKEST_AREA_MISSIONS:
         return dict(_WEAKEST_AREA_MISSIONS[weakest_interview_area])
 
     if due_count >= 5:
-        return {
-            "mode": "vocabulary_drill",
-            "launch_mode": "vocabulary_drill",
-            "title": "Clear your review queue",
-            "reason": f"You have {due_count} vocabulary cards due right now.",
-            "why_now": "Keeping recall fresh prevents new practice from collapsing under forgotten vocabulary.",
-            "linked_goal_context": "vocabulary",
-            "linked_skill_gap": "professional_vocabulary",
-            "from_interview": False,
-            "interview_track_id": None,
-        }
+        return _mission_payload(
+            mode="vocabulary_drill",
+            launch_mode="vocabulary_drill",
+            title="Clear your review queue",
+            reason=f"You have {due_count} vocabulary cards due right now.",
+            why_now="Keeping recall fresh prevents new practice from collapsing under forgotten vocabulary.",
+            linked_goal_context="vocabulary",
+            linked_skill_gap="professional_vocabulary",
+            task_type="vocabulary_reinforcement",
+            expected_outcome=f"At least {min(5, due_count)} due words reinforced in context.",
+            estimated_minutes=7,
+            success_signal="Your due queue shrinks and the same words feel easier in live speaking.",
+        )
 
     current_stage = (program_plan or {}).get("current_stage")
     weekly_focus = (program_plan or {}).get("weekly_focus") or []
     if current_stage == "foundation":
-        return {
-            "mode": "free_conversation",
-            "launch_mode": "free_conversation",
-            "title": "Run a foundation speaking drill",
-            "reason": weekly_focus[0] if weekly_focus else "Stabilize grammar and fluency before higher-pressure scenarios.",
-            "why_now": "Your baseline says the fastest path forward is cleaner spoken English under low pressure.",
-            "linked_goal_context": "foundation",
-            "linked_skill_gap": "grammar_accuracy" if error_patterns else "fluency",
-            "from_interview": False,
-            "interview_track_id": None,
-        }
+        return _mission_payload(
+            mode="free_conversation",
+            launch_mode="free_conversation",
+            title="Run a foundation speaking drill",
+            reason=weekly_focus[0] if weekly_focus else "Stabilize grammar and fluency before higher-pressure scenarios.",
+            why_now="Your baseline says the fastest path forward is cleaner spoken English under low pressure.",
+            linked_goal_context="foundation",
+            linked_skill_gap="grammar_accuracy" if error_patterns else "fluency",
+            task_type="foundation_speaking_drill",
+            expected_outcome="One cleaner career-related answer with fewer avoidable slips.",
+            estimated_minutes=9,
+            success_signal="You can answer in English with fewer corrections and clearer delivery.",
+        )
 
     if current_stage in {"career_scenarios", "target_role_simulation"}:
-        return {
-            "mode": "mock_interview",
-            "launch_mode": "mock_interview",
-            "title": "Run one career mission",
-            "reason": weekly_focus[0] if weekly_focus else "Career-focused speaking is your highest-leverage next step.",
-            "why_now": "The current stage of the program is about practicing real work and interview situations, not generic chatting.",
-            "linked_goal_context": (goal_brief.get("main_contexts") or ["interviews"])[0],
-            "linked_skill_gap": weakest_interview_area,
-            "from_interview": False,
-            "interview_track_id": None,
-        }
+        return _mission_payload(
+            mode="mock_interview",
+            launch_mode="mock_interview",
+            title="Run one career mission",
+            reason=weekly_focus[0] if weekly_focus else "Career-focused speaking is your highest-leverage next step.",
+            why_now="The current stage of the program is about practicing real work and interview situations, not generic chatting.",
+            linked_goal_context=(goal_brief.get("main_contexts") or ["interviews"])[0],
+            linked_skill_gap=weakest_interview_area,
+            task_type="career_mission",
+            expected_outcome="One realistic career scenario completed with score and next focus.",
+            estimated_minutes=10,
+            success_signal="You finish one track with concrete feedback and a clearer next step.",
+        )
 
     if error_patterns:
-        return {
-            "mode": "free_conversation",
-            "launch_mode": "free_conversation",
-            "title": "Do a grammar rescue session",
-            "reason": f"Your most frequent issue right now is {error_patterns[0]['label']}.",
-            "why_now": "Cleaning up the most common error gives immediate lift across all future speaking tasks.",
-            "linked_goal_context": "grammar",
-            "linked_skill_gap": error_patterns[0]["label"],
-            "from_interview": False,
-            "interview_track_id": None,
-        }
+        return _mission_payload(
+            mode="free_conversation",
+            launch_mode="free_conversation",
+            title="Do a grammar rescue session",
+            reason=f"Your most frequent issue right now is {error_patterns[0]['label']}.",
+            why_now="Cleaning up the most common error gives immediate lift across all future speaking tasks.",
+            linked_goal_context="grammar",
+            linked_skill_gap=error_patterns[0]["label"],
+            task_type="grammar_rescue",
+            expected_outcome="Fewer repeats of the most common spoken error.",
+            estimated_minutes=8,
+            success_signal="That same grammar issue appears less often in the next mission.",
+        )
 
-    return {
-        "mode": (program_plan or {}).get("preferred_mode") or "free_conversation",
-        "launch_mode": (program_plan or {}).get("preferred_mode") or "free_conversation",
-        "title": "Do a focused speaking session",
-        "reason": weekly_focus[0] if weekly_focus else "You are ready for another guided practice session.",
-        "why_now": "This keeps momentum on the current stage of your program.",
-        "linked_goal_context": (goal_brief.get("main_contexts") or ["general_fluency"])[0],
-        "linked_skill_gap": None,
-        "from_interview": False,
-        "interview_track_id": None,
-    }
+    return _mission_payload(
+        mode=(program_plan or {}).get("preferred_mode") or "free_conversation",
+        launch_mode=(program_plan or {}).get("preferred_mode") or "free_conversation",
+        title="Do a focused speaking session",
+        reason=weekly_focus[0] if weekly_focus else "You are ready for another guided practice session.",
+        why_now="This keeps momentum on the current stage of your program.",
+        linked_goal_context=(goal_brief.get("main_contexts") or ["general_fluency"])[0],
+        linked_skill_gap=None,
+        task_type="guided_speaking_session",
+        expected_outcome="One useful practice repetition tied to your current stage.",
+        estimated_minutes=8,
+        success_signal="You finish with one clearer improvement target for the next session.",
+    )
 
 
 class ProgramSnapshotService:
@@ -277,6 +397,7 @@ class ProgramSnapshotService:
         error_patterns = await self._get_top_error_patterns(user_id)
         recent_sessions = await self._get_recent_sessions(user_id)
         total_sessions = await self._get_total_sessions(user_id)
+        session_evidence = self.learning_plan_service.get_session_evidence(plan)
 
         latest_assessment = build_latest_assessment(roadmap)
         goal = self.learning_plan_service.get_goal(plan)
@@ -300,6 +421,16 @@ class ProgramSnapshotService:
             mission["title"] = f"Run {recommended_track['title']}"
             mission["reason"] = recommended_track["subtitle"]
             mission["interview_track_id"] = recommended_track["id"]
+            mission["task_type"] = {
+                "hr_intro": "hr_intro_drill",
+                "project_walkthrough": "project_walkthrough_drill",
+                "workplace_communication": "workplace_update_drill",
+            }.get(recommended_track["id"], "career_mission")
+
+        goal_status = (goal_brief or {}).get("status")
+        goal_complete = self.learning_plan_service.is_goal_setup_complete(plan)
+        assessment_complete = latest_assessment is not None
+        setup_state = build_setup_state(goal_status, assessment_complete)
 
         return {
             "user": {
@@ -342,11 +473,23 @@ class ProgramSnapshotService:
                 "recommended_vocabulary": self.learning_plan_service.get_recommended_vocabulary(plan)[:8],
                 "top_error_patterns": error_patterns,
                 "recent_sessions": recent_sessions,
+                "improvement_signals": build_improvement_signals(
+                    interview_summary=interview_summary,
+                    pronunciation_summary=pronunciation_summary,
+                    session_evidence=session_evidence,
+                    latest_assessment=latest_assessment,
+                    milestones=roadmap.get("milestones") or [],
+                ),
+            },
+            "session_evidence": {
+                "latest": session_evidence[0] if session_evidence else None,
+                "recent": session_evidence[:5],
             },
             "setup": {
-                "goal_complete": self.learning_plan_service.is_goal_setup_complete(plan),
-                "assessment_complete": latest_assessment is not None,
-                "needs_attention": not self.learning_plan_service.is_goal_setup_complete(plan) or latest_assessment is None,
+                "goal_complete": goal_complete,
+                "assessment_complete": assessment_complete,
+                "needs_attention": setup_state != "ready_for_program",
+                "state": setup_state,
             },
         }
 

@@ -189,3 +189,50 @@ async def persist_interview_run_if_needed(
     except Exception as e:
         logger.warning(f"[Interview] Failed to persist run for session {session_id}: {e}")
         return None
+
+
+async def persist_session_evidence_if_needed(
+    db: AsyncSession,
+    user_id: int,
+    session_id: str,
+    current_mode: str,
+    conversation_history: list[dict],
+    corrections_made: Optional[list[dict] | int] = None,
+    vocabulary_reviewed: Optional[list[dict]] = None,
+    duration_minutes: int = 0,
+    assessed_level: Optional[str] = None,
+    assessment_scores: Optional[dict] = None,
+    interview_run: Optional[dict] = None,
+) -> Optional[dict]:
+    """Persist generic session evidence if there is enough signal to be useful."""
+    user_messages = [m for m in conversation_history if m.get("role") == "user" and m.get("content")]
+    has_signal = bool(
+        user_messages
+        or assessed_level
+        or interview_run
+        or corrections_made
+        or vocabulary_reviewed
+    )
+    if not has_signal:
+        return None
+
+    try:
+        service = LearningPlanService(db)
+        evidence = await service.record_session_evidence(
+            user_id=user_id,
+            session_id=session_id,
+            mode=current_mode,
+            duration_minutes=duration_minutes,
+            conversation_history=conversation_history,
+            corrections_made=corrections_made,
+            vocabulary_reviewed=vocabulary_reviewed or [],
+            assessed_level=assessed_level,
+            assessment_scores=assessment_scores or {},
+            interview_run=interview_run,
+        )
+        if evidence:
+            logger.info(f"[SessionEvidence] Persisted evidence for session {session_id}")
+        return evidence
+    except Exception as e:
+        logger.warning(f"[SessionEvidence] Failed to persist evidence for session {session_id}: {e}")
+        return None

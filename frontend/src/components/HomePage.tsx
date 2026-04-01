@@ -3,30 +3,34 @@ import type { ProgramSnapshot } from '../lib/api';
 interface HomePageProps {
   snapshot: ProgramSnapshot;
   onStartSession: () => void;
-  onOpenReview: () => void;
   onOpenProgress: () => void;
-  onOpenInterview: () => void;
   onRefresh: () => void;
 }
 
 export function HomePage({
   snapshot,
   onStartSession,
-  onOpenReview,
   onOpenProgress,
-  onOpenInterview,
   onRefresh,
 }: HomePageProps) {
-  const latestSession = snapshot.progress.recent_sessions[0];
-  const xp = snapshot.gamification.xp;
-  const streak = snapshot.gamification.streak;
   const goalBrief = snapshot.goal.brief;
+  const goalStatus = goalBrief?.status || null;
+  const draftGoal = goalStatus === 'draft';
+  const setupState = snapshot.setup.state;
   const setupIncomplete = snapshot.setup.needs_attention;
+  const readyForProgram = setupState === 'ready_for_program';
+  const needsAssessment = setupState === 'needs_assessment';
   const missionLabel = setupIncomplete ? 'Next step' : "Today's mission";
-  const pronunciationSourceLabel =
-    snapshot.pronunciation.assessment_mode === 'text_heuristic'
-      ? 'text-based estimate'
-      : snapshot.pronunciation.source || 'speech assessment';
+  const targetTitle = goalBrief?.target_role
+    ? `${goalBrief.target_role}${draftGoal ? ' (draft)' : ''}`
+    : 'Career target not locked yet';
+  const targetCopy = goalBrief?.primary_goal
+    || (draftGoal
+      ? 'The coach already has a draft career target and can move you into baseline assessment.'
+      : 'The coach is still turning your goal into a concrete target.');
+  const setupActionLabel = snapshot.setup.state === 'needs_assessment'
+    ? 'Take baseline assessment'
+    : 'Continue setup';
 
   return (
     <div className="miniapp-page">
@@ -38,19 +42,26 @@ export function HomePage({
         </p>
         <div className="hero-actions">
           <button className="primary-action" onClick={onStartSession}>
-            {setupIncomplete ? 'Continue setup' : "Start today's mission"}
+            {setupIncomplete ? setupActionLabel : "Start today's mission"}
           </button>
-          <button className="secondary-action" onClick={onRefresh}>
-            Refresh
-          </button>
+          {readyForProgram ? (
+            <button className="secondary-action" onClick={onOpenProgress}>
+              Review progress
+            </button>
+          ) : (
+            <button className="secondary-action" onClick={onRefresh}>
+              Refresh
+            </button>
+          )}
         </div>
       </section>
 
       <section className="content-card">
         <div className="section-label">Your target</div>
-        <h2>{goalBrief?.target_role || 'Career target not locked yet'}</h2>
-        <p>{goalBrief?.primary_goal || 'The coach is still turning your goal into a concrete target.'}</p>
+        <h2>{targetTitle}</h2>
+        <p>{targetCopy}</p>
         <div className="pill-row">
+          {draftGoal && <span className="pill interview-source-pill">draft target</span>}
           {goalBrief?.target_market && <span className="pill">{goalBrief.target_market.replace(/_/g, ' ')}</span>}
           {goalBrief?.deadline_type && <span className="pill">{goalBrief.deadline_type.replace(/_/g, ' ')}</span>}
           {(goalBrief?.main_contexts || []).map((context) => (
@@ -59,6 +70,23 @@ export function HomePage({
         </div>
       </section>
 
+      {needsAssessment && (
+        <section className="content-card">
+          <div className="section-label">Why baseline matters</div>
+          <h2>One quick speaking baseline first</h2>
+          <p>
+            The coach already has a usable draft target. One short baseline is enough to decide
+            whether your first program stage should focus on grammar, clarity, vocabulary, or
+            career scenarios.
+          </p>
+          <div className="pill-row">
+            {(goalBrief?.main_contexts || []).slice(0, 3).map((context) => (
+              <span key={context} className="pill">{context.replace(/_/g, ' ')}</span>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="mission-card">
         <div className="section-label">{missionLabel}</div>
         <h2>{snapshot.mission.title}</h2>
@@ -66,175 +94,82 @@ export function HomePage({
         {snapshot.mission.why_now && <p className="muted-line">{snapshot.mission.why_now}</p>}
         <div className="pill-row">
           <span className="pill">{snapshot.mission.mode.replace(/_/g, ' ')}</span>
+          <span className="pill">{snapshot.mission.task_type.replace(/_/g, ' ')}</span>
+          <span className="pill">{snapshot.mission.estimated_minutes} min</span>
           {snapshot.mission.linked_goal_context && (
             <span className="pill">{snapshot.mission.linked_goal_context.replace(/_/g, ' ')}</span>
           )}
           {snapshot.mission.from_interview && <span className="pill interview-source-pill">from last interview</span>}
         </div>
+        <div className="list-stack mission-detail-stack">
+          <div className="list-item">
+            <strong>Expected outcome</strong>
+            <p className="muted-line">{snapshot.mission.expected_outcome}</p>
+          </div>
+          <div className="list-item">
+            <strong>Success signal</strong>
+            <p className="muted-line">{snapshot.mission.success_signal}</p>
+          </div>
+        </div>
         {setupIncomplete && snapshot.goal.missing_fields.length > 0 && (
-          <div className="pill-row" style={{ marginTop: 12 }}>
-            {snapshot.goal.missing_fields.map((item) => (
-              <span key={item} className="pill">{item}</span>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">Current baseline</div>
-        <h2>{snapshot.assessment?.level ? `CEFR ${snapshot.assessment.level}` : 'Baseline not measured yet'}</h2>
-        <p>
-          {snapshot.assessment
-            ? `Goal readiness ${snapshot.assessment.goal_readiness}/10. The coach is routing from your measured baseline, not generic conversation.`
-            : 'Complete the baseline so the coach can decide whether to focus on grammar, clarity, or career scenarios first.'}
-        </p>
-        <div className="pill-row">
-          <span className="pill">{snapshot.program.stage_label}</span>
-          <span className="pill">{snapshot.program.time_horizon_days} days</span>
-          {goalBrief?.domain && <span className="pill">{goalBrief.domain.replace(/_/g, ' ')}</span>}
-        </div>
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">Speech evidence</div>
-        <h2>
-          {snapshot.pronunciation.latest_score != null
-            ? `${snapshot.pronunciation.latest_score.toFixed(1)}/10 speech signal`
-            : 'No speech signal yet'}
-        </h2>
-        <p>
-          {snapshot.pronunciation.latest_score != null
-            ? `Latest ${pronunciationSourceLabel}. Focus is based on your recent spoken answers, not generic advice.`
-            : 'Speech evidence appears after a meaningful interview-style answer. Then the coach can point to concrete pronunciation risks.'}
-        </p>
-        <div className="pill-row">
-          {snapshot.pronunciation.source && (
-            <span className="pill">{pronunciationSourceLabel}</span>
-          )}
-          {snapshot.pronunciation.trend && <span className="pill">{snapshot.pronunciation.trend.replace(/_/g, ' ')}</span>}
-        </div>
-        <div className="list-stack">
-          {snapshot.pronunciation.focus.length > 0 ? (
-            snapshot.pronunciation.focus.slice(0, 2).map((focus) => (
-              <div key={focus} className="list-item">{focus}</div>
-            ))
-          ) : (
-            <div className="list-empty">No pronunciation focus surfaced yet.</div>
-          )}
-        </div>
-      </section>
-
-      <section className="stats-grid">
-        <article className="stat-card">
-          <span className="stat-label">XP</span>
-          <strong>{xp.total_xp}</strong>
-          <small>{Math.round(xp.progress * 100)}% to next level</small>
-        </article>
-        <article className="stat-card">
-          <span className="stat-label">Streak</span>
-          <strong>{streak.current} days</strong>
-          <small>{streak.at_risk ? 'At risk today' : 'On track'}</small>
-        </article>
-        <article className="stat-card clickable" onClick={onOpenReview}>
-          <span className="stat-label">Due words</span>
-          <strong>{snapshot.vocabulary.stats.due_now}</strong>
-          <small>Open review queue</small>
-        </article>
-        <article className="stat-card clickable" onClick={onOpenProgress}>
-          <span className="stat-label">Sessions</span>
-          <strong>{snapshot.progress.sessions_completed}</strong>
-          <small>See trajectory</small>
-        </article>
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">Program stage</div>
-        <h2>{snapshot.program.stage_label}</h2>
-        <p>{snapshot.program.success_metric}</p>
-        <div className="pill-row">
-          {snapshot.program.stages.map((stage) => (
-            <span key={stage.id} className={`pill ${stage.status === 'current' ? 'interview-source-pill' : ''}`}>
-              {stage.label}
-            </span>
-          ))}
-        </div>
-        <p className="muted-line">Next milestone: {snapshot.program.next_milestone}</p>
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">This week&apos;s focus</div>
-        <div className="list-stack">
-          {snapshot.program.weekly_focus.length > 0 ? (
-            snapshot.program.weekly_focus.map((focus) => (
-              <div key={focus} className="list-item">{focus}</div>
-            ))
-          ) : (
-            <div className="list-empty">The coach will populate weekly focus after setup.</div>
-          )}
-        </div>
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">What blocks the goal now</div>
-        <div className="list-stack">
-          {snapshot.assessment?.critical_gaps?.length ? (
-            snapshot.assessment.critical_gaps.map((gap) => (
-              <div key={gap} className="list-item">{gap}</div>
-            ))
-          ) : goalBrief?.current_blockers?.length ? (
-            goalBrief.current_blockers.map((gap) => (
-              <div key={gap} className="list-item">{gap}</div>
-            ))
-          ) : (
-            <div className="list-empty">The coach will surface the main blockers after setup and baseline.</div>
-          )}
-        </div>
-      </section>
-
-      <section className="content-card">
-        <div className="section-row">
-          <div>
-            <div className="section-label">Career missions</div>
-            <h3>
-              {snapshot.interview.readiness_score
-                ? `${snapshot.interview.readiness_score}/10 interview readiness`
-                : snapshot.assessment?.goal_readiness
-                  ? `${snapshot.assessment.goal_readiness}/10 goal readiness`
-                : 'Unlock career missions'}
-            </h3>
-          </div>
-          {!setupIncomplete && (
-            <button className="link-action" onClick={onOpenInterview}>
-              Open
-            </button>
-          )}
-        </div>
-        {snapshot.setup.assessment_complete ? (
-          <p>
-            {snapshot.interview.completed_runs
-              ? `${snapshot.interview.completed_runs} runs completed. Recommended track: ${snapshot.interview.recommended_track.title}.`
-              : `Recommended track: ${snapshot.interview.recommended_track.title}.`}
-          </p>
-        ) : (
-          <p>Complete setup and baseline first. Then the coach will route you into interview and workplace missions with evidence.</p>
-        )}
-      </section>
-
-      <section className="content-card">
-        <div className="section-label">Last session</div>
-        {latestSession ? (
           <>
-            <h3>{latestSession.duration_minutes ? `${latestSession.duration_minutes} min session` : 'Recent session'}</h3>
-            <p>{latestSession.summary || 'Session completed. Open progress to inspect details.'}</p>
-            <div className="pill-row">
-              <span className="pill">{latestSession.corrections_count} corrections</span>
-              <span className="pill">{new Date(latestSession.started_at).toLocaleDateString()}</span>
+            <p className="muted-line" style={{ marginTop: 12 }}>Need to confirm:</p>
+            <div className="pill-row" style={{ marginTop: 12 }}>
+              {snapshot.goal.missing_fields.map((item) => (
+                <span key={item} className="pill">{item}</span>
+              ))}
             </div>
           </>
-        ) : (
-          <div className="list-empty">No completed sessions yet.</div>
         )}
       </section>
+
+      {setupState !== 'needs_goal' && (
+        <section className="content-card">
+          <div className="section-label">Current baseline</div>
+          <h2>{snapshot.assessment?.level ? `CEFR ${snapshot.assessment.level}` : 'Baseline not measured yet'}</h2>
+          <p>
+            {snapshot.assessment
+              ? `Goal readiness ${snapshot.assessment.goal_readiness}/10. The coach is routing from your measured baseline, not generic conversation.`
+              : 'Complete the baseline so the coach can decide whether to focus on grammar, clarity, or career scenarios first.'}
+          </p>
+          <div className="pill-row">
+            <span className="pill">{snapshot.program.stage_label}</span>
+            <span className="pill">{snapshot.program.time_horizon_days} days</span>
+            {goalBrief?.domain && <span className="pill">{goalBrief.domain.replace(/_/g, ' ')}</span>}
+          </div>
+        </section>
+      )}
+
+      {readyForProgram && (
+        <section className="content-card">
+          <div className="section-label">Current stage</div>
+          <h2>{snapshot.program.stage_label}</h2>
+          <p>{snapshot.program.success_metric}</p>
+          <div className="pill-row">
+            {snapshot.program.stages.map((stage) => (
+              <span key={stage.id} className={`pill ${stage.status === 'current' ? 'interview-source-pill' : ''}`}>
+                {stage.label}
+              </span>
+            ))}
+          </div>
+          <p className="muted-line">Next milestone: {snapshot.program.next_milestone}</p>
+        </section>
+      )}
+
+      {needsAssessment && (
+        <section className="content-card">
+          <div className="section-label">What we will optimize first</div>
+          <div className="list-stack">
+            {goalBrief?.current_blockers?.length ? (
+              goalBrief.current_blockers.slice(0, 3).map((item) => (
+                <div key={item} className="list-item">{item}</div>
+              ))
+            ) : (
+              <div className="list-item">Turn your goal into a useful baseline, then route the first career mission.</div>
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

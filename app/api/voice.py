@@ -95,6 +95,7 @@ from app.api.voice_helpers import (
     award_session_gamification,
     rebuild_system_prompt,
     persist_interview_run_if_needed,
+    persist_session_evidence_if_needed,
 )
 
 # PersonaPlex speech-to-speech
@@ -988,7 +989,7 @@ async def voice_chat_v2(
                         await award_session_gamification(db, user_id, session_id)
 
                         # Persist interview run if this was a mock_interview session
-                        await persist_interview_run_if_needed(
+                        interview_run = await persist_interview_run_if_needed(
                             db=db,
                             user_id=user_id,
                             session_id=session_id,
@@ -997,6 +998,19 @@ async def voice_chat_v2(
                             conversation_history=agent_state.get("conversation_history", []),
                             corrections_made=len(agent_state.get("corrections_made", [])),
                             vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                        )
+                        await persist_session_evidence_if_needed(
+                            db=db,
+                            user_id=user_id,
+                            session_id=session_id,
+                            current_mode=current_mode.value,
+                            conversation_history=agent_state.get("conversation_history", []),
+                            corrections_made=agent_state.get("corrections_made", []),
+                            vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                            duration_minutes=agent_state.get("turn_count", 0) * 2,
+                            assessed_level=agent_state.get("assessed_level"),
+                            assessment_scores=agent_state.get("assessment_scores", {}),
+                            interview_run=interview_run,
                         )
 
                     except Exception as e:
@@ -1029,7 +1043,7 @@ async def voice_chat_v2(
                     )
                     if agent_state.get("turn_count", 0) > 0:
                         await award_session_gamification(db, user_id, session_id)
-                    await persist_interview_run_if_needed(
+                    interview_run = await persist_interview_run_if_needed(
                         db=db,
                         user_id=user_id,
                         session_id=session_id,
@@ -1038,6 +1052,19 @@ async def voice_chat_v2(
                         conversation_history=agent_state.get("conversation_history", []),
                         corrections_made=len(agent_state.get("corrections_made", [])),
                         vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                    )
+                    await persist_session_evidence_if_needed(
+                        db=db,
+                        user_id=user_id,
+                        session_id=session_id,
+                        current_mode=current_mode.value,
+                        conversation_history=agent_state.get("conversation_history", []),
+                        corrections_made=agent_state.get("corrections_made", []),
+                        vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                        duration_minutes=agent_state.get("turn_count", 0) * 2,
+                        assessed_level=agent_state.get("assessed_level"),
+                        assessment_scores=agent_state.get("assessment_scores", {}),
+                        interview_run=interview_run,
                     )
                 except Exception:
                     pass
@@ -1518,6 +1545,29 @@ async def voice_chat_plex(
                 )
 
             await award_session_gamification(db, user_id, session_id)
+            interview_run = await persist_interview_run_if_needed(
+                db=db,
+                user_id=user_id,
+                session_id=session_id,
+                current_mode=final_mode,
+                interview_track_id=agent_state.get("interview_track_id"),
+                conversation_history=conversation_history,
+                corrections_made=len(agent_state.get("corrections_made", [])),
+                vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+            )
+            await persist_session_evidence_if_needed(
+                db=db,
+                user_id=user_id,
+                session_id=session_id,
+                current_mode=final_mode,
+                conversation_history=conversation_history,
+                corrections_made=agent_state.get("corrections_made", []),
+                vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
+                duration_minutes=int((time.time() - session_start_time) / 60),
+                assessed_level=agent_state.get("assessed_level"),
+                assessment_scores=agent_state.get("assessment_scores", {}),
+                interview_run=interview_run,
+            )
         except Exception as e:
             logger.warning(f"[PersonaPlex] Post-session persistence error: {e}")
 

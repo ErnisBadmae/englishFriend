@@ -311,6 +311,10 @@ body {
   gap: 10px;
 }
 
+.mission-detail-stack {
+  margin-top: 14px;
+}
+
 .list-item {
   padding: 14px 16px;
   border: 1px solid var(--app-line);
@@ -475,6 +479,10 @@ body {
 .interview-results-hero {
   text-align: center;
   padding: 32px 24px 28px;
+}
+
+.session-results-hero {
+  padding: 28px 24px;
 }
 
 .results-score-row {

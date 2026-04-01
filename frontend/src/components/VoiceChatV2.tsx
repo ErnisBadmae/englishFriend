@@ -1,15 +1,4 @@
-/**
- * Улучшенный голосовой чат с умным VAD.
- *
- * Особенности:
- * - Кнопка toggle: нажми для старта, нажми для отправки
- * - Визуальный индикатор паузы (кружок заполняется)
- * - Автоотправка после 2.5 сек тишины
- * - Показывает статус: слушает / думает / готов
- * - Даёт время на размышление
- */
-
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useVoskWithVAD } from '../hooks/useVoskWithVAD';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
@@ -22,6 +11,7 @@ interface VoiceChatV2Props {
   interviewTrackId?: string;
   title?: string;
   subtitle?: string;
+  reviewBeforeSend?: boolean;
   onSessionEnded?: (payload: {
     sessionId: string | null;
     messages: Array<{ role: 'user' | 'assistant'; text: string }>;
@@ -35,10 +25,12 @@ export function VoiceChatV2({
   interviewTrackId,
   title,
   subtitle,
+  reviewBeforeSend = false,
   onSessionEnded,
 }: VoiceChatV2Props) {
+  const [reviewDraft, setReviewDraft] = useState('');
+  const [showTranscriptReview, setShowTranscriptReview] = useState(false);
 
-  // Vosk с VAD
   const {
     isModelLoading,
     isModelLoaded,
@@ -47,11 +39,12 @@ export function VoiceChatV2({
     transcript,
     silenceProgress,
     startListening,
+    stopListening,
     cancelAndReset,
     confirmSend,
     error: voskError,
   } = useVoskWithVAD({
-    silenceTimeoutMs: 2500, // 2.5 секунды паузы для размышления
+    silenceTimeoutMs: 2500,
     onFinalResult: (text) => {
       console.log('[VoiceChatV2] Final:', text);
     },
@@ -60,10 +53,8 @@ export function VoiceChatV2({
     },
   });
 
-  // Audio player
   const { isPlaying, play } = useAudioPlayer();
 
-  // WebSocket
   const {
     isConnected,
     isConnecting,
@@ -88,27 +79,37 @@ export function VoiceChatV2({
     },
   });
 
-  // Автоподключение
+  const guidedReviewMode = useMemo(
+    () => reviewBeforeSend || mode === 'assessment' || mode === 'guided_setup' || !mode,
+    [mode, reviewBeforeSend]
+  );
+
   useEffect(() => {
     if (isModelLoaded && !isConnected && !isConnecting) {
       connect();
     }
   }, [isModelLoaded, isConnected, isConnecting, connect]);
 
-  // Автоотправка при ready_to_send
   useEffect(() => {
-    if (voiceStatus === 'ready_to_send' && transcript.trim()) {
-      const text = confirmSend();
-      if (text) {
-        console.log('[VoiceChatV2] Auto-sending:', text);
-        sendText(text);
-      }
+    if (voiceStatus !== 'ready_to_send' || !transcript.trim()) {
+      return;
     }
-  }, [voiceStatus, transcript, confirmSend, sendText]);
 
-  // Обработка кнопки
+    if (guidedReviewMode) {
+      stopListening();
+      setReviewDraft(transcript.trim());
+      setShowTranscriptReview(true);
+      return;
+    }
+
+    const text = confirmSend();
+    if (text) {
+      console.log('[VoiceChatV2] Auto-sending:', text);
+      sendText(text);
+    }
+  }, [voiceStatus, transcript, guidedReviewMode, stopListening, confirmSend, sendText]);
+
   const handleButtonClick = useCallback(async () => {
-    // Не начинать, пока модель не загружена
     if (!isModelLoaded) {
       console.log('[VoiceChatV2] Model not loaded yet');
       return;
@@ -120,31 +121,70 @@ export function VoiceChatV2({
     }
 
     if (isListening) {
-      // Уже слушаем - принудительная отправка
+      if (guidedReviewMode) {
+        stopListening();
+        if (transcript.trim()) {
+          setReviewDraft(transcript.trim());
+          setShowTranscriptReview(true);
+        } else {
+          cancelAndReset();
+        }
+        return;
+      }
+
       const text = confirmSend();
       if (text) {
         console.log('[VoiceChatV2] Manual send:', text);
         sendText(text);
       } else {
-        // Нет текста - просто останавливаем
         cancelAndReset();
       }
-    } else {
-      // Начинаем слушать
-      try {
-        await startListening();
-      } catch (err) {
-        console.error('[VoiceChatV2] Failed to start:', err);
-      }
+      return;
     }
-  }, [isModelLoaded, isConnected, isListening, connect, startListening, confirmSend, sendText, cancelAndReset]);
 
-  // Отмена записи (долгое нажатие или ESC)
+    try {
+      setShowTranscriptReview(false);
+      setReviewDraft('');
+      await startListening();
+    } catch (err) {
+      console.error('[VoiceChatV2] Failed to start:', err);
+    }
+  }, [
+    isModelLoaded,
+    isConnected,
+    isListening,
+    guidedReviewMode,
+    transcript,
+    connect,
+    stopListening,
+    confirmSend,
+    sendText,
+    cancelAndReset,
+    startListening,
+  ]);
+
   const handleCancel = useCallback(() => {
+    cancelAndReset();
+    setShowTranscriptReview(false);
+    setReviewDraft('');
+  }, [cancelAndReset]);
+
+  const handleSendReviewedTranscript = useCallback(() => {
+    const text = reviewDraft.trim();
+    if (!text) {
+      return;
+    }
+    setShowTranscriptReview(false);
+    setReviewDraft('');
+    sendText(text);
+  }, [reviewDraft, sendText]);
+
+  const handleRetryTranscript = useCallback(() => {
+    setShowTranscriptReview(false);
+    setReviewDraft('');
     cancelAndReset();
   }, [cancelAndReset]);
 
-  // Завершить сессию
   const handleEndSession = useCallback(() => {
     const transcriptSnapshot = [...messages];
     if (isListening) {
@@ -159,29 +199,28 @@ export function VoiceChatV2({
     }, 700);
   }, [messages, sessionId, isListening, cancelAndReset, disconnect, onSessionEnded]);
 
-  // Статус для отображения
   const getStatusMessage = () => {
     if (isModelLoading) return 'Loading speech recognition...';
     if (!isModelLoaded) return 'Failed to load model';
     if (isConnecting) return 'Connecting...';
     if (!isConnected) return 'Disconnected';
     if (isPlaying) return 'Mentor is speaking...';
+    if (showTranscriptReview) return 'Review transcript before sending';
 
     switch (voiceStatus) {
       case 'listening':
-        return 'Listening... (speak in English)';
+        return guidedReviewMode ? 'Listening... say it simply, you can edit later' : 'Listening... speak in English';
       case 'thinking':
-        return 'Take your time to think... 🤔';
+        return guidedReviewMode ? 'Pause detected... preparing transcript review' : 'Take your time to think...';
       case 'ready_to_send':
-        return 'Sending...';
+        return guidedReviewMode ? 'Transcript ready for review' : 'Sending...';
       case 'processing':
         return 'Mentor is thinking...';
       default:
-        return 'Tap to start speaking';
+        return guidedReviewMode ? 'Tap to speak, then review the transcript' : 'Tap to start speaking';
     }
   };
 
-  // Стиль кнопки в зависимости от статуса
   const getButtonClass = () => {
     let cls = 'voice-button-v2';
     if (isListening) cls += ' listening';
@@ -195,22 +234,28 @@ export function VoiceChatV2({
 
   return (
     <div className="voice-chat">
-      {/* Header */}
       <div className="voice-chat-header">
-        <h1>🎓 English Mentor</h1>
+        <h1>English Mentor</h1>
         {title && <p className="voice-session-subtitle">{title}</p>}
         {subtitle && <p className="voice-session-subtitle">{subtitle}</p>}
+        {guidedReviewMode && (
+          <p className="voice-session-note">
+            Say your answer in simple English. You can edit the transcript before sending it.
+          </p>
+        )}
         <p className="status">{getStatusMessage()}</p>
         {error && <p className="error">{error}</p>}
       </div>
 
-      {/* Messages */}
       <div className="voice-chat-messages">
         {messages.length === 0 && (
           <div className="empty-state">
-            <p>👋 Hi! I'm your English mentor.</p>
-            <p className="hint">Tap the button and speak. Take your time - I'll wait!</p>
-            <p className="hint">Можете говорить медленно, я подожду пока вы думаете.</p>
+            <p>Hi! I am your English mentor.</p>
+            <p className="hint">
+              {guidedReviewMode
+                ? 'Tap the button, say your goal or answer, then review the transcript before it is sent.'
+                : "Tap the button and speak. I will wait if you need time to think."}
+            </p>
           </div>
         )}
 
@@ -220,16 +265,11 @@ export function VoiceChatV2({
           </div>
         ))}
 
-        {/* Current transcript with thinking indicator */}
         {isListening && (
           <div className={`message user current ${voiceStatus}`}>
             <div className="message-content">
               {transcript || '...'}
-              {voiceStatus === 'thinking' && (
-                <span className="thinking-dots"> 🤔</span>
-              )}
             </div>
-            {/* Progress bar for silence */}
             {silenceProgress > 0 && (
               <div className="silence-progress">
                 <div
@@ -241,7 +281,34 @@ export function VoiceChatV2({
           </div>
         )}
 
-        {/* Processing indicator */}
+        {showTranscriptReview && (
+          <div className="transcript-review-card">
+            <div className="transcript-review-header">
+              <strong>Review transcript</strong>
+              <span>Fix important words before the coach sees them.</span>
+            </div>
+            <textarea
+              className="transcript-review-input"
+              value={reviewDraft}
+              onChange={(event) => setReviewDraft(event.target.value)}
+              rows={4}
+              placeholder="Edit the transcript here"
+            />
+            <div className="transcript-review-actions">
+              <button className="secondary-action review-action-button" onClick={handleRetryTranscript}>
+                Retry
+              </button>
+              <button
+                className="primary-action review-action-button"
+                onClick={handleSendReviewedTranscript}
+                disabled={!reviewDraft.trim()}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        )}
+
         {voiceStatus === 'processing' && (
           <div className="message assistant processing">
             <div className="message-content">
@@ -255,50 +322,53 @@ export function VoiceChatV2({
         )}
       </div>
 
-      {/* Voice Button */}
       <div className="voice-chat-controls-v2">
         <button
           className={getButtonClass()}
           onClick={handleButtonClick}
-          disabled={!isModelLoaded || isModelLoading || isPlaying}
+          disabled={!isModelLoaded || isModelLoading || isPlaying || showTranscriptReview}
         >
           {isListening ? (
             <>
               <span className="pulse-ring"></span>
-              <span className="btn-icon">🎤</span>
+              <span className="btn-icon">Mic</span>
               <span className="btn-text">
-                {voiceStatus === 'thinking' ? 'Thinking...' : 'Tap to send'}
+                {guidedReviewMode ? 'Finish and review' : voiceStatus === 'thinking' ? 'Thinking...' : 'Tap to send'}
               </span>
             </>
           ) : (
             <>
-              <span className="btn-icon">🎤</span>
-              <span className="btn-text">Tap to speak</span>
+              <span className="btn-icon">Mic</span>
+              <span className="btn-text">{guidedReviewMode ? 'Tap to speak' : 'Start speaking'}</span>
             </>
           )}
         </button>
 
         {isListening && (
           <button className="cancel-button" onClick={handleCancel}>
-            ✕ Cancel
+            Cancel
           </button>
         )}
       </div>
 
-      {/* Hint */}
       <div className="voice-chat-hint">
         {isListening ? (
-          <p>Take your time! I'll wait 2.5 seconds of silence before responding.</p>
+          <p>
+            {guidedReviewMode
+              ? 'Pause whenever you need. You will be able to edit the transcript before it is sent.'
+              : "Take your time. I will wait 2.5 seconds of silence before responding."}
+          </p>
+        ) : showTranscriptReview ? (
+          <p>Check the transcript, fix the key words, then send it to the coach.</p>
         ) : (
           <p>Speak naturally. I understand beginners and will help with mistakes.</p>
         )}
       </div>
 
-      {/* End Session Button */}
       {isConnected && messages.length > 0 && (
         <div className="end-session-container">
           <button className="end-session-button" onClick={handleEndSession}>
-            📊 End Session & See Summary
+            End Session and See Summary
           </button>
         </div>
       )}

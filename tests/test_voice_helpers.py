@@ -6,6 +6,7 @@ from app.api.voice_helpers import (
     handle_goal_setting,
     rebuild_system_prompt,
     award_session_gamification,
+    persist_session_evidence_if_needed,
 )
 from app.services.ai.mode_prompts import LearningMode
 from app.services.ai.mode_selector import SessionContext
@@ -234,3 +235,40 @@ async def test_persist_saves_mock_interview_run():
         reviewed_words=[{"word": "scalability"}],
         track_id="hr_intro",
     )
+
+
+@pytest.mark.asyncio
+async def test_persist_session_evidence_noop_without_signal():
+    db = AsyncMock()
+    result = await persist_session_evidence_if_needed(
+        db=db,
+        user_id=1,
+        session_id="s-empty",
+        current_mode="free_conversation",
+        conversation_history=[],
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_session_evidence_calls_learning_plan_service():
+    db = AsyncMock()
+    fake_evidence = {"session_id": "s2", "mission_type": "assessment"}
+
+    with patch('app.api.voice_helpers.LearningPlanService') as MockService:
+        mock_instance = AsyncMock()
+        mock_instance.record_session_evidence = AsyncMock(return_value=fake_evidence)
+        MockService.return_value = mock_instance
+
+        result = await persist_session_evidence_if_needed(
+            db=db,
+            user_id=1,
+            session_id="s2",
+            current_mode="assessment",
+            conversation_history=[{"role": "user", "content": "hello"}],
+            assessed_level="B1",
+            assessment_scores={"fluency": 0.5},
+        )
+
+    assert result == fake_evidence
+    mock_instance.record_session_evidence.assert_called_once()
