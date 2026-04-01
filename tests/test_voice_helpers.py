@@ -6,6 +6,7 @@ from app.api.voice_helpers import (
     handle_goal_setting,
     rebuild_system_prompt,
     award_session_gamification,
+    persist_goal_state_if_needed,
     persist_session_evidence_if_needed,
 )
 from app.services.ai.mode_prompts import LearningMode
@@ -235,6 +236,67 @@ async def test_persist_saves_mock_interview_run():
         reviewed_words=[{"word": "scalability"}],
         track_id="hr_intro",
     )
+
+
+@pytest.mark.asyncio
+async def test_persist_goal_state_saves_routing_ready_draft():
+    learning_plan_service = MagicMock()
+    learning_plan_service.set_goal = AsyncMock()
+
+    persisted = await persist_goal_state_if_needed(
+        user_id=1,
+        existing_goal=None,
+        agent_state={
+            "detected_goal": "Build English for an international ML role",
+            "goal_brief": {
+                "primary_goal": "Build English for an international ML role",
+                "target_role": "ML Engineer",
+                "domain": "machine_learning",
+                "target_market": "international_company",
+                "deadline_type": "open_ended",
+                "main_contexts": ["interviews"],
+                "status": "draft",
+            },
+        },
+        learning_plan_service=learning_plan_service,
+    )
+
+    assert persisted == "Build English for an international ML role"
+    learning_plan_service.set_goal.assert_called_once_with(
+        1,
+        "Build English for an international ML role",
+        goal_brief={
+            "primary_goal": "Build English for an international ML role",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "open_ended",
+            "main_contexts": ["interviews"],
+            "status": "draft",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_goal_state_skips_incomplete_draft():
+    learning_plan_service = MagicMock()
+    learning_plan_service.set_goal = AsyncMock()
+
+    persisted = await persist_goal_state_if_needed(
+        user_id=1,
+        existing_goal=None,
+        agent_state={
+            "detected_goal": "Improve English",
+            "goal_brief": {
+                "primary_goal": "Improve English",
+                "status": "incomplete",
+            },
+        },
+        learning_plan_service=learning_plan_service,
+    )
+
+    assert persisted is None
+    learning_plan_service.set_goal.assert_not_called()
 
 
 @pytest.mark.asyncio

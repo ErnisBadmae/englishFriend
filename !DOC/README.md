@@ -9,9 +9,10 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 ## Quick Start
 
 - **New to the project?** Start with [QUICK_START.md](../QUICK_START.md) in the root directory
+- **Need the current product status and next step?** Read [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md)
 - **Need to understand the system?** Read [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md)
 - **Working on database?** Check [DB.md](./DB.md)
-- **Session history?** See [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md)
+- **Legacy session history?** See [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md)
 
 ---
 
@@ -25,7 +26,8 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 | [DB.md](./DB.md) | Database schema, partitioning, CDC, RLS | Working with database |
 | [STRATEGY.md](./STRATEGY.md) | Business strategy, market analysis, roadmap | Strategic planning |
 | [strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md](./strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md) | Current strategic pivot, research summary, rationale, next execution step | Product direction and prioritization |
-| [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) | Most recent implementation continuity including product shell and career interview loop v1 | Resuming active product work |
+| [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md) | Active source of truth for current wedge, current flow, known issues, and next step | Resuming active product work |
+| [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) | Legacy detailed session history | Historical continuity only |
 | [TEMPLATE.md](./TEMPLATE.md) | Documentation system template for other projects | Reusing doc system |
 | [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md) | How to deploy doc system to other projects | Setting up docs elsewhere |
 
@@ -46,7 +48,8 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 
 | File | Purpose | When to Read |
 |------|---------|--------------|
-| [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) | AI agent session continuity log | Understanding recent changes |
+| [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md) | Short current-state report for Codex and Claude Code | Every active work session |
+| [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) | Legacy AI agent session continuity log | Only if older history is needed |
 
 ---
 
@@ -201,7 +204,7 @@ When adding new features:
 1. Follow coding standards in `.kiro/steering/coding-standards.md`
 2. Update relevant documentation
 3. Add tests (70% coverage minimum)
-4. Update [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) with changes
+4. Update [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md) with short current-state changes
 5. Run `pytest tests/` before committing
 
 ---
@@ -209,7 +212,8 @@ When adding new features:
 ## Documentation Maintenance
 
 - **Update frequency**: After each significant feature or architectural change
-- **Session log**: Update after each AI agent session
+- **Current product state**: Update after each significant AI agent session
+- **Legacy session log**: Do not extend unless older historical continuity truly needs it
 - **Quarterly review**: Review and archive old content
 
 ---
@@ -218,7 +222,7 @@ When adding new features:
 
 - **System architecture**: [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md)
 - **Database design**: [DB.md](./DB.md)
-- **Recent changes**: [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md)
+- **Recent changes**: [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md)
 - **Business strategy**: [STRATEGY.md](./STRATEGY.md)
 - **Voice AI tech**: [JEPA_WORLDMODELS_VOICE_AI_ANALYSIS.md](./JEPA_WORLDMODELS_VOICE_AI_ANALYSIS.md)
 

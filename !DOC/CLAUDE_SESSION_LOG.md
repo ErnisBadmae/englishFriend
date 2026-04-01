@@ -1,5 +1,12 @@
 # Claude Session Log
 
+> Legacy file.
+>
+> Active continuity and short progress reports now live in:
+> [!DOC/operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md)
+>
+> Do not append normal active-session updates here unless older historical context specifically needs to be preserved.
+
 Этот файл ведётся AI-агентами для отслеживания прогресса между сессиями.
 При обрыве сессии - читай этот файл чтобы понять контекст и продолжить работу.
 

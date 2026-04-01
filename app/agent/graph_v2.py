@@ -184,7 +184,7 @@ async def initialize_session_v2(
     assessment_scores: dict[str, Any] = {}
     goal_setup_complete = False
     if goal_brief:
-        goal_setup_complete = goal_brief.get("status") == "confirmed"
+        goal_setup_complete = goal_brief.get("status") in {"draft", "confirmed"}
     if proficiency_profile:
         assessed_level = proficiency_profile.get("cefr_level")
         assessment_scores = {

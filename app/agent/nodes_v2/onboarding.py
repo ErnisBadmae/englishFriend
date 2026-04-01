@@ -380,6 +380,11 @@ def _build_goal_followup_question(goal_brief: dict[str, Any], goal_text: Optiona
         )
 
     first_missing = missing[0]
+    if first_missing == "goal":
+        return (
+            "What is closest right now: getting an ML job abroad, speaking better in an international team, "
+            "or passing interviews in English?"
+        )
     if first_missing == "target role":
         return (
             f'I understand the direction: "{goal_text or normalized.get("primary_goal") or "career English"}". '
@@ -404,12 +409,12 @@ def _build_assessment_followup_question(state: AgentState) -> str:
         return (
             f"I have a draft target for {target_role}"
             f"{f' focused on {contexts}' if contexts else ''}. "
-            "I will use that draft unless you correct it later. One quick baseline first: "
-            "answer in English - what do you do now, what role are you aiming for, and why?"
+            "I will use that draft unless you correct it later. One quick baseline first. "
+            "Answer in simple English: what do you do now?"
         )
     return (
-        f"Before I build the program for {target_role}, I need a quick speaking baseline. "
-        "Answer in English: what do you do now, what kind of role are you aiming for, and why?"
+        f"Before I build the program for {target_role}, I need one short speaking baseline. "
+        "Answer in simple English: what do you do now?"
     )
 
 
@@ -472,8 +477,17 @@ Respond with JSON:
         return f"""You are English Friend.
 Student: {username}, Goal: {state.get('confirmed_goal') or (goal_brief.get('primary_goal') if goal_brief else None)}, Level: {state.get('language_level', 'B1')}
 
-Ask 2-3 questions to assess their English level for the target job context. Start simple, then increase difficulty.
-Return both the CEFR level and numeric scores for fluency, grammar, vocabulary, and comprehension.
+Run a short baseline for a weak-to-mid English learner.
+Ask exactly ONE short question per turn.
+Use simple wording and allow short answers.
+Prefer this sequence:
+1. what do you do now
+2. what role do you want
+3. describe one ML or work project in simple words
+If the learner already answered one of these, ask the next missing one.
+Do not ask 2-3 questions in one message.
+Do not sound like an exam.
+After 2-3 useful answers, return assessment_complete with CEFR level and numeric scores for fluency, grammar, vocabulary, and comprehension.
 
 Respond with JSON:
 {{"action": "ask_assessment" or "assessment_complete", "response_text": "your response", "extracted_data": {{"assessed_level": "A1-C2", "assessment_scores": {{"fluency": 0.0, "grammar": 0.0, "vocabulary": 0.0, "comprehension": 0.0}}}}}}"""

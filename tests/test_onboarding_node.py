@@ -2,9 +2,11 @@ import pytest
 
 from app.agent.nodes_v2.onboarding import (
     _apply_onboarding_action,
+    _build_assessment_followup_question,
     _coerce_goal_brief_state,
     _infer_goal_brief_from_message,
 )
+from app.agent.graph_v2 import initialize_session_v2
 from app.agent.state import AgentPhase, create_initial_state
 
 
@@ -56,7 +58,7 @@ async def test_transition_to_learning_moves_routing_ready_goal_to_assessment():
     )
 
     assert updated["current_phase"] == AgentPhase.ONBOARDING
-    assert "quick speaking baseline" in updated["pending_response"]
+    assert "one short speaking baseline" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio
@@ -108,3 +110,45 @@ async def test_transition_to_learning_allows_draft_goal_with_assessment():
     )
 
     assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+
+
+def test_build_assessment_followup_question_is_short_for_draft_goal():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+
+    prompt = _build_assessment_followup_question(state)
+
+    assert "what do you do now?" in prompt.lower()
+    assert "what role are you aiming for" not in prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_initialize_session_v2_treats_draft_goal_as_setup_complete():
+    state = await initialize_session_v2(
+        user_id=1,
+        session_id="session-1",
+        username="Student",
+        is_new_user=False,
+        language_level="B1",
+        roadmap={
+            "goal_brief": {
+                "primary_goal": "Get an ML role abroad",
+                "target_role": "ML Engineer",
+                "domain": "machine_learning",
+                "target_market": "international_company",
+                "deadline_type": "open_ended",
+                "main_contexts": ["interviews"],
+                "status": "draft",
+            }
+        },
+    )
+
+    assert state["goal_setup_complete"] is True

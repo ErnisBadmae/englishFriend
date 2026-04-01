@@ -151,6 +151,48 @@ async def award_session_gamification(
         logger.warning(f"Gamification error: {e}")
 
 
+async def persist_goal_state_if_needed(
+    *,
+    user_id: int,
+    existing_goal: Optional[str],
+    agent_state: dict,
+    learning_plan_service: LearningPlanService,
+) -> Optional[str]:
+    """Persist a confirmed goal or routing-ready draft goal at session end.
+
+    The product should not lose a strong draft just because the user did not
+    explicitly confirm every field before ending the session.
+    """
+    if existing_goal:
+        return None
+
+    goal_brief = agent_state.get("goal_brief") or {}
+    goal_status = goal_brief.get("status")
+    goal_text = (
+        agent_state.get("confirmed_goal")
+        or agent_state.get("detected_goal")
+        or goal_brief.get("primary_goal")
+    )
+
+    if not goal_text:
+        return None
+
+    if goal_status not in {"draft", "confirmed"} and not agent_state.get("confirmed_goal"):
+        return None
+
+    await learning_plan_service.set_goal(
+        user_id,
+        goal_text,
+        goal_brief=goal_brief or None,
+    )
+    logger.info(
+        "[GoalState] Persisted %s goal for user %s",
+        goal_status or ("confirmed" if agent_state.get("confirmed_goal") else "detected"),
+        user_id,
+    )
+    return goal_text
+
+
 async def persist_interview_run_if_needed(
     db: AsyncSession,
     user_id: int,

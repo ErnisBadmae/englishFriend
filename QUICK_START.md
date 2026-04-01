@@ -502,3 +502,15 @@ englishFriend/
 - ✅ PostgreSQL, Kafka, Neo4j, Qdrant работают в Docker
 
 **Можно начинать разработку!** 🎉
+## Where to Resume Work
+
+Start here before changing product logic or continuing an interrupted session:
+
+- Active product state: [!DOC/operations/CURRENT_PRODUCT_STATE.md](!DOC/operations/CURRENT_PRODUCT_STATE.md)
+- Documentation index: [!DOC/README.md](!DOC/README.md)
+- Legacy detailed history: [!DOC/CLAUDE_SESSION_LOG.md](!DOC/CLAUDE_SESSION_LOG.md)
+
+Rule:
+- Use `!DOC/operations/CURRENT_PRODUCT_STATE.md` as the single active continuity file
+- Keep updates short and operational
+- Do not append normal progress updates to `CLAUDE_SESSION_LOG.md`

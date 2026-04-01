@@ -94,6 +94,7 @@ from app.api.voice_helpers import (
     handle_goal_setting,
     award_session_gamification,
     rebuild_system_prompt,
+    persist_goal_state_if_needed,
     persist_interview_run_if_needed,
     persist_session_evidence_if_needed,
 )
@@ -953,13 +954,12 @@ async def voice_chat_v2(
 
                     # Persist session data
                     try:
-                        # Save goal if confirmed
-                        if agent_state.get("confirmed_goal") and not confirmed_goal:
-                            await learning_plan_service.set_goal(
-                                user_id,
-                                agent_state["confirmed_goal"],
-                                goal_brief=agent_state.get("goal_brief"),
-                            )
+                        await persist_goal_state_if_needed(
+                            user_id=user_id,
+                            existing_goal=confirmed_goal,
+                            agent_state=agent_state,
+                            learning_plan_service=learning_plan_service,
+                        )
 
                         # Update session count
                         await learning_plan_service.increment_session_count(
@@ -1024,12 +1024,12 @@ async def voice_chat_v2(
 
                 # Try to persist on disconnect
                 try:
-                    if agent_state.get("confirmed_goal") and not confirmed_goal:
-                        await learning_plan_service.set_goal(
-                            user_id,
-                            agent_state["confirmed_goal"],
-                            goal_brief=agent_state.get("goal_brief"),
-                        )
+                    await persist_goal_state_if_needed(
+                        user_id=user_id,
+                        existing_goal=confirmed_goal,
+                        agent_state=agent_state,
+                        learning_plan_service=learning_plan_service,
+                    )
                     if agent_state.get("assessed_level"):
                         await learning_plan_service.record_assessment(
                             user_id,
@@ -1517,12 +1517,12 @@ async def voice_chat_plex(
 
         # === POST-SESSION PERSISTENCE ===
         try:
-            if agent_state.get("confirmed_goal") and not confirmed_goal:
-                await learning_plan_service.set_goal(
-                    user_id,
-                    agent_state["confirmed_goal"],
-                    goal_brief=agent_state.get("goal_brief"),
-                )
+            await persist_goal_state_if_needed(
+                user_id=user_id,
+                existing_goal=confirmed_goal,
+                agent_state=agent_state,
+                learning_plan_service=learning_plan_service,
+            )
 
             await learning_plan_service.increment_session_count(
                 user_id,
