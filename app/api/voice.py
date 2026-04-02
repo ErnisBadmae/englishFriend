@@ -974,6 +974,8 @@ async def voice_chat_v2(
                                 user_id,
                                 assessed_level=agent_state["assessed_level"],
                                 scores=agent_state.get("assessment_scores"),
+                                provisional=bool(agent_state.get("baseline_provisional")),
+                                confidence_override=agent_state.get("baseline_confidence"),
                             )
 
                         # Process memories
@@ -1035,6 +1037,8 @@ async def voice_chat_v2(
                             user_id,
                             assessed_level=agent_state["assessed_level"],
                             scores=agent_state.get("assessment_scores"),
+                            provisional=bool(agent_state.get("baseline_provisional")),
+                            confidence_override=agent_state.get("baseline_confidence"),
                         )
                     await learning_plan_service.increment_session_count(
                         user_id,
@@ -1535,6 +1539,8 @@ async def voice_chat_plex(
                     user_id,
                     assessed_level=agent_state["assessed_level"],
                     scores=agent_state.get("assessment_scores"),
+                    provisional=bool(agent_state.get("baseline_provisional")),
+                    confidence_override=agent_state.get("baseline_confidence"),
                 )
 
             if conversation_history:

@@ -144,6 +144,8 @@ def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[
             },
             "notes": profile.get("notes"),
             "confidence": profile.get("confidence"),
+            "status": profile.get("status") or ("provisional" if profile.get("provisional") else "confirmed"),
+            "provisional": bool(profile.get("provisional")),
             "goal_readiness": profile.get("goal_readiness"),
             "critical_gaps": profile.get("critical_gaps") or [],
             "skill_axes": {
@@ -163,6 +165,8 @@ def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[
             "scores": latest.get("scores") or {},
             "notes": latest.get("notes"),
             "confidence": None,
+            "status": "confirmed",
+            "provisional": False,
             "goal_readiness": None,
             "critical_gaps": [],
             "skill_axes": {},
@@ -191,6 +195,28 @@ def build_setup_state(goal_status: Optional[str], assessment_complete: bool) -> 
     if not assessment_complete:
         return "needs_assessment"
     return "ready_for_program"
+
+
+def build_setup_progress(goal_brief: Optional[dict[str, Any]], assessment: Optional[dict[str, Any]]) -> int:
+    filled_slots = 0
+    total_slots = 7
+    goal_brief = goal_brief or {}
+    for key in ("primary_goal", "target_role", "domain", "target_market", "deadline_type"):
+        if goal_brief.get(key):
+            filled_slots += 1
+    if goal_brief.get("main_contexts"):
+        filled_slots += 1
+    if assessment:
+        filled_slots += 1
+    return int(round((filled_slots / total_slots) * 100))
+
+
+def build_next_question_type(goal_status: Optional[str], assessment: Optional[dict[str, Any]]) -> str:
+    if goal_status not in {"draft", "confirmed"}:
+        return "goal_setup"
+    if not assessment:
+        return "baseline"
+    return "mission"
 
 
 def build_improvement_signals(
@@ -245,6 +271,7 @@ def recommend_next_mission(
     error_patterns: list[dict[str, Any]],
     has_assessment: bool,
     weakest_interview_area: Optional[str] = None,
+    interview_pack: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
         missing = []
@@ -294,6 +321,53 @@ def recommend_next_mission(
     if weakest_interview_area and weakest_interview_area in _WEAKEST_AREA_MISSIONS:
         return dict(_WEAKEST_AREA_MISSIONS[weakest_interview_area])
 
+    current_stage = (program_plan or {}).get("current_stage")
+    weekly_focus = (program_plan or {}).get("weekly_focus") or []
+    if (
+        interview_pack
+        and current_stage in {"career_scenarios", "target_role_simulation"}
+        and interview_pack.get("recommended_track")
+    ):
+        track_id = str(interview_pack.get("recommended_track"))
+        track_title = str(interview_pack.get("recommended_track_title") or "Career Mission")
+        blockers = interview_pack.get("top_blockers") or []
+        mission_title = f"Run {track_title}"
+        reason = str(
+            interview_pack.get("summary")
+            or (weekly_focus[0] if weekly_focus else "Practice the most likely interview theme for your target role.")
+        )
+        why_now = "This is the most interview-relevant speaking drill for your current target role and vacancy context."
+        linked_goal_context = {
+            "hr_intro": "interviews",
+            "project_walkthrough": "project_walkthrough",
+            "workplace_communication": "workplace_communication",
+        }.get(track_id, "interviews")
+        success_signal = "You finish with one answer strong enough to reuse in a real interview."
+        if blockers:
+            why_now = f"Main blocker right now: {blockers[0]}"
+        if track_id == "project_walkthrough":
+            success_signal = "You can explain one project with problem, trade-offs, metric, and impact."
+        elif track_id == "workplace_communication":
+            success_signal = "You can deliver a clear done / next / blocked update without drifting."
+        return _mission_payload(
+            mode="mock_interview",
+            launch_mode="mock_interview",
+            title=mission_title,
+            reason=reason,
+            why_now=why_now,
+            linked_goal_context=linked_goal_context,
+            linked_skill_gap=None,
+            task_type={
+                "hr_intro": "hr_intro_drill",
+                "project_walkthrough": "project_walkthrough_drill",
+                "workplace_communication": "workplace_update_drill",
+            }.get(track_id, "career_mission"),
+            expected_outcome="One stronger answer for the most likely interview scenario.",
+            estimated_minutes=10,
+            success_signal=success_signal,
+            interview_track_id=track_id,
+        )
+
     if due_count >= 5:
         return _mission_payload(
             mode="vocabulary_drill",
@@ -309,8 +383,6 @@ def recommend_next_mission(
             success_signal="Your due queue shrinks and the same words feel easier in live speaking.",
         )
 
-    current_stage = (program_plan or {}).get("current_stage")
-    weekly_focus = (program_plan or {}).get("weekly_focus") or []
     if current_stage == "foundation":
         return _mission_payload(
             mode="free_conversation",
@@ -388,6 +460,8 @@ class ProgramSnapshotService:
         roadmap = plan.roadmap or {}
         goal_brief = self.learning_plan_service.get_goal_brief(plan)
         program_plan = self.learning_plan_service.get_program_plan(plan)
+        career_context = self.learning_plan_service.get_career_context(plan)
+        interview_pack = self.learning_plan_service.get_interview_pack(plan)
         interview_runs = roadmap.get("interview_runs") or []
 
         vocabulary_stats = await self.vocabulary_service.get_vocabulary_stats(user_id)
@@ -415,6 +489,7 @@ class ProgramSnapshotService:
             error_patterns=error_patterns,
             has_assessment=latest_assessment is not None,
             weakest_interview_area=weakest_interview_area,
+            interview_pack=interview_pack,
         )
         if mission["mode"] == "mock_interview" and not mission.get("from_interview"):
             recommended_track = interview_summary["recommended_track"]
@@ -431,6 +506,15 @@ class ProgramSnapshotService:
         goal_complete = self.learning_plan_service.is_goal_setup_complete(plan)
         assessment_complete = latest_assessment is not None
         setup_state = build_setup_state(goal_status, assessment_complete)
+        setup_progress = build_setup_progress(goal_brief, latest_assessment)
+        next_question_type = build_next_question_type(goal_status, latest_assessment)
+        latest_paid_intent = roadmap.get("latest_paid_intent")
+        show_paid_cta = bool(
+            assessment_complete
+            and interview_pack
+            and not latest_paid_intent
+            and (interview_summary.get("completed_runs", 0) >= 1 or len(session_evidence) >= 2)
+        )
 
         return {
             "user": {
@@ -446,9 +530,12 @@ class ProgramSnapshotService:
                 "focus_areas": extract_focus_areas(roadmap),
                 "brief": goal_brief,
                 "missing_fields": self.learning_plan_service.get_goal_setup_missing(plan),
+                "draft_available": bool(goal_brief and goal_brief.get("status") in {"draft", "confirmed"}),
             },
             "assessment": latest_assessment,
             "program": program_plan,
+            "career_context": career_context,
+            "interview_pack": interview_pack,
             "mission": mission,
             "gamification": {"xp": xp_info, "streak": streak_info},
             "interview": interview_summary,
@@ -490,6 +577,14 @@ class ProgramSnapshotService:
                 "assessment_complete": assessment_complete,
                 "needs_attention": setup_state != "ready_for_program",
                 "state": setup_state,
+                "next_question_type": next_question_type,
+                "progress": setup_progress,
+            },
+            "monetization": {
+                "show_paid_cta": show_paid_cta,
+                "paid_intent_submitted": latest_paid_intent is not None,
+                "latest_paid_intent_at": latest_paid_intent.get("submitted_at") if isinstance(latest_paid_intent, dict) else None,
+                "latest_paid_intent_context": latest_paid_intent.get("source") if isinstance(latest_paid_intent, dict) else None,
             },
         }
 

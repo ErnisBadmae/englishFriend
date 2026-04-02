@@ -18,6 +18,8 @@ def test_build_latest_assessment_prefers_proficiency_profile():
             "listening_comprehension": 5.1,
             "goal_readiness": 4.9,
             "confidence": 0.71,
+            "status": "provisional",
+            "provisional": True,
             "critical_gaps": ["Structured interview answers"],
         },
     }
@@ -27,6 +29,8 @@ def test_build_latest_assessment_prefers_proficiency_profile():
     assert latest is not None
     assert latest["level"] == "B1"
     assert latest["goal_readiness"] == 4.9
+    assert latest["status"] == "provisional"
+    assert latest["provisional"] is True
     assert latest["critical_gaps"] == ["Structured interview answers"]
 
 
@@ -172,6 +176,40 @@ def test_recommend_next_mission_uses_foundation_stage_for_speaking_drill():
     assert mission["mode"] == "free_conversation"
     assert "foundation" in mission["linked_goal_context"]
     assert mission["estimated_minutes"] == 9
+
+
+def test_recommend_next_mission_uses_interview_pack_track_for_career_stage():
+    mission = recommend_next_mission(
+        goal_brief={
+            "primary_goal": "Get an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "medium_3_6m",
+            "main_contexts": ["interviews", "project_walkthrough"],
+            "status": "confirmed",
+        },
+        program_plan={
+            "current_stage": "career_scenarios",
+            "weekly_focus": ["Explain one project with trade-offs and impact"],
+            "preferred_mode": "mock_interview",
+        },
+        due_count=0,
+        error_patterns=[],
+        has_assessment=True,
+        weakest_interview_area=None,
+        interview_pack={
+            "recommended_track": "project_walkthrough",
+            "recommended_track_title": "Project Walkthrough",
+            "summary": "ML Engineer role with focus on project explanation and stakeholder clarity.",
+            "top_blockers": ["Need clear project walkthroughs with metrics and trade-offs"],
+        },
+    )
+
+    assert mission["mode"] == "mock_interview"
+    assert mission["interview_track_id"] == "project_walkthrough"
+    assert mission["task_type"] == "project_walkthrough_drill"
+    assert "blocker" in mission["why_now"].lower()
 
 
 def test_build_setup_state_guides_user_through_sequence():

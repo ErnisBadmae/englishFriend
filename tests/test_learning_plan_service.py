@@ -76,6 +76,42 @@ async def test_record_assessment_builds_profile_and_foundation_stage():
     assert plan.roadmap["program_plan"]["current_stage"] == "foundation"
 
 
+@pytest.mark.asyncio
+async def test_record_assessment_can_store_provisional_status():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {
+        "goal": "I want an ML engineer job abroad",
+        "goal_brief": {
+            "primary_goal": "I want an ML engineer job abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "open_ended",
+            "main_contexts": ["interviews", "project_walkthrough"],
+            "status": "draft",
+            "summary": "summary",
+        },
+        "focus_areas": [],
+        "milestones": [{"name": "Complete assessment", "type": "assessment", "done": False}],
+    }
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    await service.record_assessment(
+        1,
+        assessed_level="A2",
+        scores={"fluency": 3.8, "grammar": 3.7, "vocabulary": 4.2, "comprehension": 4.5},
+        provisional=True,
+        confidence_override=0.44,
+    )
+
+    assert plan.roadmap["proficiency_profile"]["status"] == "provisional"
+    assert plan.roadmap["proficiency_profile"]["provisional"] is True
+    assert plan.roadmap["proficiency_profile"]["confidence"] == 0.44
+
+
 def test_get_goal_setup_missing_returns_human_labels():
     plan = MagicMock()
     plan.roadmap = {
@@ -220,3 +256,60 @@ async def test_record_session_evidence_deduplicates_by_session_id():
 
     assert evidence == existing
     assert plan.roadmap["session_evidence"] == [existing]
+
+
+@pytest.mark.asyncio
+async def test_set_vacancy_context_builds_career_context_and_interview_pack():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {
+        "goal": "Prepare for an ML role abroad",
+        "goal_brief": {
+            "primary_goal": "Prepare for an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "open_ended",
+            "main_contexts": ["interviews"],
+            "status": "draft",
+        },
+        "recommended_vocabulary": ["deployment"],
+    }
+    plan.level_target = None
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    await service.set_vacancy_context(
+        1,
+        "We are hiring an ML Engineer to deploy machine learning models, explain trade-offs, "
+        "work with cross-functional stakeholders, and own model performance in production.",
+    )
+
+    assert plan.roadmap["career_context"]["vacancy_present"] is True
+    assert plan.roadmap["career_context"]["target_role"] == "ML Engineer"
+    assert plan.roadmap["interview_pack"]["recommended_track"] == "project_walkthrough"
+    assert "deployment" in plan.roadmap["interview_pack"]["key_terms"]
+    assert plan.roadmap["preferred_mode"] == "mock_interview"
+
+
+@pytest.mark.asyncio
+async def test_record_paid_intent_stores_latest_signal():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {
+        "goal": "Prepare for an ML role abroad",
+        "proficiency_profile": {"goal_readiness": 6.4},
+        "sessions_completed": 3,
+        "interview_runs": [{"id": "run-1"}],
+    }
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    signal = await service.record_paid_intent(1, source="home_cta", note="Looks useful")
+
+    assert signal["source"] == "home_cta"
+    assert signal["readiness_score"] == 6.4
+    assert plan.roadmap["latest_paid_intent"]["source"] == "home_cta"
+    assert plan.roadmap["paid_intents"][0]["note"] == "Looks useful"

@@ -10,6 +10,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.api import (
     agent_chat,
+    career,
     dimensions,
     gamification,
     interviews,
@@ -151,6 +152,7 @@ app.include_router(utterances_and_feedback.router)
 app.include_router(memory_and_interests.router)
 app.include_router(voice.router)
 app.include_router(agent_chat.router)
+app.include_router(career.router)
 app.include_router(gamification.router)
 app.include_router(vocabulary.router)
 app.include_router(programs.router)

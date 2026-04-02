@@ -78,6 +78,11 @@ class AgentState(TypedDict, total=False):
     level_confidence: float  # 0.0 - 1.0 confidence score
     assessment_scores: dict[str, float]  # {vocabulary, grammar, fluency, comprehension}
     last_assessment_date: Optional[str]  # ISO format date
+    assessment_status: Optional[str]  # missing, provisional, confirmed
+    baseline_provisional: bool
+    baseline_confidence: float
+    assessment_step_index: int
+    assessment_answers: dict[str, str]
 
     # === Learning Program ===
     roadmap: Optional[dict[str, Any]]  # Full roadmap structure
@@ -129,6 +134,8 @@ class AgentState(TypedDict, total=False):
     _skip_goal: bool  # Internal: skip goal discovery in onboarding
     _skip_interests: bool  # Internal: skip interest probe in onboarding
     _skip_assessment: bool  # Internal: skip assessment in onboarding
+    setup_step: Optional[str]  # Internal: goal_setup, baseline_assessment, ready_for_program
+    last_question_type: Optional[str]  # Internal: tracks the latest onboarding question type
 
 
 def create_initial_state(
@@ -177,6 +184,11 @@ def create_initial_state(
         level_confidence=0.0,
         assessment_scores={},
         last_assessment_date=None,
+        assessment_status=None,
+        baseline_provisional=False,
+        baseline_confidence=0.0,
+        assessment_step_index=0,
+        assessment_answers={},
 
         # Learning Program
         roadmap=None,
@@ -228,6 +240,8 @@ def create_initial_state(
         _skip_goal=False,
         _skip_interests=False,
         _skip_assessment=False,
+        setup_step="goal_setup",
+        last_question_type=None,
     )
 
 

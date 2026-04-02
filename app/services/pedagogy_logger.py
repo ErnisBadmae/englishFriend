@@ -22,6 +22,16 @@ from typing import Optional, Any
 logger = logging.getLogger("pedagogy")
 
 
+def _preview_text(value: Optional[Any], limit: int) -> str:
+    """Render a safe short preview for logs."""
+    if value is None:
+        return "'<none>'"
+    text = str(value)
+    if len(text) > limit:
+        return f"'{text[:limit]}...'"
+    return f"'{text}'"
+
+
 class PedagogyLogger:
     """Logger for pedagogical decisions and events.
 
@@ -69,7 +79,7 @@ class PedagogyLogger:
     def log_goal_detected(
         self,
         user_id: int,
-        message: str,
+        message: Optional[str],
         goal: str,
         confidence: float = 1.0,
     ) -> None:
@@ -88,7 +98,7 @@ class PedagogyLogger:
             "GOAL",
             f"Detected: {goal}",
             confidence=f"{confidence:.2f}",
-            from_message=f"'{message[:50]}...'" if len(message) > 50 else f"'{message}'",
+            from_message=_preview_text(message, 50),
         )
 
     def log_goal_confirmation_requested(
@@ -110,7 +120,7 @@ class PedagogyLogger:
             "\u2753",  # Question mark
             "GOAL",
             f"Requesting confirmation: {goal}",
-            prompt=f"'{confirmation_prompt[:50]}...'" if len(confirmation_prompt) > 50 else f"'{confirmation_prompt}'",
+            prompt=_preview_text(confirmation_prompt, 50),
         )
 
     def log_goal_confirmed(
@@ -132,7 +142,7 @@ class PedagogyLogger:
             "\u2705",  # Checkmark
             "GOAL",
             f"CONFIRMED by user: {goal}",
-            response=f"'{user_response[:30]}...'" if len(user_response) > 30 else f"'{user_response}'",
+            response=_preview_text(user_response, 30),
         )
 
     def log_goal_rejected(
@@ -154,7 +164,7 @@ class PedagogyLogger:
             "\u274C",  # Cross mark
             "GOAL",
             f"REJECTED by user: {goal}",
-            response=f"'{user_response[:30]}...'" if len(user_response) > 30 else f"'{user_response}'",
+            response=_preview_text(user_response, 30),
         )
 
     def log_goal_defaulted(
@@ -420,7 +430,7 @@ class PedagogyLogger:
             "\U0001F9E0",  # Brain
             "MEMORY",
             f"Retrieved {count} memories",
-            query=f"'{query[:30]}...'" if query and len(query) > 30 else f"'{query}'" if query else "context",
+            query=_preview_text(query, 30) if query else "context",
         )
 
     def log_memory_saved(

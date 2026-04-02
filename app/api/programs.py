@@ -41,6 +41,7 @@ class GoalSummary(BaseModel):
     focus_areas: list[str]
     brief: Optional[GoalBriefSummary] = None
     missing_fields: list[str] = []
+    draft_available: bool = False
 
 
 class AssessmentSummary(BaseModel):
@@ -49,6 +50,8 @@ class AssessmentSummary(BaseModel):
     scores: dict[str, Any]
     notes: Optional[str] = None
     confidence: Optional[float] = None
+    status: Optional[str] = None
+    provisional: bool = False
     goal_readiness: Optional[float] = None
     critical_gaps: list[str] = []
     skill_axes: dict[str, Any] = {}
@@ -87,6 +90,26 @@ class ProgramSummary(BaseModel):
     stages: list[ProgramStage]
     preferred_mode: str
     focus_areas: list[str] = []
+
+
+class CareerContextSummary(BaseModel):
+    target_role: Optional[str] = None
+    company_type: Optional[str] = None
+    interview_date: Optional[str] = None
+    target_market: Optional[str] = None
+    vacancy_present: bool = False
+    vacancy_summary: Optional[str] = None
+
+
+class InterviewPackSummary(BaseModel):
+    target_role: Optional[str] = None
+    must_answer_questions: list[str] = []
+    project_story_prompts: list[str] = []
+    key_terms: list[str] = []
+    top_blockers: list[str] = []
+    recommended_track: Optional[str] = None
+    recommended_track_title: Optional[str] = None
+    summary: Optional[str] = None
 
 
 class InterviewRecommendedTrack(BaseModel):
@@ -241,6 +264,15 @@ class SetupSnapshot(BaseModel):
     assessment_complete: bool
     needs_attention: bool
     state: str
+    next_question_type: Optional[str] = None
+    progress: int = 0
+
+
+class MonetizationSnapshot(BaseModel):
+    show_paid_cta: bool = False
+    paid_intent_submitted: bool = False
+    latest_paid_intent_at: Optional[str] = None
+    latest_paid_intent_context: Optional[str] = None
 
 
 class ProgramSnapshotResponse(BaseModel):
@@ -248,6 +280,8 @@ class ProgramSnapshotResponse(BaseModel):
     goal: GoalSummary
     assessment: Optional[AssessmentSummary] = None
     program: ProgramSummary
+    career_context: CareerContextSummary
+    interview_pack: Optional[InterviewPackSummary] = None
     mission: MissionSummary
     gamification: dict[str, Any]
     interview: InterviewSnapshot
@@ -256,6 +290,7 @@ class ProgramSnapshotResponse(BaseModel):
     progress: ProgressSnapshot
     session_evidence: SessionEvidenceSnapshot
     setup: SetupSnapshot
+    monetization: MonetizationSnapshot
 
 
 @router.get("/{user_id}/snapshot", response_model=ProgramSnapshotResponse)

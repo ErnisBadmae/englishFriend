@@ -105,6 +105,23 @@ _ROLE_KEYWORDS = {
     "developer": ("Software Engineer", "software_engineering"),
     "engineer": ("Software Engineer", "software_engineering"),
 }
+_VACANCY_KEY_TERMS = {
+    "machine_learning": [
+        "machine learning", "ml", "model", "feature engineering", "inference",
+        "deployment", "experiment", "evaluation", "dataset", "llm",
+        "deep learning", "training", "pipeline", "metric", "monitoring",
+    ],
+    "software_engineering": [
+        "architecture", "microservices", "api", "backend", "frontend",
+        "scalability", "latency", "reliability", "testing", "deployment",
+        "debugging", "distributed systems", "cloud", "performance",
+    ],
+}
+_TRACK_LABELS = {
+    "hr_intro": "HR Interview",
+    "project_walkthrough": "Project Walkthrough",
+    "workplace_communication": "Workplace Communication",
+}
 
 
 def _utcnow_iso() -> str:
@@ -180,6 +197,10 @@ class LearningPlanService:
                     "next_milestone": "Confirm your goal",
                     "stages": [],
                 },
+                "career_context": None,
+                "interview_pack": None,
+                "paid_intents": [],
+                "latest_paid_intent": None,
             },
         )
         self.db.add(plan)
@@ -217,6 +238,19 @@ class LearningPlanService:
             roadmap.get("focus_areas") or [],
             roadmap.get("preferred_mode") or "free_conversation",
         )
+        roadmap["career_context"] = self._build_career_context(
+            goal_brief=merged_goal_brief,
+            existing=roadmap.get("career_context"),
+            vacancy_text=roadmap.get("vacancy_text"),
+            interview_date=(roadmap.get("career_context") or {}).get("interview_date"),
+        )
+        roadmap["interview_pack"] = self._build_interview_pack(
+            goal_brief=merged_goal_brief,
+            proficiency_profile=roadmap.get("proficiency_profile"),
+            interview_runs=roadmap.get("interview_runs") or [],
+            career_context=roadmap.get("career_context"),
+            recommended_vocabulary=roadmap.get("recommended_vocabulary") or [],
+        )
 
         plan.roadmap = dict(roadmap)
         flag_modified(plan, "roadmap")
@@ -236,6 +270,8 @@ class LearningPlanService:
         assessed_level: str,
         scores: Optional[dict[str, Any]] = None,
         notes: Optional[str] = None,
+        provisional: bool = False,
+        confidence_override: Optional[float] = None,
     ) -> LearningPlan:
         plan = await self.get_or_create_plan(user_id)
         roadmap = deepcopy(plan.roadmap or {})
@@ -250,12 +286,32 @@ class LearningPlanService:
             self._match_goal_template(roadmap.get("goal") or ""),
         )
         roadmap["goal_brief"] = goal_brief
-        roadmap["proficiency_profile"] = self._build_proficiency_profile(assessed_level, scores or {}, goal_brief, notes)
+        roadmap["proficiency_profile"] = self._build_proficiency_profile(
+            assessed_level,
+            scores or {},
+            goal_brief,
+            notes,
+            provisional=provisional,
+            confidence_override=confidence_override,
+        )
         roadmap["program_plan"] = self._build_program_plan(
             goal_brief,
             roadmap["proficiency_profile"],
             roadmap.get("focus_areas") or [],
             roadmap.get("preferred_mode") or "free_conversation",
+        )
+        roadmap["career_context"] = self._build_career_context(
+            goal_brief=goal_brief,
+            existing=roadmap.get("career_context"),
+            vacancy_text=roadmap.get("vacancy_text"),
+            interview_date=(roadmap.get("career_context") or {}).get("interview_date"),
+        )
+        roadmap["interview_pack"] = self._build_interview_pack(
+            goal_brief=goal_brief,
+            proficiency_profile=roadmap["proficiency_profile"],
+            interview_runs=roadmap.get("interview_runs") or [],
+            career_context=roadmap.get("career_context"),
+            recommended_vocabulary=roadmap.get("recommended_vocabulary") or [],
         )
         self._update_milestone(roadmap, "assessment", done=True)
 
@@ -297,6 +353,108 @@ class LearningPlanService:
         await self.db.commit()
         await self.db.refresh(plan)
         return plan
+
+    async def set_vacancy_context(
+        self,
+        user_id: int,
+        vacancy_text: str,
+        interview_date: Optional[str] = None,
+    ) -> LearningPlan:
+        plan = await self.get_or_create_plan(user_id)
+        roadmap = deepcopy(plan.roadmap or {})
+        vacancy_text = vacancy_text.strip()
+        analysis = self._analyze_vacancy_text(vacancy_text)
+
+        goal_text = roadmap.get("goal") or analysis["goal_text"]
+        template = self._match_goal_template(goal_text)
+        goal_brief = self._build_goal_brief(
+            goal_text,
+            template,
+            roadmap.get("goal_brief"),
+            {
+                "primary_goal": roadmap.get("goal") or analysis["goal_text"],
+                "target_role": analysis.get("target_role"),
+                "domain": analysis.get("domain"),
+                "target_market": analysis.get("target_market") or "international_company",
+                "deadline_type": (roadmap.get("goal_brief") or {}).get("deadline_type") or "open_ended",
+                "main_contexts": analysis.get("main_contexts") or ["interviews"],
+                "current_blockers": analysis.get("current_blockers") or [],
+            },
+        )
+
+        existing_vocab = roadmap.get("recommended_vocabulary") or []
+        merged_vocab = _dedupe([*existing_vocab, *analysis.get("key_terms", [])])[:12]
+        roadmap.update(
+            {
+                "goal": goal_text,
+                "goal_brief": goal_brief,
+                "preferred_mode": "mock_interview",
+                "recommended_vocabulary": merged_vocab,
+                "vacancy_text": vacancy_text,
+                "vacancy_updated_at": _utcnow_iso(),
+            }
+        )
+        roadmap["career_context"] = self._build_career_context(
+            goal_brief=goal_brief,
+            existing=roadmap.get("career_context"),
+            vacancy_text=vacancy_text,
+            interview_date=interview_date,
+            analysis=analysis,
+        )
+        roadmap["interview_pack"] = self._build_interview_pack(
+            goal_brief=goal_brief,
+            proficiency_profile=roadmap.get("proficiency_profile"),
+            interview_runs=roadmap.get("interview_runs") or [],
+            career_context=roadmap.get("career_context"),
+            recommended_vocabulary=merged_vocab,
+            vacancy_analysis=analysis,
+        )
+        roadmap["program_plan"] = self._build_program_plan(
+            goal_brief,
+            roadmap.get("proficiency_profile"),
+            roadmap.get("focus_areas") or [],
+            roadmap.get("preferred_mode") or "mock_interview",
+        )
+
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
+        plan.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(plan)
+        return plan
+
+    async def record_paid_intent(
+        self,
+        user_id: int,
+        source: str,
+        note: Optional[str] = None,
+    ) -> dict[str, Any]:
+        plan = await self.get_or_create_plan(user_id)
+        roadmap = deepcopy(plan.roadmap or {})
+        profile = roadmap.get("proficiency_profile") or {}
+        payload = {
+            "submitted_at": _utcnow_iso(),
+            "source": source,
+            "note": note,
+            "goal": roadmap.get("goal"),
+            "readiness_score": profile.get("goal_readiness"),
+            "sessions_completed": roadmap.get("sessions_completed", 0),
+            "interview_runs_completed": len(roadmap.get("interview_runs") or []),
+        }
+        existing = [
+            dict(item)
+            for item in (roadmap.get("paid_intents") or [])
+            if isinstance(item, dict)
+        ]
+        roadmap["paid_intents"] = [payload, *existing][:20]
+        roadmap["latest_paid_intent"] = payload
+
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
+        plan.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(plan)
+        return payload
 
     async def record_session_evidence(
         self,
@@ -404,7 +562,13 @@ class LearningPlanService:
         current_level = roadmap.get("current_level")
         if not current_level:
             return None
-        return self._build_proficiency_profile(current_level, {}, self.get_goal_brief(plan), None)
+        return self._build_proficiency_profile(
+            current_level,
+            {},
+            self.get_goal_brief(plan),
+            None,
+            provisional=False,
+        )
 
     def get_program_plan(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
         roadmap = plan.roadmap or {}
@@ -417,6 +581,34 @@ class LearningPlanService:
             self.get_proficiency_profile(plan),
             roadmap.get("focus_areas") or [],
             roadmap.get("preferred_mode") or "free_conversation",
+        )
+
+    def get_career_context(self, plan: LearningPlan) -> dict[str, Any]:
+        roadmap = plan.roadmap or {}
+        career_context = roadmap.get("career_context")
+        if career_context:
+            return career_context
+        return self._build_career_context(
+            goal_brief=self.get_goal_brief(plan),
+            existing=None,
+            vacancy_text=roadmap.get("vacancy_text"),
+            interview_date=None,
+        )
+
+    def get_interview_pack(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
+        roadmap = plan.roadmap or {}
+        interview_pack = roadmap.get("interview_pack")
+        if interview_pack:
+            return interview_pack
+        goal_brief = self.get_goal_brief(plan)
+        if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
+            return None
+        return self._build_interview_pack(
+            goal_brief=goal_brief,
+            proficiency_profile=self.get_proficiency_profile(plan),
+            interview_runs=roadmap.get("interview_runs") or [],
+            career_context=self.get_career_context(plan),
+            recommended_vocabulary=roadmap.get("recommended_vocabulary") or [],
         )
 
     def get_session_evidence(self, plan: LearningPlan) -> list[dict[str, Any]]:
@@ -499,12 +691,73 @@ class LearningPlanService:
         brief["summary"] = self._build_goal_summary(brief)
         return brief
 
+    def _analyze_vacancy_text(self, vacancy_text: str) -> dict[str, Any]:
+        text = vacancy_text.lower()
+        role, domain = self._infer_role_and_domain(vacancy_text, self._match_goal_template(vacancy_text), {})
+
+        company_type = "international_product_company"
+        if any(keyword in text for keyword in ["startup", "seed", "series a", "series b", "early-stage"]):
+            company_type = "startup"
+        elif any(keyword in text for keyword in ["enterprise", "b2b", "platform", "saas"]):
+            company_type = "enterprise_software"
+        elif any(keyword in text for keyword in ["research", "scientist", "applied scientist"]):
+            company_type = "research_or_applied_ai"
+
+        contexts = ["interviews"]
+        if any(keyword in text for keyword in ["architecture", "design", "deploy", "deployment", "pipeline", "trade-off", "tradeoff", "stakeholder", "metric", "impact"]):
+            contexts.append("project_walkthrough")
+        if any(keyword in text for keyword in ["cross-functional", "communicate", "stakeholder", "collaborate", "present", "business"]):
+            contexts.append("workplace_communication")
+
+        domain_terms = _VACANCY_KEY_TERMS.get(domain or "software_engineering", [])
+        key_terms = [
+            term
+            for term in domain_terms
+            if term in text
+        ]
+        if not key_terms:
+            key_terms = domain_terms[:6]
+
+        role_label = role or "Software Engineer"
+        summary_parts = [f"{role_label} role"]
+        if domain == "machine_learning":
+            summary_parts.append("with focus on ML projects, model decisions, and impact")
+        elif "project_walkthrough" in contexts:
+            summary_parts.append("with emphasis on technical project explanation")
+        if company_type == "startup":
+            summary_parts.append("in a startup environment")
+        elif company_type == "enterprise_software":
+            summary_parts.append("in an enterprise software context")
+        else:
+            summary_parts.append("for an international company")
+
+        blockers = ["Need concise, credible interview answers"]
+        if "project_walkthrough" in contexts:
+            blockers.append("Need clear project walkthroughs with metrics and trade-offs")
+        if "workplace_communication" in contexts:
+            blockers.append("Need stronger stakeholder and workplace communication")
+
+        return {
+            "target_role": role_label,
+            "domain": domain or "software_engineering",
+            "company_type": company_type,
+            "target_market": "international_company",
+            "main_contexts": _dedupe(contexts),
+            "key_terms": _dedupe(key_terms)[:8],
+            "summary": " ".join(summary_parts).strip(),
+            "goal_text": f"Prepare for {role_label} interviews in an international company",
+            "current_blockers": blockers,
+        }
+
     def _build_proficiency_profile(
         self,
         assessed_level: str,
         scores: dict[str, Any],
         goal_brief: Optional[dict[str, Any]],
         notes: Optional[str],
+        *,
+        provisional: bool = False,
+        confidence_override: Optional[float] = None,
     ) -> dict[str, Any]:
         baseline = _LEVEL_BASELINE.get(assessed_level, 5.0)
         fluency = _normalize_score(scores.get("fluency"), baseline)
@@ -512,9 +765,14 @@ class LearningPlanService:
         listening = _normalize_score(scores.get("comprehension"), baseline)
         vocabulary = _normalize_score(scores.get("vocabulary"), baseline)
         avg = _round_score((fluency + grammar + listening + vocabulary) / 4)
+        computed_confidence = round(min(0.95, 0.55 + avg / 20), 2)
+        if provisional:
+            computed_confidence = min(computed_confidence, 0.55)
+        if confidence_override is not None:
+            computed_confidence = round(float(confidence_override), 2)
         return {
             "cefr_level": assessed_level,
-            "confidence": round(min(0.95, 0.55 + avg / 20), 2),
+            "confidence": computed_confidence,
             "fluency": fluency,
             "grammar_accuracy": grammar,
             "listening_comprehension": listening,
@@ -522,6 +780,8 @@ class LearningPlanService:
             "goal_readiness": self._estimate_goal_readiness(assessed_level, fluency, grammar, listening, vocabulary, goal_brief),
             "critical_gaps": self._build_critical_gaps(fluency, grammar, listening, vocabulary, goal_brief),
             "notes": notes,
+            "status": "provisional" if provisional else "confirmed",
+            "provisional": provisional,
             "updated_at": _utcnow_iso(),
         }
 
@@ -604,6 +864,92 @@ class LearningPlanService:
             "stages": stages,
             "preferred_mode": "mock_interview" if stage_id in {"career_scenarios", "target_role_simulation"} else preferred_mode,
             "focus_areas": self._normalize_focus_areas(focus_areas),
+        }
+
+    def _build_career_context(
+        self,
+        *,
+        goal_brief: Optional[dict[str, Any]],
+        existing: Optional[dict[str, Any]],
+        vacancy_text: Optional[str],
+        interview_date: Optional[str],
+        analysis: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        existing = deepcopy(existing or {})
+        analysis = analysis or (self._analyze_vacancy_text(vacancy_text) if vacancy_text else {})
+        return {
+            "target_role": (goal_brief or {}).get("target_role") or analysis.get("target_role"),
+            "company_type": existing.get("company_type") or analysis.get("company_type"),
+            "interview_date": interview_date or existing.get("interview_date"),
+            "target_market": (goal_brief or {}).get("target_market") or analysis.get("target_market"),
+            "vacancy_present": bool(vacancy_text and vacancy_text.strip()),
+            "vacancy_summary": analysis.get("summary") or existing.get("vacancy_summary"),
+        }
+
+    def _build_interview_pack(
+        self,
+        *,
+        goal_brief: Optional[dict[str, Any]],
+        proficiency_profile: Optional[dict[str, Any]],
+        interview_runs: list[dict[str, Any]],
+        career_context: Optional[dict[str, Any]],
+        recommended_vocabulary: list[str],
+        vacancy_analysis: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
+            return None
+
+        vacancy_analysis = vacancy_analysis or {}
+        contexts = goal_brief.get("main_contexts") or []
+        target_role = goal_brief.get("target_role") or (career_context or {}).get("target_role") or "your target role"
+        recommended_track = "hr_intro"
+        if "project_walkthrough" in contexts or goal_brief.get("domain") == "machine_learning":
+            recommended_track = "project_walkthrough"
+        elif "workplace_communication" in contexts:
+            recommended_track = "workplace_communication"
+
+        profile_gaps = list((proficiency_profile or {}).get("critical_gaps") or [])
+        latest_run = interview_runs[-1] if interview_runs else None
+        latest_focus = list((latest_run or {}).get("next_focus") or [])
+        weakest_area = ((latest_run or {}).get("meta") or {}).get("weakest_area")
+        if weakest_area:
+            profile_gaps.insert(0, f"Latest interview weakness: {str(weakest_area).replace('_', ' ')}")
+        top_blockers = _dedupe([*latest_focus, *profile_gaps])[:3]
+
+        must_answer_questions = [
+            f"Why are you a strong fit for this {target_role} role?",
+            f"Walk me through one project that best proves you can do this {target_role} job.",
+            "Tell me about a tough decision, trade-off, or blocker and how you handled it.",
+        ]
+        if recommended_track == "project_walkthrough":
+            must_answer_questions[1] = "Walk me through one ML or technical project: problem, approach, trade-offs, metric, impact."
+        if recommended_track == "workplace_communication":
+            must_answer_questions[2] = "Give a clear workplace update: what is done, what is next, and what is blocked."
+
+        project_story_prompts = [
+            "Choose one project where your contribution changed the outcome.",
+            "Explain one project in simple English: problem, action, result.",
+        ]
+        if goal_brief.get("domain") == "machine_learning":
+            project_story_prompts = [
+                "Explain one ML project: business problem, model choice, metric, trade-offs, impact.",
+                "Describe one production or deployment decision and why it mattered.",
+            ]
+
+        key_terms = _dedupe([
+            *list(vacancy_analysis.get("key_terms") or []),
+            *recommended_vocabulary,
+        ])[:8]
+
+        return {
+            "target_role": target_role,
+            "must_answer_questions": must_answer_questions,
+            "project_story_prompts": project_story_prompts,
+            "key_terms": key_terms,
+            "top_blockers": top_blockers or ["Need one stronger interview answer before the next run."],
+            "recommended_track": recommended_track,
+            "recommended_track_title": _TRACK_LABELS.get(recommended_track, "Career Mission"),
+            "summary": (career_context or {}).get("vacancy_summary") or f"Interview prep for {target_role}.",
         }
 
     def _infer_role_and_domain(

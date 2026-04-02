@@ -182,6 +182,9 @@ async def initialize_session_v2(
     proficiency_profile = roadmap.get("proficiency_profile") if isinstance(roadmap, dict) else None
     assessed_level = None
     assessment_scores: dict[str, Any] = {}
+    assessment_status = None
+    baseline_provisional = False
+    baseline_confidence = 0.0
     goal_setup_complete = False
     if goal_brief:
         goal_setup_complete = goal_brief.get("status") in {"draft", "confirmed"}
@@ -193,6 +196,9 @@ async def initialize_session_v2(
             "vocabulary": proficiency_profile.get("professional_vocabulary"),
             "comprehension": proficiency_profile.get("listening_comprehension"),
         }
+        assessment_status = proficiency_profile.get("status")
+        baseline_provisional = bool(proficiency_profile.get("provisional"))
+        baseline_confidence = float(proficiency_profile.get("confidence") or 0.0)
         if assessed_level:
             language_level = assessed_level
 
@@ -243,6 +249,11 @@ async def initialize_session_v2(
         # Assessment
         "assessed_level": assessed_level,
         "assessment_scores": assessment_scores,
+        "assessment_status": assessment_status,
+        "baseline_provisional": baseline_provisional,
+        "baseline_confidence": baseline_confidence,
+        "assessment_step_index": 0,
+        "assessment_answers": {},
 
         # Learning program
         "roadmap": roadmap,
@@ -286,6 +297,8 @@ async def initialize_session_v2(
         "_skip_goal": False,
         "_skip_interests": False,
         "_skip_assessment": False,
+        "setup_step": "ready_for_program" if assessed_level else ("baseline_assessment" if goal_setup_complete else "goal_setup"),
+        "last_question_type": None,
     }
 
     logger.info(

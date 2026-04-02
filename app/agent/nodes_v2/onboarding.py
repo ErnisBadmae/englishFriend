@@ -28,7 +28,7 @@ from app.agent.response_parser import (
     extract_interests_from_action,
     parse_llm_response,
 )
-from app.agent.state import AgentPhase, AgentState, add_decision_log
+from app.agent.state import AgentPhase, AgentState, LearningModeEnum, add_decision_log
 from app.core.metrics import (
     agent_guardrail_fallbacks,
     agent_v2_goal_detection,
@@ -90,6 +90,39 @@ _VOCAB_SIGNAL_PATTERNS = (
     "words",
     "terminology",
 )
+_FLEXIBLE_COMPANY_CONTEXT_PATTERNS = (
+    "doesnt matter",
+    "does not matter",
+    "dont care",
+    "do not care",
+    "whatever",
+    "any company",
+    "no matter",
+)
+_PROCEED_PATTERNS = (
+    "let's go",
+    "lets go",
+    "go on",
+    "continue",
+    "prepare my program",
+    "build my program",
+    "waiting that you",
+    "just tell",
+    "start now",
+)
+_LOW_SIGNAL_PATTERNS = (
+    "i don't know",
+    "i dont know",
+    "my english is weak",
+    "my english is bad",
+    "hard for me",
+    "i cannot say",
+)
+_BASELINE_PROMPTS: list[tuple[str, str]] = [
+    ("current_role", "What do you do now? You can answer in simple English or mixed Russian and English."),
+    ("target_role", "What role do you want next: ML engineer, data scientist, or software engineer?"),
+    ("project_task", "Tell me about one ML or work task in simple words."),
+]
 
 
 async def onboarding_node(state: AgentState) -> AgentState:
@@ -102,14 +135,32 @@ async def onboarding_node(state: AgentState) -> AgentState:
     user_id = state["user_id"]
     session_id = state.get("session_id", "")
 
+    _record_onboarding_user_turn(state, user_message)
+
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
     inferred_goal_brief = _infer_goal_brief_from_message(user_message, state.get("goal_brief") or {})
     if inferred_goal_brief:
         normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
         state["goal_brief"] = normalized_goal_brief
         state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
+        state["setup_step"] = "baseline_assessment" if state["goal_setup_complete"] else "goal_setup"
         if not state.get("detected_goal"):
             state["detected_goal"] = normalized_goal_brief.get("primary_goal")
+
+    if state.get("goal_setup_complete") and not state.get("assessed_level") and not state.get("_skip_assessment", False):
+        state = await _handle_assessment_turn(state, pedagogy)
+        add_decision_log(
+            state,
+            node="onboarding",
+            action="assessment_complete" if state.get("assessed_level") else "ask_assessment",
+            reason="Deterministic first-run baseline flow",
+            data={
+                "assessment_step_index": state.get("assessment_step_index", 0),
+                "baseline_provisional": state.get("baseline_provisional", False),
+            },
+        )
+        _record_onboarding_assistant_turn(state)
+        return state
 
     rendered_prompt = _get_fallback_prompt(state)
     template = None
@@ -180,6 +231,7 @@ async def onboarding_node(state: AgentState) -> AgentState:
         parse_result.strategy,
         (state.get("goal_brief") or {}).get("status"),
     )
+    _record_onboarding_assistant_turn(state)
     return state
 
 
@@ -203,6 +255,7 @@ async def _apply_onboarding_action(
     state["pending_response"] = response_text
     state["needs_user_input"] = True
     state["current_phase"] = AgentPhase.ONBOARDING
+    state["setup_step"] = "goal_setup"
 
     if action_type == "goal_confirmed":
         normalized_goal_brief = _apply_goal_brief_to_state(
@@ -293,11 +346,14 @@ async def _apply_onboarding_action(
                 state.get("goal_brief") or {},
                 state.get("confirmed_goal") or state.get("detected_goal"),
             )
+            state["last_question_type"] = "goal_setup"
             return state
         if not state.get("assessed_level") and not state.get("_skip_assessment", False):
+            _enter_assessment_phase(state)
             state["pending_response"] = _build_assessment_followup_question(state)
             return state
         state["current_phase"] = AgentPhase.LEARNING_SESSION
+        state["setup_step"] = "ready_for_program"
         if pedagogy is not None:
             pedagogy.log_phase_transition(
                 user_id=state["user_id"],
@@ -310,14 +366,17 @@ async def _apply_onboarding_action(
     if action_type in {"ask_goal", "confirm_goal", "goal_confirmed", "goal_skipped"}:
         if state.get("goal_setup_complete"):
             if not state.get("assessed_level") and not state.get("_skip_assessment", False):
+                _enter_assessment_phase(state)
                 state["pending_response"] = _build_assessment_followup_question(state)
             else:
                 state["pending_response"] = "I have enough to keep building your program. Let's continue."
+                state["setup_step"] = "ready_for_program"
         else:
             state["pending_response"] = _build_goal_followup_question(
                 state.get("goal_brief") or {},
                 state.get("confirmed_goal") or state.get("detected_goal") or goal_value,
             )
+            state["last_question_type"] = "goal_setup"
 
     return state
 
@@ -402,20 +461,27 @@ def _build_goal_followup_question(goal_brief: dict[str, Any], goal_text: Optiona
 
 
 def _build_assessment_followup_question(state: AgentState) -> str:
+    question_key, question_text = _get_current_baseline_prompt(state)
     goal_brief = state.get("goal_brief") or {}
     target_role = goal_brief.get("target_role") or "your target role"
     contexts = ", ".join(item.replace("_", " ") for item in (goal_brief.get("main_contexts") or [])[:2])
-    if goal_brief.get("status") == "draft":
+    state["last_question_type"] = question_key
+    state["setup_step"] = "baseline_assessment"
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["current_phase"] = AgentPhase.ASSESSMENT
+    if state.get("assessment_step_index", 0) <= 0:
+        if goal_brief.get("status") == "draft":
+            return (
+                f"I have a draft target for {target_role}"
+                f"{f' focused on {contexts}' if contexts else ''}. "
+                "I will use that draft unless you correct it later. One quick baseline first. "
+                f"{question_text}"
+            )
         return (
-            f"I have a draft target for {target_role}"
-            f"{f' focused on {contexts}' if contexts else ''}. "
-            "I will use that draft unless you correct it later. One quick baseline first. "
-            "Answer in simple English: what do you do now?"
+            f"Before I build the program for {target_role}, I need one short speaking baseline. "
+            f"{question_text}"
         )
-    return (
-        f"Before I build the program for {target_role}, I need one short speaking baseline. "
-        "Answer in simple English: what do you do now?"
-    )
+    return question_text
 
 
 def _build_template_context(state: AgentState) -> dict[str, Any]:
@@ -501,6 +567,195 @@ Respond with JSON:
 {{"action": "transition_to_learning", "response_text": "your response"}}"""
 
 
+def _record_onboarding_user_turn(state: AgentState, user_message: str) -> None:
+    normalized_message = (user_message or "").strip()
+    if not normalized_message:
+        return
+    state["turn_count"] = state.get("turn_count", 0) + 1
+    history = list(state.get("conversation_history") or [])
+    history.append({"role": "user", "content": normalized_message})
+    state["conversation_history"] = history[-20:]
+
+
+def _record_onboarding_assistant_turn(state: AgentState) -> None:
+    response_text = str(state.get("pending_response") or "").strip()
+    if not response_text:
+        return
+    history = list(state.get("conversation_history") or [])
+    if history and history[-1].get("role") == "assistant" and history[-1].get("content") == response_text:
+        return
+    history.append({"role": "assistant", "content": response_text})
+    state["conversation_history"] = history[-20:]
+
+
+def _enter_assessment_phase(state: AgentState) -> None:
+    state["setup_step"] = "baseline_assessment"
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["current_phase"] = AgentPhase.ASSESSMENT
+
+
+def _get_current_baseline_prompt(state: AgentState) -> tuple[str, str]:
+    index = min(state.get("assessment_step_index", 0), len(_BASELINE_PROMPTS) - 1)
+    return _BASELINE_PROMPTS[index]
+
+
+def _is_meta_progress_message(message: str) -> bool:
+    normalized = _normalize_user_message(message)
+    return _has_any_signal(normalized, _PROCEED_PATTERNS) or _has_any_signal(normalized, _LOW_SIGNAL_PATTERNS)
+
+
+def _is_usable_baseline_answer(message: str) -> bool:
+    normalized = _normalize_user_message(message).strip()
+    if not normalized:
+        return False
+    if _is_meta_progress_message(normalized):
+        return False
+    words = [word for word in normalized.split() if word]
+    return len(words) >= 4
+
+
+def _store_baseline_answer(state: AgentState, key: str, value: str) -> None:
+    answers = dict(state.get("assessment_answers") or {})
+    answers[key] = value.strip()
+    state["assessment_answers"] = answers
+
+
+def _usable_baseline_answer_count(state: AgentState) -> int:
+    return len(
+        [
+            value
+            for value in (state.get("assessment_answers") or {}).values()
+            if isinstance(value, str) and value.strip()
+        ]
+    )
+
+
+def _infer_level_from_baseline(state: AgentState) -> tuple[str, dict[str, float], bool, float]:
+    answers = state.get("assessment_answers") or {}
+    combined = " ".join(value for value in answers.values() if isinstance(value, str))
+    token_count = len(combined.split())
+    has_ml_signal = _has_any_signal(_normalize_user_message(combined), _ML_SIGNAL_PATTERNS)
+    answer_count = _usable_baseline_answer_count(state)
+
+    if token_count < 10:
+        level = "A2"
+        fluency = 3.8
+        grammar = 3.9
+        vocabulary = 4.1
+        comprehension = 4.4
+    elif token_count < 28:
+        level = "B1"
+        fluency = 4.8
+        grammar = 4.6
+        vocabulary = 5.0
+        comprehension = 5.1
+    else:
+        level = "B1"
+        fluency = 5.5
+        grammar = 5.1
+        vocabulary = 5.6
+        comprehension = 5.6
+
+    if has_ml_signal:
+        vocabulary += 0.4
+    provisional = answer_count < 3 or token_count < 18
+    confidence = 0.42 if provisional else 0.68
+    scores = {
+        "fluency": round(min(fluency, 9.5), 1),
+        "grammar": round(min(grammar, 9.5), 1),
+        "vocabulary": round(min(vocabulary, 9.5), 1),
+        "comprehension": round(min(comprehension, 9.5), 1),
+    }
+    return level, scores, provisional, confidence
+
+
+def _complete_baseline_assessment(state: AgentState) -> None:
+    level, scores, provisional, confidence = _infer_level_from_baseline(state)
+    goal_brief = state.get("goal_brief") or {}
+    role = goal_brief.get("target_role") or "your target role"
+    qualifier = "provisional" if provisional else "first"
+    state["assessed_level"] = level
+    state["assessment_scores"] = scores
+    state["assessment_status"] = "provisional" if provisional else "confirmed"
+    state["baseline_provisional"] = provisional
+    state["baseline_confidence"] = confidence
+    state["level_confidence"] = confidence
+    state["setup_step"] = "ready_for_program"
+    state["last_question_type"] = "baseline_complete"
+    state["pending_response"] = (
+        f"I have enough for a {qualifier} baseline for {role}. "
+        f"Current level looks around {level}. I can now build the first mission around your weakest area."
+    )
+
+
+def _advance_baseline_prompt(state: AgentState) -> str:
+    state["assessment_step_index"] = min(state.get("assessment_step_index", 0) + 1, len(_BASELINE_PROMPTS) - 1)
+    next_key, next_prompt = _get_current_baseline_prompt(state)
+    state["last_question_type"] = next_key
+    return next_prompt
+
+
+async def _handle_assessment_turn(state: AgentState, pedagogy) -> AgentState:
+    _enter_assessment_phase(state)
+    user_message = str(state.get("last_user_message") or "").strip()
+    current_key, current_prompt = _get_current_baseline_prompt(state)
+
+    if not user_message:
+        state["pending_response"] = _build_assessment_followup_question(state)
+        state["needs_user_input"] = True
+        return state
+
+    if _is_usable_baseline_answer(user_message):
+        _store_baseline_answer(state, current_key, user_message)
+    elif current_key == "target_role":
+        role = (state.get("goal_brief") or {}).get("target_role")
+        if role:
+            _store_baseline_answer(state, current_key, role)
+    elif current_key == "project_task" and _usable_baseline_answer((state.get("goal_brief") or {}).get("primary_goal", "")):
+        _store_baseline_answer(state, current_key, str((state.get("goal_brief") or {}).get("primary_goal")))
+
+    usable_answers = _usable_baseline_answer_count(state)
+    meta_progress = _is_meta_progress_message(user_message)
+    reached_last_question = state.get("assessment_step_index", 0) >= len(_BASELINE_PROMPTS) - 1
+
+    if usable_answers >= 3:
+        _complete_baseline_assessment(state)
+    elif usable_answers >= 2 and (meta_progress or reached_last_question):
+        _complete_baseline_assessment(state)
+    elif meta_progress and usable_answers >= 1:
+        bridge = "OK, I am already building the program. One more short answer for the baseline."
+        state["pending_response"] = f"{bridge} {_advance_baseline_prompt(state)}"
+        state["needs_user_input"] = True
+        return state
+    else:
+        if _is_usable_baseline_answer(user_message) or meta_progress:
+            next_prompt = _advance_baseline_prompt(state)
+            if usable_answers >= 2 and state.get("assessment_step_index", 0) >= 2:
+                _complete_baseline_assessment(state)
+            else:
+                state["pending_response"] = next_prompt
+                state["needs_user_input"] = True
+                return state
+        else:
+            state["pending_response"] = (
+                "It is OK to answer in simple English or mixed Russian and English. "
+                f"{current_prompt}"
+            )
+            state["last_question_type"] = current_key
+            state["needs_user_input"] = True
+            return state
+
+    if pedagogy is not None and state.get("assessed_level"):
+        pedagogy.log_level_assessed(
+            user_id=state["user_id"],
+            level=state.get("assessed_level") or "B1",
+            scores=state.get("assessment_scores") or {},
+            confidence=state.get("baseline_confidence") or 0.5,
+        )
+    state["needs_user_input"] = True
+    return state
+
+
 def route_after_onboarding(state: AgentState) -> str:
     if state.get("should_end_session"):
         return "session_end"
@@ -556,6 +811,9 @@ def _infer_goal_brief_from_message(
         inferred.setdefault("domain", "machine_learning")
 
     if _has_any_signal(normalized_message, _JOB_SIGNAL_PATTERNS):
+        signal_count += 1
+        inferred.setdefault("target_market", "international_company")
+    elif _has_any_signal(normalized_message, _FLEXIBLE_COMPANY_CONTEXT_PATTERNS):
         signal_count += 1
         inferred.setdefault("target_market", "international_company")
 
