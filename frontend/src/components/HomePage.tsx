@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import type { ProgramSnapshot } from '../lib/api';
 
 interface HomePageProps {
@@ -5,6 +7,8 @@ interface HomePageProps {
   onStartSession: () => void;
   onOpenProgress: () => void;
   onRefresh: () => void;
+  onSubmitVacancy: (vacancyText: string) => Promise<void>;
+  onSubmitPaidIntent: () => Promise<void>;
 }
 
 export function HomePage({
@@ -12,7 +16,12 @@ export function HomePage({
   onStartSession,
   onOpenProgress,
   onRefresh,
+  onSubmitVacancy,
+  onSubmitPaidIntent,
 }: HomePageProps) {
+  const [vacancyText, setVacancyText] = useState('');
+  const [isSubmittingVacancy, setIsSubmittingVacancy] = useState(false);
+  const [isSubmittingPaidIntent, setIsSubmittingPaidIntent] = useState(false);
   const goalBrief = snapshot.goal.brief;
   const goalStatus = goalBrief?.status || null;
   const draftGoal = goalStatus === 'draft';
@@ -20,9 +29,24 @@ export function HomePage({
   const setupIncomplete = snapshot.setup.needs_attention;
   const readyForProgram = setupState === 'ready_for_program';
   const needsAssessment = setupState === 'needs_assessment';
+  const needsGoal = setupState === 'needs_goal';
+  const earlySetup = needsGoal || needsAssessment;
+  const baselineStatus = snapshot.assessment?.status || (snapshot.assessment ? 'confirmed' : 'missing');
   const missionLabel = setupIncomplete ? 'Next step' : "Today's mission";
+  const heroTitle = needsAssessment
+    ? 'Take one quick baseline'
+    : needsGoal
+      ? 'Complete your career English setup'
+      : snapshot.program.title;
+  const heroCopy = needsAssessment
+    ? 'The target is already clear enough. One short baseline unlocks the first useful mission.'
+    : needsGoal
+      ? 'Turn vague English practice into a concrete career target.'
+      : (goalBrief?.summary || 'Turn vague English practice into a concrete career program.');
   const targetTitle = goalBrief?.target_role
     ? `${goalBrief.target_role}${draftGoal ? ' (draft)' : ''}`
+    : goalBrief?.primary_goal
+      ? `Draft target${draftGoal ? '' : ' (building)'}`
     : 'Career target not locked yet';
   const targetCopy = goalBrief?.primary_goal
     || (draftGoal
@@ -31,15 +55,40 @@ export function HomePage({
   const setupActionLabel = snapshot.setup.state === 'needs_assessment'
     ? 'Take baseline assessment'
     : 'Continue setup';
+  const showVacancyCard = readyForProgram;
+  const careerContext = snapshot.career_context;
+  const interviewPack = snapshot.interview_pack;
+  const showPaidCta = snapshot.monetization.show_paid_cta || snapshot.monetization.paid_intent_submitted;
+
+  async function handleVacancySubmit() {
+    const trimmed = vacancyText.trim();
+    if (!trimmed) {
+      return;
+    }
+    setIsSubmittingVacancy(true);
+    try {
+      await onSubmitVacancy(trimmed);
+      setVacancyText('');
+    } finally {
+      setIsSubmittingVacancy(false);
+    }
+  }
+
+  async function handlePaidIntentSubmit() {
+    setIsSubmittingPaidIntent(true);
+    try {
+      await onSubmitPaidIntent();
+    } finally {
+      setIsSubmittingPaidIntent(false);
+    }
+  }
 
   return (
     <div className="miniapp-page">
       <section className="hero-card">
         <div className="eyebrow">EnglishFriend</div>
-        <h1>{snapshot.program.title}</h1>
-        <p className="hero-copy">
-          {goalBrief?.summary || 'Turn vague English practice into a concrete career program.'}
-        </p>
+        <h1>{heroTitle}</h1>
+        <p className="hero-copy">{heroCopy}</p>
         <div className="hero-actions">
           <button className="primary-action" onClick={onStartSession}>
             {setupIncomplete ? setupActionLabel : "Start today's mission"}
@@ -53,6 +102,10 @@ export function HomePage({
               Refresh
             </button>
           )}
+        </div>
+        <div className="pill-row" style={{ marginTop: 14 }}>
+          <span className="pill">setup {snapshot.setup.progress}%</span>
+          {snapshot.setup.next_question_type && <span className="pill">{snapshot.setup.next_question_type.replace(/_/g, ' ')}</span>}
         </div>
       </section>
 
@@ -70,20 +123,59 @@ export function HomePage({
         </div>
       </section>
 
-      {needsAssessment && (
+      {earlySetup && (
         <section className="content-card">
-          <div className="section-label">Why baseline matters</div>
-          <h2>One quick speaking baseline first</h2>
+          <div className="section-label">What happens next</div>
+          <h2>{needsAssessment ? 'One short baseline unlocks your first mission' : 'The coach still needs a sharper target'}</h2>
           <p>
-            The coach already has a usable draft target. One short baseline is enough to decide
-            whether your first program stage should focus on grammar, clarity, vocabulary, or
-            career scenarios.
+            {needsAssessment
+              ? 'You already have a draft target. The next session only needs a short baseline so the coach can choose the first useful mission.'
+              : 'The next session will lock the role, company context, and speaking situations the program should optimize for.'}
           </p>
-          <div className="pill-row">
-            {(goalBrief?.main_contexts || []).slice(0, 3).map((context) => (
-              <span key={context} className="pill">{context.replace(/_/g, ' ')}</span>
-            ))}
+          {(goalBrief?.current_blockers?.length || goalBrief?.main_contexts?.length) ? (
+            <div className="pill-row" style={{ marginTop: 12 }}>
+              {(goalBrief?.current_blockers || []).slice(0, 2).map((item) => (
+                <span key={item} className="pill">{item}</span>
+              ))}
+              {(goalBrief?.main_contexts || []).slice(0, 2).map((item) => (
+                <span key={item} className="pill">{item.replace(/_/g, ' ')}</span>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      )}
+
+      {showVacancyCard && (
+        <section className="content-card">
+          <div className="section-label">Target vacancy</div>
+          <h2>{careerContext.vacancy_present ? 'Vacancy loaded' : 'Paste your target vacancy'}</h2>
+          <p>
+            {careerContext.vacancy_summary
+              || 'A real vacancy sharpens the role, likely questions, key terms, and interview track.'}
+          </p>
+          <textarea
+            className="text-area-input"
+            rows={5}
+            placeholder="Paste the job description here to make the interview plan more specific."
+            value={vacancyText}
+            onChange={(event) => setVacancyText(event.target.value)}
+          />
+          <div className="hero-actions">
+            <button
+              className="primary-action"
+              onClick={() => void handleVacancySubmit()}
+              disabled={isSubmittingVacancy || !vacancyText.trim()}
+            >
+              {isSubmittingVacancy ? 'Saving vacancy...' : 'Use this vacancy'}
+            </button>
           </div>
+          {careerContext.vacancy_present && (
+            <div className="pill-row" style={{ marginTop: 12 }}>
+              {careerContext.target_role && <span className="pill">{careerContext.target_role}</span>}
+              {careerContext.company_type && <span className="pill">{careerContext.company_type.replace(/_/g, ' ')}</span>}
+              {careerContext.target_market && <span className="pill">{careerContext.target_market.replace(/_/g, ' ')}</span>}
+            </div>
+          )}
         </section>
       )}
 
@@ -123,19 +215,55 @@ export function HomePage({
         )}
       </section>
 
-      {setupState !== 'needs_goal' && (
+      {!earlySetup && setupState !== 'needs_goal' && (
         <section className="content-card">
           <div className="section-label">Current baseline</div>
-          <h2>{snapshot.assessment?.level ? `CEFR ${snapshot.assessment.level}` : 'Baseline not measured yet'}</h2>
+          <h2>
+            {snapshot.assessment?.level
+              ? `${snapshot.assessment.provisional ? 'Provisional ' : ''}CEFR ${snapshot.assessment.level}`
+              : 'Baseline not measured yet'}
+          </h2>
           <p>
             {snapshot.assessment
-              ? `Goal readiness ${snapshot.assessment.goal_readiness}/10. The coach is routing from your measured baseline, not generic conversation.`
+              ? `${snapshot.assessment.provisional ? 'This is a low-confidence first baseline, but it is enough to route your next mission.' : 'The coach is routing from your measured baseline, not generic conversation.'} Goal readiness ${snapshot.assessment.goal_readiness}/10.`
               : 'Complete the baseline so the coach can decide whether to focus on grammar, clarity, or career scenarios first.'}
           </p>
           <div className="pill-row">
             <span className="pill">{snapshot.program.stage_label}</span>
             <span className="pill">{snapshot.program.time_horizon_days} days</span>
+            <span className="pill">{baselineStatus.replace(/_/g, ' ')}</span>
             {goalBrief?.domain && <span className="pill">{goalBrief.domain.replace(/_/g, ' ')}</span>}
+          </div>
+        </section>
+      )}
+
+      {interviewPack && (
+        <section className="content-card">
+          <div className="section-label">Interview pack</div>
+          <h2>{interviewPack.recommended_track_title || 'Target interview pack'}</h2>
+          <p>{interviewPack.summary || 'A compact interview pack built from your goal, baseline, and latest evidence.'}</p>
+          <div className="pill-row">
+            {interviewPack.target_role && <span className="pill">{interviewPack.target_role}</span>}
+            {interviewPack.recommended_track_title && <span className="pill interview-source-pill">{interviewPack.recommended_track_title}</span>}
+            {careerContext.vacancy_present && <span className="pill">vacancy-based</span>}
+          </div>
+          <div className="list-stack mission-detail-stack">
+            <div className="list-item">
+              <strong>Must answer</strong>
+              <p className="muted-line">{interviewPack.must_answer_questions[0]}</p>
+            </div>
+            <div className="list-item">
+              <strong>Top blocker</strong>
+              <p className="muted-line">{interviewPack.top_blockers[0] || 'Need one stronger answer to surface the main blocker.'}</p>
+            </div>
+            <div className="list-item">
+              <strong>Key terms</strong>
+              <div className="pill-row" style={{ marginTop: 10 }}>
+                {interviewPack.key_terms.slice(0, 6).map((term) => (
+                  <span key={term} className="pill">{term}</span>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
       )}
@@ -156,18 +284,30 @@ export function HomePage({
         </section>
       )}
 
-      {needsAssessment && (
+      {showPaidCta && (
         <section className="content-card">
-          <div className="section-label">What we will optimize first</div>
-          <div className="list-stack">
-            {goalBrief?.current_blockers?.length ? (
-              goalBrief.current_blockers.slice(0, 3).map((item) => (
-                <div key={item} className="list-item">{item}</div>
-              ))
-            ) : (
-              <div className="list-item">Turn your goal into a useful baseline, then route the first career mission.</div>
-            )}
-          </div>
+          <div className="section-label">Paid beta</div>
+          <h2>
+            {snapshot.monetization.paid_intent_submitted
+              ? 'Paid beta interest saved'
+              : 'Unlock the full interview plan'}
+          </h2>
+          <p>
+            {snapshot.monetization.paid_intent_submitted
+              ? 'You already signaled willingness to pay. This is the metric we need to prove that interview outcome is valuable enough as a product.'
+              : 'If this interview-prep loop already feels valuable, leave a paid-beta signal. The current goal is to prove real willingness to pay, not just engagement.'}
+          </p>
+          {!snapshot.monetization.paid_intent_submitted && (
+            <div className="hero-actions">
+              <button
+                className="primary-action"
+                onClick={() => void handlePaidIntentSubmit()}
+                disabled={isSubmittingPaidIntent}
+              >
+                {isSubmittingPaidIntent ? 'Saving...' : 'Join paid beta'}
+              </button>
+            </div>
+          )}
         </section>
       )}
     </div>

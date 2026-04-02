@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVoskWithVAD } from '../hooks/useVoskWithVAD';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
@@ -18,6 +18,36 @@ interface VoiceChatV2Props {
   }) => void;
 }
 
+const GOAL_SETUP_CHIPS = [
+  'ML engineer job abroad',
+  'Interview English',
+  'Project discussions',
+  'Vocabulary for machine learning',
+  'Global remote team',
+  'Open-ended timeline',
+];
+
+const BASELINE_CHIPS = [
+  'I work as a data analyst now',
+  'I want to become an ML engineer',
+  'One project is about predictions for users',
+];
+
+function mergeTranscriptDraft(previous: string, incoming: string): string {
+  const next = incoming.trim();
+  if (!next) {
+    return previous;
+  }
+  const current = previous.trim();
+  if (!current) {
+    return next;
+  }
+  if (current.toLowerCase().includes(next.toLowerCase())) {
+    return current;
+  }
+  return `${current} ${next}`.trim();
+}
+
 export function VoiceChatV2({
   userId,
   wsUrl,
@@ -28,8 +58,18 @@ export function VoiceChatV2({
   reviewBeforeSend = false,
   onSessionEnded,
 }: VoiceChatV2Props) {
-  const [reviewDraft, setReviewDraft] = useState('');
-  const [showTranscriptReview, setShowTranscriptReview] = useState(false);
+  const [draftText, setDraftText] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const guidedReviewMode = useMemo(
+    () => reviewBeforeSend || mode === 'assessment' || mode === 'guided_setup' || !mode,
+    [mode, reviewBeforeSend]
+  );
+
+  const composerChips = useMemo(
+    () => (mode === 'assessment' ? BASELINE_CHIPS : GOAL_SETUP_CHIPS),
+    [mode]
+  );
 
   const {
     isModelLoading,
@@ -44,7 +84,7 @@ export function VoiceChatV2({
     confirmSend,
     error: voskError,
   } = useVoskWithVAD({
-    silenceTimeoutMs: 2500,
+    silenceTimeoutMs: guidedReviewMode ? 4000 : 2500,
     onFinalResult: (text) => {
       console.log('[VoiceChatV2] Final:', text);
     },
@@ -79,11 +119,6 @@ export function VoiceChatV2({
     },
   });
 
-  const guidedReviewMode = useMemo(
-    () => reviewBeforeSend || mode === 'assessment' || mode === 'guided_setup' || !mode,
-    [mode, reviewBeforeSend]
-  );
-
   useEffect(() => {
     if (isModelLoaded && !isConnected && !isConnecting) {
       connect();
@@ -97,8 +132,7 @@ export function VoiceChatV2({
 
     if (guidedReviewMode) {
       stopListening();
-      setReviewDraft(transcript.trim());
-      setShowTranscriptReview(true);
+      setDraftText((previous) => mergeTranscriptDraft(previous, transcript));
       return;
     }
 
@@ -109,29 +143,55 @@ export function VoiceChatV2({
     }
   }, [voiceStatus, transcript, guidedReviewMode, stopListening, confirmSend, sendText]);
 
-  const handleButtonClick = useCallback(async () => {
-    if (!isModelLoaded) {
-      console.log('[VoiceChatV2] Model not loaded yet');
+  const handleSendGuidedDraft = useCallback(() => {
+    const text = draftText.trim();
+    if (!text) {
       return;
     }
+    cancelAndReset();
+    setDraftText('');
+    sendText(text);
+  }, [draftText, cancelAndReset, sendText]);
 
+  const handlePrimaryAction = useCallback(async () => {
     if (!isConnected) {
       connect();
       return;
     }
 
-    if (isListening) {
-      if (guidedReviewMode) {
+    if (guidedReviewMode) {
+      if (isListening) {
         stopListening();
         if (transcript.trim()) {
-          setReviewDraft(transcript.trim());
-          setShowTranscriptReview(true);
-        } else {
-          cancelAndReset();
+          setDraftText((previous) => mergeTranscriptDraft(previous, transcript));
         }
         return;
       }
 
+      if (draftText.trim()) {
+        handleSendGuidedDraft();
+        return;
+      }
+
+      if (!isModelLoaded) {
+        console.log('[VoiceChatV2] Model not loaded yet');
+        return;
+      }
+
+      try {
+        await startListening();
+      } catch (err) {
+        console.error('[VoiceChatV2] Failed to start:', err);
+      }
+      return;
+    }
+
+    if (!isModelLoaded) {
+      console.log('[VoiceChatV2] Model not loaded yet');
+      return;
+    }
+
+    if (isListening) {
       const text = confirmSend();
       if (text) {
         console.log('[VoiceChatV2] Manual send:', text);
@@ -143,8 +203,6 @@ export function VoiceChatV2({
     }
 
     try {
-      setShowTranscriptReview(false);
-      setReviewDraft('');
       await startListening();
     } catch (err) {
       console.error('[VoiceChatV2] Failed to start:', err);
@@ -152,38 +210,44 @@ export function VoiceChatV2({
   }, [
     isModelLoaded,
     isConnected,
-    isListening,
     guidedReviewMode,
+    isListening,
     transcript,
+    draftText,
     connect,
     stopListening,
+    handleSendGuidedDraft,
+    startListening,
     confirmSend,
     sendText,
     cancelAndReset,
-    startListening,
   ]);
 
-  const handleCancel = useCallback(() => {
+  const handleRetryGuided = useCallback(() => {
     cancelAndReset();
-    setShowTranscriptReview(false);
-    setReviewDraft('');
+    setDraftText('');
   }, [cancelAndReset]);
 
-  const handleSendReviewedTranscript = useCallback(() => {
-    const text = reviewDraft.trim();
-    if (!text) {
-      return;
+  const handleTypeInstead = useCallback(() => {
+    const currentTranscript = transcript.trim();
+    if (isListening) {
+      stopListening();
     }
-    setShowTranscriptReview(false);
-    setReviewDraft('');
-    sendText(text);
-  }, [reviewDraft, sendText]);
+    if (currentTranscript) {
+      setDraftText((previous) => mergeTranscriptDraft(previous, currentTranscript));
+    }
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(draftText.length, draftText.length);
+    }, 0);
+  }, [draftText.length, isListening, stopListening, transcript]);
 
-  const handleRetryTranscript = useCallback(() => {
-    setShowTranscriptReview(false);
-    setReviewDraft('');
-    cancelAndReset();
-  }, [cancelAndReset]);
+  const handleInsertChip = useCallback((chip: string) => {
+    setDraftText((previous) => mergeTranscriptDraft(previous, chip));
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 0);
+  }, []);
 
   const handleEndSession = useCallback(() => {
     const transcriptSnapshot = [...messages];
@@ -204,20 +268,36 @@ export function VoiceChatV2({
     if (!isModelLoaded) return 'Failed to load model';
     if (isConnecting) return 'Connecting...';
     if (!isConnected) return 'Disconnected';
-    if (isPlaying) return 'Mentor is speaking...';
-    if (showTranscriptReview) return 'Review transcript before sending';
+    if (isPlaying) return 'Coach is speaking...';
+
+    if (guidedReviewMode) {
+      switch (voiceStatus) {
+        case 'listening':
+          return 'Listening. Short English is enough.';
+        case 'thinking':
+          return 'Pause detected. We will keep the transcript in the composer.';
+        case 'ready_to_send':
+          return 'Transcript ready. Edit key words before sending.';
+        case 'processing':
+          return 'Coach is responding...';
+        default:
+          return draftText.trim()
+            ? 'Edit the key words, then send.'
+            : 'Say or type your answer.';
+      }
+    }
 
     switch (voiceStatus) {
       case 'listening':
-        return guidedReviewMode ? 'Listening... say it simply, you can edit later' : 'Listening... speak in English';
+        return 'Listening... speak in English';
       case 'thinking':
-        return guidedReviewMode ? 'Pause detected... preparing transcript review' : 'Take your time to think...';
+        return 'Take your time to think...';
       case 'ready_to_send':
-        return guidedReviewMode ? 'Transcript ready for review' : 'Sending...';
+        return 'Sending...';
       case 'processing':
         return 'Mentor is thinking...';
       default:
-        return guidedReviewMode ? 'Tap to speak, then review the transcript' : 'Tap to start speaking';
+        return 'Tap to start speaking';
     }
   };
 
@@ -230,17 +310,36 @@ export function VoiceChatV2({
     return cls;
   };
 
+  const getPrimaryButtonText = () => {
+    if (guidedReviewMode) {
+      if (isListening) {
+        return 'Finish capture';
+      }
+      if (draftText.trim()) {
+        return 'Send';
+      }
+      return 'Speak';
+    }
+    if (isListening) {
+      return voiceStatus === 'thinking' ? 'Thinking...' : 'Tap to send';
+    }
+    return 'Start speaking';
+  };
+
   const error = voskError?.message || wsError;
+  const primaryDisabled = guidedReviewMode
+    ? (isPlaying || (!draftText.trim() && (!isModelLoaded || isModelLoading)))
+    : (!isModelLoaded || isModelLoading || isPlaying);
 
   return (
     <div className="voice-chat">
       <div className="voice-chat-header">
-        <h1>English Mentor</h1>
+        <h1>{guidedReviewMode ? 'EnglishFriend Coach' : 'English Mentor'}</h1>
         {title && <p className="voice-session-subtitle">{title}</p>}
         {subtitle && <p className="voice-session-subtitle">{subtitle}</p>}
         {guidedReviewMode && (
           <p className="voice-session-note">
-            Say your answer in simple English. You can edit the transcript before sending it.
+            Say or type your answer. Short English is enough, and you can fix key words before sending.
           </p>
         )}
         <p className="status">{getStatusMessage()}</p>
@@ -253,8 +352,8 @@ export function VoiceChatV2({
             <p>Hi! I am your English mentor.</p>
             <p className="hint">
               {guidedReviewMode
-                ? 'Tap the button, say your goal or answer, then review the transcript before it is sent.'
-                : "Tap the button and speak. I will wait if you need time to think."}
+                ? 'Use voice or text. The goal is to keep meaning, not to speak perfectly.'
+                : 'Tap the button and speak. I will wait if you need time to think.'}
             </p>
           </div>
         )}
@@ -281,34 +380,6 @@ export function VoiceChatV2({
           </div>
         )}
 
-        {showTranscriptReview && (
-          <div className="transcript-review-card">
-            <div className="transcript-review-header">
-              <strong>Review transcript</strong>
-              <span>Fix important words before the coach sees them.</span>
-            </div>
-            <textarea
-              className="transcript-review-input"
-              value={reviewDraft}
-              onChange={(event) => setReviewDraft(event.target.value)}
-              rows={4}
-              placeholder="Edit the transcript here"
-            />
-            <div className="transcript-review-actions">
-              <button className="secondary-action review-action-button" onClick={handleRetryTranscript}>
-                Retry
-              </button>
-              <button
-                className="primary-action review-action-button"
-                onClick={handleSendReviewedTranscript}
-                disabled={!reviewDraft.trim()}
-              >
-                Send
-              </button>
-            </div>
-          </div>
-        )}
-
         {voiceStatus === 'processing' && (
           <div className="message assistant processing">
             <div className="message-content">
@@ -322,44 +393,85 @@ export function VoiceChatV2({
         )}
       </div>
 
+      {guidedReviewMode && (
+        <div className="guided-composer-card">
+          <div className="guided-composer-header">
+            <strong>{mode === 'assessment' ? 'Answer composer' : 'Goal composer'}</strong>
+            <span>
+              {mode === 'assessment'
+                ? 'Keep only the important words. You can answer in simple English or mixed Russian and English.'
+                : 'Add the key words the coach must understand. Typing is normal if recognition is weak.'}
+            </span>
+          </div>
+          <textarea
+            ref={textareaRef}
+            className="guided-composer-input"
+            value={draftText}
+            onChange={(event) => setDraftText(event.target.value)}
+            rows={4}
+            placeholder={mode === 'assessment'
+              ? 'Type your short answer here if speech recognition is weak'
+              : 'Type your goal or key words here if speech recognition is weak'}
+          />
+          <div className="guided-chip-row">
+            {composerChips.map((chip) => (
+              <button
+                key={chip}
+                type="button"
+                className="guided-chip-button"
+                onClick={() => handleInsertChip(chip)}
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
+          <div className="guided-secondary-actions">
+            <button type="button" className="secondary-action guided-secondary-button" onClick={handleTypeInstead}>
+              Type instead
+            </button>
+            <button type="button" className="secondary-action guided-secondary-button" onClick={handleRetryGuided}>
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="voice-chat-controls-v2">
         <button
           className={getButtonClass()}
-          onClick={handleButtonClick}
-          disabled={!isModelLoaded || isModelLoading || isPlaying || showTranscriptReview}
+          onClick={() => void handlePrimaryAction()}
+          disabled={primaryDisabled}
         >
           {isListening ? (
             <>
               <span className="pulse-ring"></span>
               <span className="btn-icon">Mic</span>
-              <span className="btn-text">
-                {guidedReviewMode ? 'Finish and review' : voiceStatus === 'thinking' ? 'Thinking...' : 'Tap to send'}
-              </span>
+              <span className="btn-text">{getPrimaryButtonText()}</span>
             </>
           ) : (
             <>
-              <span className="btn-icon">Mic</span>
-              <span className="btn-text">{guidedReviewMode ? 'Tap to speak' : 'Start speaking'}</span>
+              <span className="btn-icon">{guidedReviewMode && draftText.trim() ? 'Send' : 'Mic'}</span>
+              <span className="btn-text">{getPrimaryButtonText()}</span>
             </>
           )}
         </button>
 
         {isListening && (
-          <button className="cancel-button" onClick={handleCancel}>
+          <button className="cancel-button" onClick={handleRetryGuided}>
             Cancel
           </button>
         )}
       </div>
 
       <div className="voice-chat-hint">
-        {isListening ? (
+        {guidedReviewMode ? (
           <p>
-            {guidedReviewMode
-              ? 'Pause whenever you need. You will be able to edit the transcript before it is sent.'
-              : "Take your time. I will wait 2.5 seconds of silence before responding."}
+            {draftText.trim()
+              ? 'Check the key words, then send. If recognition is weak, type the important parts instead.'
+              : 'Tap Speak, or type directly if Vosk misses too much.'}
           </p>
-        ) : showTranscriptReview ? (
-          <p>Check the transcript, fix the key words, then send it to the coach.</p>
+        ) : isListening ? (
+          <p>Take your time. I will wait 2.5 seconds of silence before responding.</p>
         ) : (
           <p>Speak naturally. I understand beginners and will help with mistakes.</p>
         )}

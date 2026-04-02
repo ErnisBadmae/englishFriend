@@ -11,6 +11,8 @@ import {
   WS_BASE,
   getProgramSnapshot,
   resolveOrCreateUser,
+  submitPaidIntent,
+  submitVacancy,
   type InterviewRun,
   type InterviewTrack,
   type MissionSummary,
@@ -317,6 +319,26 @@ function App() {
                 onOpenProgress={() => setScreen('progress')}
                 onRefresh={() => {
                   void refreshSnapshot();
+                }}
+                onSubmitVacancy={async (vacancyText) => {
+                  if (!userId) return;
+                  try {
+                    setError(null);
+                    await submitVacancy(userId, { vacancy_text: vacancyText });
+                    await refreshSnapshot();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'Failed to save vacancy');
+                  }
+                }}
+                onSubmitPaidIntent={async () => {
+                  if (!userId) return;
+                  try {
+                    setError(null);
+                    await submitPaidIntent(userId, { source: 'home_cta' });
+                    await refreshSnapshot();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'Failed to save paid beta intent');
+                  }
                 }}
               />
             )}

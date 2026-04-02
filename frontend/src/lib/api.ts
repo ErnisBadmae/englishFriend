@@ -32,6 +32,7 @@ export interface GoalSummary {
   preferred_mode: string;
   target_level?: string | null;
   focus_areas: string[];
+  draft_available?: boolean;
   brief?: {
     primary_goal?: string | null;
     target_role?: string | null;
@@ -54,6 +55,8 @@ export interface AssessmentSummary {
   scores: Record<string, number>;
   notes?: string | null;
   confidence?: number | null;
+  status?: string | null;
+  provisional?: boolean;
   goal_readiness?: number | null;
   critical_gaps: string[];
   skill_axes: Record<string, number | null>;
@@ -73,6 +76,26 @@ export interface MissionSummary {
   expected_outcome: string;
   estimated_minutes: number;
   success_signal: string;
+}
+
+export interface CareerContextSummary {
+  target_role?: string | null;
+  company_type?: string | null;
+  interview_date?: string | null;
+  target_market?: string | null;
+  vacancy_present: boolean;
+  vacancy_summary?: string | null;
+}
+
+export interface InterviewPackSummary {
+  target_role?: string | null;
+  must_answer_questions: string[];
+  project_story_prompts: string[];
+  key_terms: string[];
+  top_blockers: string[];
+  recommended_track?: string | null;
+  recommended_track_title?: string | null;
+  summary?: string | null;
 }
 
 export interface ProgramSummary {
@@ -239,11 +262,20 @@ export interface SessionEvidence {
   duration_minutes: number;
 }
 
+export interface MonetizationSummary {
+  show_paid_cta: boolean;
+  paid_intent_submitted: boolean;
+  latest_paid_intent_at?: string | null;
+  latest_paid_intent_context?: string | null;
+}
+
 export interface ProgramSnapshot {
   user: UserIdentity;
   goal: GoalSummary;
   assessment?: AssessmentSummary | null;
   program: ProgramSummary;
+  career_context: CareerContextSummary;
+  interview_pack?: InterviewPackSummary | null;
   mission: MissionSummary;
   gamification: {
     xp: {
@@ -283,7 +315,10 @@ export interface ProgramSnapshot {
     assessment_complete: boolean;
     needs_attention: boolean;
     state: string;
+    next_question_type?: string | null;
+    progress: number;
   };
+  monetization: MonetizationSummary;
 }
 
 interface ReviewPayload {
@@ -307,6 +342,16 @@ interface CreateInterviewRunPayload {
     role: string;
     content: string;
   }>;
+}
+
+interface SubmitVacancyPayload {
+  vacancy_text: string;
+  interview_date?: string;
+}
+
+interface SubmitPaidIntentPayload {
+  source: string;
+  note?: string;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -440,6 +485,8 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const assessmentRecord = record.assessment ? asRecord(record.assessment) : null;
   const program = asRecord(record.program);
   const mission = asRecord(record.mission);
+  const careerContext = asRecord(record.career_context);
+  const interviewPack = record.interview_pack ? asRecord(record.interview_pack) : null;
   const gamification = asRecord(record.gamification);
   const xp = asRecord(gamification.xp);
   const streak = asRecord(gamification.streak);
@@ -450,6 +497,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const progress = asRecord(record.progress);
   const sessionEvidenceRecord = asRecord(record.session_evidence);
   const setup = asRecord(record.setup);
+  const monetization = asRecord(record.monetization);
 
   const goalBrief = Object.keys(brief).length > 0 ? {
     primary_goal: typeof brief.primary_goal === 'string' ? brief.primary_goal : null,
@@ -471,6 +519,8 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
     scores: asRecord(assessmentRecord.scores) as Record<string, number>,
     notes: typeof assessmentRecord.notes === 'string' ? assessmentRecord.notes : null,
     confidence: assessmentRecord.confidence == null ? null : Number(assessmentRecord.confidence),
+    status: typeof assessmentRecord.status === 'string' ? assessmentRecord.status : null,
+    provisional: Boolean(assessmentRecord.provisional),
     goal_readiness: assessmentRecord.goal_readiness == null ? null : Number(assessmentRecord.goal_readiness),
     critical_gaps: asStringArray(assessmentRecord.critical_gaps),
     skill_axes: asRecord(assessmentRecord.skill_axes) as Record<string, number | null>,
@@ -536,6 +586,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       preferred_mode: typeof goal.preferred_mode === 'string' ? goal.preferred_mode : 'free_conversation',
       target_level: typeof goal.target_level === 'string' ? goal.target_level : null,
       focus_areas: asStringArray(goal.focus_areas),
+      draft_available: Boolean(goal.draft_available),
       brief: goalBrief,
       missing_fields: goalMissingFields,
     },
@@ -556,6 +607,24 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       preferred_mode: typeof program.preferred_mode === 'string' ? program.preferred_mode : 'free_conversation',
       focus_areas: asStringArray(program.focus_areas),
     },
+    career_context: {
+      target_role: typeof careerContext.target_role === 'string' ? careerContext.target_role : null,
+      company_type: typeof careerContext.company_type === 'string' ? careerContext.company_type : null,
+      interview_date: typeof careerContext.interview_date === 'string' ? careerContext.interview_date : null,
+      target_market: typeof careerContext.target_market === 'string' ? careerContext.target_market : null,
+      vacancy_present: Boolean(careerContext.vacancy_present),
+      vacancy_summary: typeof careerContext.vacancy_summary === 'string' ? careerContext.vacancy_summary : null,
+    },
+    interview_pack: interviewPack ? {
+      target_role: typeof interviewPack.target_role === 'string' ? interviewPack.target_role : null,
+      must_answer_questions: asStringArray(interviewPack.must_answer_questions),
+      project_story_prompts: asStringArray(interviewPack.project_story_prompts),
+      key_terms: asStringArray(interviewPack.key_terms),
+      top_blockers: asStringArray(interviewPack.top_blockers),
+      recommended_track: typeof interviewPack.recommended_track === 'string' ? interviewPack.recommended_track : null,
+      recommended_track_title: typeof interviewPack.recommended_track_title === 'string' ? interviewPack.recommended_track_title : null,
+      summary: typeof interviewPack.summary === 'string' ? interviewPack.summary : null,
+    } : null,
     mission: {
       mode: typeof mission.mode === 'string' ? mission.mode : defaultMission.mode,
       launch_mode: typeof mission.launch_mode === 'string' ? mission.launch_mode : defaultMission.launch_mode ?? null,
@@ -661,6 +730,14 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       state: typeof setup.state === 'string'
         ? setup.state
         : (goalComplete ? (assessmentComplete ? 'ready_for_program' : 'needs_assessment') : 'needs_goal'),
+      next_question_type: typeof setup.next_question_type === 'string' ? setup.next_question_type : null,
+      progress: Number(setup.progress ?? (goalComplete ? (assessmentComplete ? 100 : 75) : (goalBrief ? 40 : 0))),
+    },
+    monetization: {
+      show_paid_cta: Boolean(monetization.show_paid_cta),
+      paid_intent_submitted: Boolean(monetization.paid_intent_submitted),
+      latest_paid_intent_at: typeof monetization.latest_paid_intent_at === 'string' ? monetization.latest_paid_intent_at : null,
+      latest_paid_intent_context: typeof monetization.latest_paid_intent_context === 'string' ? monetization.latest_paid_intent_context : null,
     },
   };
 }
@@ -710,6 +787,20 @@ export async function getInterviewRuns(userId: number, limit = 10): Promise<Inte
 
 export async function createInterviewRun(userId: number, payload: CreateInterviewRunPayload): Promise<InterviewRun> {
   return fetchJson<InterviewRun>(`/api/v1/interviews/${userId}/runs`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function submitVacancy(userId: number, payload: SubmitVacancyPayload): Promise<void> {
+  await fetchJson(`/api/v1/career/${userId}/vacancy`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function submitPaidIntent(userId: number, payload: SubmitPaidIntentPayload): Promise<void> {
+  await fetchJson(`/api/v1/career/${userId}/paid-intent`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });

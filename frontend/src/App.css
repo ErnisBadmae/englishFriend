@@ -232,6 +232,14 @@ body {
   transform: translateY(-1px);
 }
 
+.primary-action:disabled,
+.secondary-action:disabled,
+.rating-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .mission-card,
 .content-card,
 .review-card,
@@ -320,6 +328,24 @@ body {
   border: 1px solid var(--app-line);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.text-area-input {
+  width: 100%;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--app-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--app-ink);
+  font: inherit;
+  resize: vertical;
+  min-height: 128px;
+}
+
+.text-area-input:focus {
+  outline: 2px solid rgba(29, 122, 114, 0.24);
+  border-color: rgba(29, 122, 114, 0.4);
 }
 
 .split {
