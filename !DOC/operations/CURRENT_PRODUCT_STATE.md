@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-04-01
+Last updated: 2026-04-02
 Status: Active source of truth for product progress and agent continuity
 
 ## Reporting Rule
@@ -24,6 +24,7 @@ Do not create a new session log if this file is enough.
 
 ## Current Wedge
 - Product: career English coach, not generic AI tutor
+- Strategic frame: hybrid coach + agent internally, but still a vertical coach product externally
 - Primary audience: Russian-speaking ML/AI and adjacent IT specialists
 - Core outcome: prepare for international jobs, interviews, project walkthroughs, and workplace communication
 - Main UX principle: one guided path, not a toolbox of disconnected modes
@@ -43,30 +44,33 @@ Do not create a new session log if this file is enough.
 - Interview loop works end-to-end: run, save, results screen, adaptive next mission.
 - Pronunciation evidence layer exists through provider abstraction with current heuristic text-backed implementation.
 - Guided sessions now save generic session evidence, not only interview outcomes.
+- Internal coach behavior now supports md-driven skill manifests with safe Python fallback, so prompt/policy iteration is less hardcoded without turning the product into a general assistant.
+- The product can now accept a pasted vacancy, sharpen career context, build an interview pack, and store a paid-beta intent signal without adding a separate platform layer.
 - Onboarding now uses code-owned prompt logic for the main flow instead of depending on DB prompt templates.
 - Draft goal state is routing-ready for baseline and first program steps.
 - Home is simplified around target, baseline, mission, and stage instead of a large dashboard.
 - Setup and assessment sessions now support transcript review before send, so weak browser STT is less destructive in the first-run flow.
+- Setup and assessment now use a persistent voice+text composer with helper chips and manual send, so poor STT no longer forces a fragile modal review step.
 - Session end now persists a strong draft goal, not only an explicitly confirmed goal.
 - Graph/session init now treats `draft` as setup-complete enough to move into baseline routing.
 
 ## Known Issues
-- Live onboarding still needs manual smoke testing after the latest draft-goal and transcript-review changes.
+- Live onboarding still needs manual smoke testing after the latest draft-goal, provisional-baseline, and dashboard-state changes.
 - Old users with stale data can surface edge cases; snapshot fallback has been hardened, but more live verification is needed.
 - Frontend bundle is still too large and warns on build.
 - Langfuse is configured in code but disabled locally unless credentials are set.
 - Some old docs are noisy or outdated; use this file as the active continuity source.
-- Baseline quality still depends on prompt behavior; the flow is now shorter, but real live wording still needs verification with weak-English users.
+- Browser Vosk is still weak on broken English; the product now has a stronger typed fallback, but STT quality itself is unchanged.
 
 ## Next Step
-- Run a live smoke test for the main path:
-  - noisy goal
-  - transcript review appears before send in setup/assessment
-  - draft target shown
-  - short baseline starts with one question, not a mini-exam
-  - first mission appears
-- If onboarding still sounds generic, inspect runtime prompt path before changing product logic again.
-- If the flow is clearer but STT is still too weak, compare transcript-review UX against a typed fallback before touching the ASR stack.
+- Run a live smoke test for the composer-based first-run path:
+  - say a noisy goal
+  - transcript lands in composer
+  - fix key words manually or use chips
+  - send draft goal
+  - baseline goes through the same composer
+  - Home stays clear and minimal in `needs_goal` / `needs_assessment`
+- If this path feels reliable, continue with vacancy -> interview pack -> mission -> paid-intent loop.
 
 ## Last Update
 ### 2026-04-01
@@ -86,3 +90,18 @@ Do not create a new session log if this file is enough.
   - `python -m pytest tests/test_learning_plan_service.py tests/test_onboarding_node.py tests/test_program_snapshot_service.py tests/test_voice_helpers.py -q`
   - `38 passed`
   - `python -c "import main; print('main import ok')"` passed
+### 2026-04-02
+- Locked strategy: do not pivot to a general assistant; keep EnglishFriend as a vertical career-English coach and use agent patterns only internally.
+- Added an internal markdown skill registry for coach modes and career-loop skills.
+- Wired `build_mode_prompt()` and session greetings to md-backed skill manifests with safe fallback to existing Python prompts.
+- Added a minimal internal tool registry to name current speech, learning, evaluation, and state boundaries.
+- This is internal control-plane infrastructure only; the product still presents one vertical coach path, not a general agent UI.
+- Added vacancy-driven career context and interview-pack generation to the roadmap/snapshot loop.
+- Added a paid-intent write path so the product can record willingness-to-pay before billing exists.
+- Home now exposes vacancy paste, interview pack, and paid beta CTA directly in the main loop.
+- Onboarding now records real turns/history, runs a deterministic one-question-at-a-time baseline, and can finish with a provisional assessment instead of looping forever.
+- Session end now persists provisional baseline confidence/status, and snapshot/Home expose setup progress plus draft/provisional state instead of collapsing to an empty dashboard.
+- Guided first-run now uses a persistent composer, `Type instead`, helper chips, and slower silence timing instead of modal transcript review.
+- Home early states now focus on `Target`, `What happens next`, and `Next step`, with vacancy and heavier cards hidden until the program is ready.
+- Verification:
+  - `npm run build` passed

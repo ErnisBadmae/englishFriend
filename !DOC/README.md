@@ -26,6 +26,7 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 | [DB.md](./DB.md) | Database schema, partitioning, CDC, RLS | Working with database |
 | [STRATEGY.md](./STRATEGY.md) | Business strategy, market analysis, roadmap | Strategic planning |
 | [strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md](./strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md) | Current strategic pivot, research summary, rationale, next execution step | Product direction and prioritization |
+| [strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md](./strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md) | Why EnglishFriend should stay a vertical coach while adopting internal agent patterns | Current product/architecture strategy |
 | [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md) | Active source of truth for current wedge, current flow, known issues, and next step | Resuming active product work |
 | [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) | Legacy detailed session history | Historical continuity only |
 | [TEMPLATE.md](./TEMPLATE.md) | Documentation system template for other projects | Reusing doc system |
