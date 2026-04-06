@@ -42,6 +42,12 @@ FORBIDDEN_PATTERNS = [
     r"(?i)(bank.?account|routing.?number)",
 ]
 
+FOUNDATION_FALLBACK_QUESTIONS = (
+    "What do you do now, and what kind of ML work do you touch?",
+    "Tell me about one recent ML project. What problem were you solving?",
+    "What is your next step in our program, and which skill do you want to improve first?",
+)
+
 # Required JSON fields by node type
 REQUIRED_FIELDS = {
     "onboarding": ["action", "response_text"],
@@ -204,6 +210,16 @@ def apply_fallback(
             f"[Guardrails] Applying fallback for {node_type} due to: {violations}"
         )
 
+    learning_fallback = "Could you tell me more about that?"
+    mission_task_type = state.get("mission_task_type")
+    if mission_task_type in {"foundation_speaking_drill", "grammar_rescue"}:
+        anchor_index = int(state.get("anchor_question_id", 0) or 0)
+        anchor_index = max(0, min(anchor_index, len(FOUNDATION_FALLBACK_QUESTIONS) - 1))
+        learning_fallback = (
+            "Let's stay with today's drill. "
+            f"{FOUNDATION_FALLBACK_QUESTIONS[anchor_index]}"
+        )
+
     fallbacks = {
         "onboarding": {
             "action": "ask_goal",
@@ -214,7 +230,7 @@ def apply_fallback(
         },
         "learning": {
             "action": "continue",
-            "response_text": "Could you tell me more about that?",
+            "response_text": learning_fallback,
         },
         "session_end": {
             "action": "farewell",

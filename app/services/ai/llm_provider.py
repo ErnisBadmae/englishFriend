@@ -204,6 +204,12 @@ class OpenAICompatibleProvider(LLMProvider):
 
         response = await _call()
         output = response.choices[0].message.content or ""
+        if not output.strip():
+            logger.warning(
+                "[%s] Empty final content from model=%s",
+                self._provider_name,
+                self._model,
+            )
         latency_ms = (time.time() - start_time) * 1000
 
         usage = response.usage
@@ -321,6 +327,8 @@ class GroqProvider(LLMProvider):
 
         response = await _call()
         output = response.choices[0].message.content or ""
+        if not output.strip():
+            logger.warning("[groq] Empty final content from model=%s", settings.groq_model)
         latency_ms = (time.time() - start_time) * 1000
 
         usage = response.usage

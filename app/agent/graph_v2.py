@@ -231,6 +231,42 @@ async def initialize_session_v2(
         except ValueError:
             logger.warning(f"[Agent V2] Unknown explicit mode ignored: {explicit_mode}")
 
+    resolved_mission_task_type = mission_task_type
+    resolved_mission_title = mission_title
+    resolved_mission_reason = mission_reason
+    resolved_mission_success_signal = mission_success_signal
+    resolved_mission_linked_goal_context = mission_linked_goal_context
+
+    program_plan = roadmap.get("program_plan") if isinstance(roadmap, dict) else {}
+    current_stage = (program_plan or {}).get("current_stage")
+    weekly_focus = (program_plan or {}).get("weekly_focus") or []
+
+    if not resolved_mission_task_type and initial_mode == LearningMode.FREE_CONVERSATION:
+        if current_stage == "foundation":
+            resolved_mission_task_type = "foundation_speaking_drill"
+            resolved_mission_title = resolved_mission_title or "Run a foundation speaking drill"
+            resolved_mission_reason = (
+                resolved_mission_reason
+                or (weekly_focus[0] if weekly_focus else "Stabilize grammar and fluency before higher-pressure scenarios.")
+            )
+            resolved_mission_success_signal = (
+                resolved_mission_success_signal
+                or "You can answer in English with fewer corrections and clearer delivery."
+            )
+            resolved_mission_linked_goal_context = resolved_mission_linked_goal_context or "foundation"
+        elif any("grammar" in str(area).lower() for area in focus_areas):
+            resolved_mission_task_type = "grammar_rescue"
+            resolved_mission_title = resolved_mission_title or "Do a grammar rescue session"
+            resolved_mission_reason = (
+                resolved_mission_reason
+                or (weekly_focus[0] if weekly_focus else "Clean up the most common spoken grammar issue.")
+            )
+            resolved_mission_success_signal = (
+                resolved_mission_success_signal
+                or "The same grammar issue appears less often in the next answer."
+            )
+            resolved_mission_linked_goal_context = resolved_mission_linked_goal_context or "grammar"
+
     state: AgentState = {
         # User info
         "user_id": user_id,
@@ -267,11 +303,11 @@ async def initialize_session_v2(
         "interview_track_title": selected_track["title"] if selected_track else None,
         "session_focus": selected_track["prompt_focus"] if selected_track else None,
         "interview_question_prompts": interview_question_prompts,
-        "mission_task_type": mission_task_type,
-        "mission_title": mission_title,
-        "mission_reason": mission_reason,
-        "mission_success_signal": mission_success_signal,
-        "mission_linked_goal_context": mission_linked_goal_context,
+        "mission_task_type": resolved_mission_task_type,
+        "mission_title": resolved_mission_title,
+        "mission_reason": resolved_mission_reason,
+        "mission_success_signal": resolved_mission_success_signal,
+        "mission_linked_goal_context": resolved_mission_linked_goal_context,
 
         # Current session
         "current_mode": initial_mode,

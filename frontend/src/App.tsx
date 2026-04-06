@@ -30,7 +30,31 @@ interface SessionConfig {
   title?: string;
   subtitle?: string;
   reviewBeforeSend?: boolean;
+  mission?: MissionSummary;
   returnScreen: Screen;
+}
+
+function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
+  if (!mission) {
+    return false;
+  }
+  return mission.mode === 'assessment'
+    || mission.mode === 'guided_setup'
+    || mission.task_type === 'foundation_speaking_drill'
+    || mission.task_type === 'grammar_rescue';
+}
+
+function buildMissionSessionConfig(mission: MissionSummary, returnScreen: Screen): SessionConfig {
+  return {
+    wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
+    mode: mission.launch_mode ?? mission.mode,
+    interviewTrackId: mission.interview_track_id ?? undefined,
+    title: mission.title,
+    subtitle: mission.reason,
+    reviewBeforeSend: shouldForceGuidedReview(mission),
+    mission,
+    returnScreen,
+  };
 }
 
 function readScreenFromHash(): Screen {
@@ -55,7 +79,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<ProgramSnapshot | null>(null);
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>({
-    wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+    wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
     reviewBeforeSend: false,
     returnScreen: 'progress',
   });
@@ -216,31 +240,18 @@ function App() {
     }
 
     if (snapshot.mission.mode === 'guided_setup') {
-      setSessionConfig({
-        wsUrl: `${WS_BASE}/api/v1/voice/chat`,
-        title: snapshot.mission.title,
-        subtitle: snapshot.mission.reason,
-        reviewBeforeSend: true,
-        returnScreen: 'home',
-      });
+      setSessionConfig(buildMissionSessionConfig(snapshot.mission, 'home'));
       setScreen('session');
       return;
     }
 
-    setSessionConfig({
-      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
-      mode: snapshot.mission.launch_mode ?? snapshot.mission.mode,
-      title: snapshot.mission.title,
-      subtitle: snapshot.mission.reason,
-      reviewBeforeSend: snapshot.mission.mode === 'assessment',
-      returnScreen: 'progress',
-    });
+    setSessionConfig(buildMissionSessionConfig(snapshot.mission, 'progress'));
     setScreen('session');
   }
 
   function startInterviewTrack(track: InterviewTrack) {
     setSessionConfig({
-      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
+      wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
       mode: 'mock_interview',
       interviewTrackId: track.id,
       title: track.title,
@@ -348,6 +359,7 @@ function App() {
                 wsUrl={sessionConfig.wsUrl}
                 mode={sessionConfig.mode}
                 interviewTrackId={sessionConfig.interviewTrackId}
+                mission={sessionConfig.mission}
                 title={sessionConfig.title}
                 subtitle={sessionConfig.subtitle}
                 reviewBeforeSend={sessionConfig.reviewBeforeSend}
@@ -386,14 +398,7 @@ function App() {
                   if (lastMission.mode === 'mock_interview') {
                     setScreen('interview');
                   } else {
-                    setSessionConfig({
-                      wsUrl: `${WS_BASE}/api/v1/voice/chat`,
-                      mode: lastMission.launch_mode ?? undefined,
-                      title: lastMission.title,
-                      subtitle: lastMission.reason,
-                      reviewBeforeSend: lastMission.mode === 'assessment' || lastMission.mode === 'guided_setup',
-                      returnScreen: 'progress',
-                    });
+                    setSessionConfig(buildMissionSessionConfig(lastMission, 'progress'));
                     setScreen('session');
                   }
                 }}
@@ -410,14 +415,7 @@ function App() {
                     setScreen('interview');
                     return;
                   }
-                  setSessionConfig({
-                    wsUrl: `${WS_BASE}/api/v1/voice/chat`,
-                    mode: lastMission.launch_mode ?? undefined,
-                    title: lastMission.title,
-                    subtitle: lastMission.reason,
-                    reviewBeforeSend: lastMission.mode === 'assessment' || lastMission.mode === 'guided_setup',
-                    returnScreen: 'progress',
-                  });
+                  setSessionConfig(buildMissionSessionConfig(lastMission, 'progress'));
                   setScreen('session');
                 }}
               />
