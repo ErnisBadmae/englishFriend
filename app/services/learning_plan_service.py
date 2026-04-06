@@ -187,16 +187,12 @@ class LearningPlanService:
                 "total_practice_minutes": 0,
                 "assessment_history": [],
                 "proficiency_profile": None,
-                "program_plan": {
-                    "title": "Complete your career English setup",
-                    "time_horizon_days": 90,
-                    "current_stage": "goal_setup",
-                    "stage_label": "Goal Setup",
-                    "weekly_focus": ["Clarify your target role and context"],
-                    "success_metric": "Turn a vague goal into a concrete target",
-                    "next_milestone": "Confirm your goal",
-                    "stages": [],
-                },
+                "program_plan": self._build_program_plan(
+                    None,
+                    None,
+                    [],
+                    "free_conversation",
+                ),
                 "career_context": None,
                 "interview_pack": None,
                 "paid_intents": [],
@@ -572,16 +568,17 @@ class LearningPlanService:
 
     def get_program_plan(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
         roadmap = plan.roadmap or {}
-        program = roadmap.get("program_plan")
-        if program:
-            return program
         goal_brief = self.get_goal_brief(plan)
-        return self._build_program_plan(
+        fallback_program = self._build_program_plan(
             goal_brief,
             self.get_proficiency_profile(plan),
             roadmap.get("focus_areas") or [],
             roadmap.get("preferred_mode") or "free_conversation",
         )
+        program = roadmap.get("program_plan")
+        if not program:
+            return fallback_program
+        return self._normalize_program_plan(program, fallback_program)
 
     def get_career_context(self, plan: LearningPlan) -> dict[str, Any]:
         roadmap = plan.roadmap or {}
@@ -865,6 +862,27 @@ class LearningPlanService:
             "preferred_mode": "mock_interview" if stage_id in {"career_scenarios", "target_role_simulation"} else preferred_mode,
             "focus_areas": self._normalize_focus_areas(focus_areas),
         }
+
+    def _normalize_program_plan(
+        self,
+        program_plan: dict[str, Any],
+        fallback_program: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(fallback_program)
+        normalized.update(
+            {
+                key: value
+                for key, value in program_plan.items()
+                if value not in (None, "", [])
+            }
+        )
+
+        for key in ("weekly_focus", "stages", "focus_areas"):
+            value = program_plan.get(key)
+            if isinstance(value, list) and value:
+                normalized[key] = value
+
+        return normalized
 
     def _build_career_context(
         self,

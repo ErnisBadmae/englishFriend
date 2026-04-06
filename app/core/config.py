@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     llama_cpp_api_key: str = ""
     llama_cpp_model: str = "qwen3.5-35b"
     llama_cpp_timeout: int = 120
+    llama_cpp_response_mode: Literal["final_only", "raw"] = "final_only"
+    llama_cpp_extra_body_json: str = ""
 
     # PersonaPlex text endpoint
     personaplex_base_url: str = ""

@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.models.enums_and_dimensions import MemoryKind
 
 logger = logging.getLogger(__name__)
@@ -140,6 +140,9 @@ class MemoryExtractionService:
             logger.info(f"Extracted {len(memories)} memories from conversation")
             return memories
 
+        except LLMEmptyContentError as e:
+            logger.warning(f"Memory extraction returned no final content: {e}")
+            return []
         except Exception as e:
             logger.error(f"Failed to extract memories: {e}")
             return []
@@ -194,6 +197,9 @@ Return only significant patterns, not one-time typos. Return empty [] if no patt
             # Фильтруем только error_patterns
             return [m for m in memories if m.kind == MemoryKind.ERROR_PATTERN]
 
+        except LLMEmptyContentError as e:
+            logger.warning(f"Error pattern extraction returned no final content: {e}")
+            return []
         except Exception as e:
             logger.error(f"Failed to extract error patterns: {e}")
             return []

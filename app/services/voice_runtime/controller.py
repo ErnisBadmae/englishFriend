@@ -5,22 +5,13 @@ from __future__ import annotations
 import base64
 import logging
 import time
-import uuid
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from fastapi import WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import AgentPhase, LearningModeEnum, run_agent_turn
-from app.agent.graph import initialize_session
-from app.agent.graph_v2 import USE_AGENT_V2, initialize_session_v2, run_agent_turn_v2
-from app.api.voice_helpers import (
-    award_session_gamification,
-    persist_goal_state_if_needed,
-    persist_interview_run_if_needed,
-    persist_session_evidence_if_needed,
-)
+from app.agent.graph_v2 import USE_AGENT_V2, run_agent_turn_v2
 from app.core.metrics import (
     agent_version_onboarding_complete,
     agent_version_sessions,
@@ -29,11 +20,13 @@ from app.core.metrics import (
     voice_tts_latency_seconds,
     voice_turn_total_seconds,
 )
-from app.schemas.user import UserCreate
-from app.services.ai.memory_pipeline import MemoryPipeline, create_memory_pipeline
-from app.services.ai.vocabulary_service import VocabularyService
-from app.services.database import UserService
-from app.services.learning_plan_service import LearningPlanService
+from app.services.voice_session import (
+    BootstrapContext,
+    SessionBootstrapService,
+    SessionPersistRequest,
+    SessionPersistenceService,
+    VoiceSessionDependencies,
+)
 from app.services.voice_runtime.base import (
     STTProvider,
     TTSProvider,
@@ -53,30 +46,7 @@ def _enum_value(value: Any, default: str) -> str:
     return getattr(value, "value", str(value))
 
 
-@dataclass
-class RuntimeSessionContext:
-    """Loaded context for the modular runtime session."""
-
-    session_id: str
-    username: str = "Student"
-    language_level: str = "B1"
-    is_new_user: bool = True
-    confirmed_goal: Optional[str] = None
-    confirmed_interests: Optional[list[str]] = None
-    roadmap: Optional[dict[str, Any]] = None
-    due_vocabulary_count: int = 0
-    due_vocabulary_words: list[str] = field(default_factory=list)
-    memory_section: str = ""
-
-
-@dataclass
-class VoiceRuntimeDependencies:
-    """Factories for external services used by the runtime."""
-
-    user_service_factory: Callable[[AsyncSession], UserService] = UserService
-    learning_plan_service_factory: Callable[[AsyncSession], LearningPlanService] = LearningPlanService
-    vocabulary_service_factory: Callable[[AsyncSession], VocabularyService] = VocabularyService
-    memory_pipeline_factory: Callable[[AsyncSession], MemoryPipeline] = create_memory_pipeline
+VoiceRuntimeDependencies = VoiceSessionDependencies
 
 
 class VoiceSessionController:
@@ -122,14 +92,19 @@ class VoiceSessionController:
         self._deps = dependencies or VoiceRuntimeDependencies()
         self._use_v2_agent = USE_AGENT_V2 if use_v2_agent is None else use_v2_agent
 
-        self._learning_plan_service = self._deps.learning_plan_service_factory(db)
-        self._vocabulary_service = self._deps.vocabulary_service_factory(db)
-        self._memory_pipeline = self._deps.memory_pipeline_factory(db)
+        self._bootstrap_service = SessionBootstrapService(db, dependencies=self._deps)
+        self._persistence_service = SessionPersistenceService(
+            db,
+            dependencies=self._deps,
+            learning_plan_service=self._bootstrap_service.learning_plan_service,
+            memory_pipeline=self._bootstrap_service.memory_pipeline,
+        )
 
-        self._context = RuntimeSessionContext(session_id=str(uuid.uuid4()))
+        self._context = BootstrapContext()
         self._agent_state: dict[str, Any] = {}
         self._agent_version = "v2" if self._use_v2_agent else "v1"
         self._final_mode = "unknown"
+        self._completion_signal_sent = False
 
     async def run(self) -> VoiceRuntimeResult:
         """Run the modular runtime until the session closes."""
@@ -165,10 +140,24 @@ class VoiceSessionController:
 
     async def initialize(self) -> VoiceControllerOutcome:
         """Load user/product context and emit the initial greeting."""
-        await self._load_session_context()
+        self._context = await self._bootstrap_service.build(
+            user_id=self._user_id,
+            session_id=self._context.session_id,
+        )
         agent_version_sessions.labels(version=self._agent_version).inc()
 
-        self._agent_state = await self._initialize_agent_state()
+        self._agent_state = await self._bootstrap_service.initialize_agent_state(
+            user_id=self._user_id,
+            context=self._context,
+            use_v2_agent=self._use_v2_agent,
+            explicit_mode=self._mode,
+            interview_track_id=self._interview_track,
+            mission_task_type=self._mission_task_type,
+            mission_title=self._mission_title,
+            mission_reason=self._mission_reason,
+            mission_success_signal=self._mission_success_signal,
+            mission_linked_goal_context=self._mission_linked_goal_context,
+        )
         self._agent_state = await self._run_agent_turn(user_message=None)
 
         current_phase = _enum_value(
@@ -241,6 +230,16 @@ class VoiceSessionController:
         if not user_text:
             return VoiceControllerOutcome()
 
+        if self._agent_state.get("session_complete_reason"):
+            events = self._build_session_complete_events()
+            events.append(
+                {
+                    "type": "error",
+                    "message": "This setup session is already complete. End it and start your first mission from the dashboard.",
+                }
+            )
+            return VoiceControllerOutcome(events=events)
+
         turn_start = time.time()
         voice_messages_total.labels(direction="inbound", type="text").inc()
 
@@ -287,9 +286,10 @@ class VoiceSessionController:
             events.extend(assistant_events)
             voice_turn_total_seconds.labels(mode=current_mode).observe(time.time() - turn_start)
 
+        events.extend(self._build_session_complete_events())
+
         if self._agent_state.get("should_end_session"):
-            complete_outcome = await self._persist_session(status="completed")
-            events.extend(complete_outcome.events)
+            await self._persist_session(status="completed")
             return VoiceControllerOutcome(
                 events=events,
                 should_close=True,
@@ -320,91 +320,9 @@ class VoiceSessionController:
                 )
             )
 
-        persist_outcome = await self._persist_session(status="completed")
-        events.extend(persist_outcome.events)
+        events.extend(self._build_session_complete_events())
+        await self._persist_session(status="completed")
         return VoiceControllerOutcome(events=events, should_close=True, status="completed")
-
-    async def _load_session_context(self) -> None:
-        """Populate user, learning, vocabulary, and memory context."""
-        user_service = self._deps.user_service_factory(self._db)
-
-        try:
-            user = await user_service.get_user(self._user_id)
-            if not user:
-                logger.info("[VoiceRuntime] User %s not found, auto-creating", self._user_id)
-                user = await user_service.create_user(
-                    UserCreate(
-                        telegram_id=self._user_id,
-                        username=f"User_{self._user_id}",
-                        language_level="B1",
-                    )
-                )
-
-            if user:
-                self._context.username = user.username or "Student"
-                self._context.language_level = user.language_level or "B1"
-        except Exception as exc:
-            logger.warning("[VoiceRuntime] Could not fetch/create user: %s", exc)
-            voice_errors_total.labels(stage="db").inc()
-
-        try:
-            learning_plan = await self._learning_plan_service.get_or_create_plan(self._user_id)
-            self._context.confirmed_goal = self._learning_plan_service.get_goal(learning_plan)
-            self._context.roadmap = learning_plan.roadmap
-            self._context.language_level = (
-                self._learning_plan_service.get_current_level(learning_plan)
-                or self._context.language_level
-            )
-
-            total_sessions = self._learning_plan_service.get_session_count(learning_plan)
-            self._context.is_new_user = total_sessions == 0 and not self._context.confirmed_goal
-
-            due_vocabulary = await self._vocabulary_service.get_due_cards(self._user_id, limit=10)
-            self._context.due_vocabulary_count = len(due_vocabulary)
-            self._context.due_vocabulary_words = [card.word for card in due_vocabulary]
-            self._context.memory_section = await self._memory_pipeline.format_memory_for_prompt(
-                self._user_id
-            )
-        except Exception as exc:
-            logger.warning("[VoiceRuntime] Could not load learning context: %s", exc)
-            voice_errors_total.labels(stage="db").inc()
-
-    async def _initialize_agent_state(self) -> dict[str, Any]:
-        if self._use_v2_agent:
-            return await initialize_session_v2(
-                user_id=self._user_id,
-                session_id=self._context.session_id,
-                username=self._context.username,
-                is_new_user=self._context.is_new_user,
-                language_level=self._context.language_level,
-                confirmed_goal=self._context.confirmed_goal,
-                confirmed_interests=self._context.confirmed_interests,
-                roadmap=self._context.roadmap,
-                due_vocabulary_count=self._context.due_vocabulary_count,
-                due_vocabulary_words=self._context.due_vocabulary_words,
-                memory_section=self._context.memory_section,
-                explicit_mode=self._mode,
-                interview_track_id=self._interview_track,
-                mission_task_type=self._mission_task_type,
-                mission_title=self._mission_title,
-                mission_reason=self._mission_reason,
-                mission_success_signal=self._mission_success_signal,
-                mission_linked_goal_context=self._mission_linked_goal_context,
-            )
-
-        return await initialize_session(
-            user_id=self._user_id,
-            session_id=self._context.session_id,
-            username=self._context.username,
-            is_new_user=self._context.is_new_user,
-            language_level=self._context.language_level,
-            confirmed_goal=self._context.confirmed_goal,
-            confirmed_interests=self._context.confirmed_interests,
-            roadmap=self._context.roadmap,
-            due_vocabulary_count=self._context.due_vocabulary_count,
-            due_vocabulary_words=self._context.due_vocabulary_words,
-            memory_section=self._context.memory_section,
-        )
 
     async def _run_agent_turn(self, user_message: Optional[str]) -> dict[str, Any]:
         if self._use_v2_agent:
@@ -451,72 +369,32 @@ class VoiceSessionController:
         return events
 
     async def _persist_session(self, *, status: str) -> VoiceControllerOutcome:
-        """Persist the session state using the same business services as `/chat/v2`."""
-        try:
-            await persist_goal_state_if_needed(
-                user_id=self._user_id,
-                existing_goal=self._context.confirmed_goal,
-                agent_state=self._agent_state,
-                learning_plan_service=self._learning_plan_service,
-            )
+        """Persist the session state using the shared lifecycle service."""
+        request = SessionPersistRequest.from_agent_state(
+            status=status,
+            user_id=self._user_id,
+            session_id=self._context.session_id,
+            final_mode=self._final_mode,
+            existing_goal=self._context.confirmed_goal,
+            agent_state=self._agent_state,
+        )
+        completion = await self._persistence_service.persist(request)
+        if completion.error:
+            logger.warning("[VoiceRuntime] Persist failed (%s): %s", status, completion.error)
+        return VoiceControllerOutcome(status=completion.status)
 
-            if self._agent_state.get("assessed_level"):
-                await self._learning_plan_service.record_assessment(
-                    self._user_id,
-                    assessed_level=self._agent_state["assessed_level"],
-                    scores=self._agent_state.get("assessment_scores"),
-                    provisional=bool(self._agent_state.get("baseline_provisional")),
-                    confidence_override=self._agent_state.get("baseline_confidence"),
-                )
+    def _build_session_complete_events(self) -> list[dict[str, Any]]:
+        if self._completion_signal_sent or not self._agent_state.get("session_complete_reason"):
+            return []
 
-            await self._learning_plan_service.increment_session_count(
-                self._user_id,
-                mode=self._final_mode,
-                duration_minutes=int(self._agent_state.get("turn_count", 0) or 0) * 2,
-            )
-
-            conversation_history = self._agent_state.get("conversation_history", [])
-            if conversation_history:
-                await self._memory_pipeline.process_conversation(
-                    user_id=self._user_id,
-                    messages=conversation_history,
-                    session_id=self._context.session_id,
-                )
-
-            if int(self._agent_state.get("turn_count", 0) or 0) > 0:
-                await award_session_gamification(
-                    self._db,
-                    self._user_id,
-                    self._context.session_id,
-                )
-
-            interview_run = await persist_interview_run_if_needed(
-                db=self._db,
-                user_id=self._user_id,
-                session_id=self._context.session_id,
-                current_mode=self._final_mode,
-                interview_track_id=self._agent_state.get("interview_track_id"),
-                conversation_history=conversation_history,
-                corrections_made=len(self._agent_state.get("corrections_made", [])),
-                vocabulary_reviewed=self._agent_state.get("vocabulary_reviewed", []),
-            )
-            await persist_session_evidence_if_needed(
-                db=self._db,
-                user_id=self._user_id,
-                session_id=self._context.session_id,
-                current_mode=self._final_mode,
-                conversation_history=conversation_history,
-                corrections_made=self._agent_state.get("corrections_made", []),
-                vocabulary_reviewed=self._agent_state.get("vocabulary_reviewed", []),
-                duration_minutes=int(self._agent_state.get("turn_count", 0) or 0) * 2,
-                assessed_level=self._agent_state.get("assessed_level"),
-                assessment_scores=self._agent_state.get("assessment_scores", {}),
-                interview_run=interview_run,
-            )
-        except Exception as exc:
-            logger.warning("[VoiceRuntime] Persist failed (%s): %s", status, exc)
-
-        return VoiceControllerOutcome(status=status)
+        self._completion_signal_sent = True
+        return [
+            {
+                "type": "session_complete",
+                "reason": self._agent_state.get("session_complete_reason"),
+                "return_screen": self._agent_state.get("session_complete_return_screen") or "home",
+            }
+        ]
 
     async def _send_events(self, events: list[dict[str, Any]]) -> None:
         for event in events:

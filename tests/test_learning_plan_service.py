@@ -138,6 +138,34 @@ def test_get_program_plan_returns_default_shell_for_empty_roadmap():
     assert program is not None
     assert program["current_stage"] == "goal_setup"
     assert program["title"] == "Complete your career English setup"
+    assert program["preferred_mode"] == "free_conversation"
+    assert program["focus_areas"] == []
+
+
+def test_get_program_plan_normalizes_legacy_shell_for_new_user():
+    plan = MagicMock()
+    plan.roadmap = {
+        "preferred_mode": "free_conversation",
+        "focus_areas": [],
+        "program_plan": {
+            "title": "Complete your career English setup",
+            "time_horizon_days": 90,
+            "current_stage": "goal_setup",
+            "stage_label": "Goal Setup",
+            "weekly_focus": ["Clarify your target role and context"],
+            "success_metric": "Turn a vague goal into a concrete target",
+            "next_milestone": "Confirm your goal",
+            "stages": [],
+        },
+    }
+    service = LearningPlanService(AsyncMock())
+
+    program = service.get_program_plan(plan)
+
+    assert program is not None
+    assert program["preferred_mode"] == "free_conversation"
+    assert program["focus_areas"] == []
+    assert "stages" in program
 
 
 @pytest.mark.asyncio

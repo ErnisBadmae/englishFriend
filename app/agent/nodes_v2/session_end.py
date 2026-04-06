@@ -15,7 +15,7 @@ from app.agent.state import AgentState, AgentPhase, add_decision_log
 from app.agent.response_parser import parse_llm_response
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
-from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.core.metrics import (
     agent_v2_llm_latency,
     agent_v2_session_complete,
@@ -77,7 +77,9 @@ async def session_end_node(state: AgentState) -> AgentState:
         )
         latency_ms = int((time.time() - start_time) * 1000)
         agent_v2_llm_latency.labels(node="session_end").observe(latency_ms / 1000)
-
+    except LLMEmptyContentError as exc:
+        logger.warning("[SessionEnd] Empty final content: %s", exc)
+        response = None
     except Exception as e:
         logger.error(f"[SessionEnd] LLM error: {e}")
         response = None

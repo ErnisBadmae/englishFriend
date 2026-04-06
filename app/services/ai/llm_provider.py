@@ -10,17 +10,20 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Optional
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.core.metrics import llm_response_anomalies_total
 from app.core.observability import get_langfuse, get_request_id, get_user_id
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,57 @@ RETRYABLE_EXCEPTIONS = (
     httpx.ReadTimeout,
 )
 
+FINAL_ONLY_SYSTEM_SUFFIX = (
+    "Return only the final answer for the user. "
+    "Do not output reasoning, hidden analysis, or chain-of-thought. "
+    "If JSON is requested, return only valid JSON with no markdown fences."
+)
+
+FINAL_ONLY_RETRY_SUFFIX = (
+    "Your previous response contained no final answer. "
+    "Return ONLY the final answer now. "
+    "Do not output reasoning or thinking. "
+    "If JSON is requested, return only valid JSON."
+)
+
+
+class LLMEmptyContentError(RuntimeError):
+    """Raised when a provider returns no final assistant content."""
+
+    def __init__(
+        self,
+        *,
+        provider_name: str,
+        model: str,
+        finish_reason: Optional[str] = None,
+        has_reasoning: bool = False,
+        used_compat_retry: bool = False,
+    ) -> None:
+        self.provider_name = provider_name
+        self.model = model
+        self.finish_reason = finish_reason
+        self.has_reasoning = has_reasoning
+        self.used_compat_retry = used_compat_retry
+        super().__init__(
+            f"[{provider_name}] Empty final content from model={model}, "
+            f"finish_reason={finish_reason or 'unknown'}, "
+            f"has_reasoning={has_reasoning}, compat_retry={used_compat_retry}"
+        )
+
+
+@dataclass
+class NormalizedLLMResponse:
+    """Normalized completion payload across provider SDKs."""
+
+    content: str
+    finish_reason: Optional[str] = None
+    reasoning_content: str = ""
+    usage: Any = None
+
+    @property
+    def has_reasoning(self) -> bool:
+        return bool(self.reasoning_content.strip())
+
 
 def create_retry_decorator(max_retries: int | None = None):
     """Создать декоратор retry с настройками из конфига."""
@@ -76,6 +130,83 @@ def create_retry_decorator(max_retries: int | None = None):
     )
 
 
+def _string_or_none(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) else None
+
+
+def _extract_text_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                continue
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def _get_extra_text(obj: Any, field_name: str) -> str:
+    if obj is None:
+        return ""
+    if isinstance(obj, dict):
+        value = obj.get(field_name)
+        return value if isinstance(value, str) else ""
+
+    direct_value = getattr(obj, field_name, None)
+    if isinstance(direct_value, str):
+        return direct_value
+
+    model_extra = getattr(obj, "model_extra", None)
+    if isinstance(model_extra, dict):
+        extra_value = model_extra.get(field_name)
+        if isinstance(extra_value, str):
+            return extra_value
+
+    return ""
+
+
+def _normalize_completion_response(response: Any) -> NormalizedLLMResponse:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return NormalizedLLMResponse(content="", usage=getattr(response, "usage", None))
+
+    choice = choices[0]
+    message = getattr(choice, "message", None)
+    return NormalizedLLMResponse(
+        content=_extract_text_content(getattr(message, "content", None)),
+        finish_reason=_string_or_none(getattr(choice, "finish_reason", None)),
+        reasoning_content=_get_extra_text(message, "reasoning_content") or _get_extra_text(choice, "reasoning_content"),
+        usage=getattr(response, "usage", None),
+    )
+
+
+def _parse_extra_body_json(raw_json: str, *, provider_name: str) -> Optional[dict[str, Any]]:
+    if not raw_json or not raw_json.strip():
+        return None
+
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        logger.warning("[%s] Invalid extra body JSON ignored: %s", provider_name, exc)
+        return None
+
+    if not isinstance(parsed, dict):
+        logger.warning("[%s] extra body JSON must be an object", provider_name)
+        return None
+
+    return parsed
+
+
 def trace_llm_generation(
     model: str,
     messages: list[dict],
@@ -84,6 +215,7 @@ def trace_llm_generation(
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     trace_name: str = "llm_generate",
+    metadata: Optional[dict[str, Any]] = None,
 ):
     """Log LLM generation to Langfuse."""
     langfuse = get_langfuse()
@@ -107,13 +239,17 @@ def trace_llm_generation(
         if output_tokens is not None:
             usage["output"] = output_tokens
 
+        trace_metadata = {"latency_ms": round(latency_ms, 2)}
+        if metadata:
+            trace_metadata.update(metadata)
+
         trace.generation(
             name="completion",
             model=model,
             input=messages,
             output=output,
             usage=usage if usage else None,
-            metadata={"latency_ms": round(latency_ms, 2)},
+            metadata=trace_metadata,
         )
     except Exception as exc:
         logger.warning("Failed to log to Langfuse: %s", exc)
@@ -170,10 +306,16 @@ class OpenAICompatibleProvider(LLMProvider):
         provider_name: str,
         max_retries: int | None = None,
         disable_env_proxy: bool = True,
+        response_mode: str = "raw",
+        request_extra_body: Optional[dict[str, Any]] = None,
+        supports_final_only: bool = False,
     ):
         self._provider_name = provider_name
         self._model = model
         self._retry = create_retry_decorator(max_retries)
+        self._response_mode = response_mode
+        self._request_extra_body = request_extra_body or {}
+        self._supports_final_only = supports_final_only
         self._client = AsyncOpenAI(
             api_key=api_key or "EMPTY",
             base_url=base_url,
@@ -183,6 +325,82 @@ class OpenAICompatibleProvider(LLMProvider):
             ),
         )
 
+    def _prepare_system_prompt(self, system_prompt: str, *, compat_retry: bool = False) -> str:
+        if not self._supports_final_only or self._response_mode != "final_only":
+            return system_prompt
+
+        suffix = FINAL_ONLY_RETRY_SUFFIX if compat_retry else FINAL_ONLY_SYSTEM_SUFFIX
+        return f"{system_prompt.rstrip()}\n\n{suffix}"
+
+    def _build_create_kwargs(
+        self,
+        *,
+        messages: list[dict],
+        max_tokens: int,
+        stream: bool,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": settings.llm_temperature,
+            "stream": stream,
+        }
+        if self._request_extra_body:
+            kwargs["extra_body"] = self._request_extra_body
+        return kwargs
+
+    async def _call_completion(
+        self,
+        *,
+        messages: list[dict],
+        max_tokens: int,
+    ) -> Any:
+        @self._retry
+        async def _call():
+            return await self._client.chat.completions.create(
+                **self._build_create_kwargs(messages=messages, max_tokens=max_tokens, stream=False)
+            )
+
+        return await _call()
+
+    def _trace_generation(
+        self,
+        *,
+        messages: list[dict],
+        response: NormalizedLLMResponse,
+        latency_ms: float,
+        used_compat_retry: bool,
+    ) -> None:
+        usage = response.usage
+        trace_llm_generation(
+            model=f"{self._provider_name}/{self._model}",
+            messages=messages,
+            output=response.content,
+            latency_ms=latency_ms,
+            input_tokens=usage.prompt_tokens if usage else None,
+            output_tokens=usage.completion_tokens if usage else None,
+            metadata={
+                "finish_reason": response.finish_reason,
+                "has_reasoning": response.has_reasoning,
+                "compat_retry_used": used_compat_retry,
+            },
+        )
+
+    def _raise_empty_content(
+        self,
+        *,
+        response: NormalizedLLMResponse,
+        used_compat_retry: bool,
+    ) -> None:
+        raise LLMEmptyContentError(
+            provider_name=self._provider_name,
+            model=self._model,
+            finish_reason=response.finish_reason,
+            has_reasoning=response.has_reasoning,
+            used_compat_retry=used_compat_retry,
+        )
+
     async def generate(
         self,
         user_message: str,
@@ -190,38 +408,88 @@ class OpenAICompatibleProvider(LLMProvider):
         conversation_history: list[dict] | None = None,
         max_tokens: int = 150,
     ) -> str:
-        messages = self._build_messages(user_message, system_prompt, conversation_history)
         start_time = time.time()
+        used_compat_retry = False
 
-        @self._retry
-        async def _call():
-            return await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=settings.llm_temperature,
-            )
+        messages = self._build_messages(
+            user_message,
+            self._prepare_system_prompt(system_prompt),
+            conversation_history,
+        )
+        raw_response = await self._call_completion(messages=messages, max_tokens=max_tokens)
+        normalized = _normalize_completion_response(raw_response)
 
-        response = await _call()
-        output = response.choices[0].message.content or ""
-        if not output.strip():
+        if not normalized.content.strip():
+            llm_response_anomalies_total.labels(
+                provider=self._provider_name,
+                anomaly="empty_final_content",
+            ).inc()
+            if normalized.has_reasoning:
+                llm_response_anomalies_total.labels(
+                    provider=self._provider_name,
+                    anomaly="reasoning_only",
+                ).inc()
+
             logger.warning(
-                "[%s] Empty final content from model=%s",
+                "[%s] Empty final content from model=%s finish_reason=%s has_reasoning=%s",
                 self._provider_name,
                 self._model,
+                normalized.finish_reason or "unknown",
+                normalized.has_reasoning,
             )
-        latency_ms = (time.time() - start_time) * 1000
 
-        usage = response.usage
-        trace_llm_generation(
-            model=f"{self._provider_name}/{self._model}",
+            if self._supports_final_only and self._response_mode == "final_only" and normalized.has_reasoning:
+                llm_response_anomalies_total.labels(
+                    provider=self._provider_name,
+                    anomaly="compat_retry",
+                ).inc()
+                used_compat_retry = True
+                retry_messages = self._build_messages(
+                    user_message,
+                    self._prepare_system_prompt(system_prompt, compat_retry=True),
+                    conversation_history,
+                )
+                raw_response = await self._call_completion(messages=retry_messages, max_tokens=max_tokens)
+                normalized = _normalize_completion_response(raw_response)
+                messages = retry_messages
+
+                if not normalized.content.strip():
+                    llm_response_anomalies_total.labels(
+                        provider=self._provider_name,
+                        anomaly="compat_retry_failed",
+                    ).inc()
+                    if normalized.has_reasoning:
+                        llm_response_anomalies_total.labels(
+                            provider=self._provider_name,
+                            anomaly="reasoning_only",
+                        ).inc()
+
+                    latency_ms = (time.time() - start_time) * 1000
+                    self._trace_generation(
+                        messages=messages,
+                        response=normalized,
+                        latency_ms=latency_ms,
+                        used_compat_retry=used_compat_retry,
+                    )
+                    self._raise_empty_content(response=normalized, used_compat_retry=used_compat_retry)
+            else:
+                latency_ms = (time.time() - start_time) * 1000
+                self._trace_generation(
+                    messages=messages,
+                    response=normalized,
+                    latency_ms=latency_ms,
+                    used_compat_retry=used_compat_retry,
+                )
+                self._raise_empty_content(response=normalized, used_compat_retry=used_compat_retry)
+
+        latency_ms = (time.time() - start_time) * 1000
+        self._trace_generation(
             messages=messages,
-            output=output,
+            response=normalized,
             latency_ms=latency_ms,
-            input_tokens=usage.prompt_tokens if usage else None,
-            output_tokens=usage.completion_tokens if usage else None,
+            used_compat_retry=used_compat_retry,
         )
-        return output
+        return normalized.content
 
     async def generate_stream(
         self,
@@ -230,13 +498,13 @@ class OpenAICompatibleProvider(LLMProvider):
         conversation_history: list[dict] | None = None,
         max_tokens: int = 150,
     ) -> AsyncIterator[str]:
-        messages = self._build_messages(user_message, system_prompt, conversation_history)
+        messages = self._build_messages(
+            user_message,
+            self._prepare_system_prompt(system_prompt),
+            conversation_history,
+        )
         stream = await self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=settings.llm_temperature,
-            stream=True,
+            **self._build_create_kwargs(messages=messages, max_tokens=max_tokens, stream=True)
         )
 
         async for chunk in stream:
@@ -256,6 +524,7 @@ class VLLMProvider(OpenAICompatibleProvider):
             provider_name="vllm",
             max_retries=settings.vllm_max_retries,
             disable_env_proxy=True,
+            response_mode="raw",
         )
 
 
@@ -271,6 +540,12 @@ class LlamaCppProvider(OpenAICompatibleProvider):
             provider_name="llama_cpp",
             max_retries=settings.llm_max_retries,
             disable_env_proxy=True,
+            response_mode=settings.llama_cpp_response_mode,
+            request_extra_body=_parse_extra_body_json(
+                settings.llama_cpp_extra_body_json,
+                provider_name="llama_cpp",
+            ),
+            supports_final_only=True,
         )
 
 
@@ -291,6 +566,7 @@ class PersonaPlexProvider(OpenAICompatibleProvider):
             provider_name="personaplex",
             max_retries=settings.llm_max_retries,
             disable_env_proxy=True,
+            response_mode="raw",
         )
 
 
@@ -326,21 +602,53 @@ class GroqProvider(LLMProvider):
             )
 
         response = await _call()
-        output = response.choices[0].message.content or ""
-        if not output.strip():
-            logger.warning("[groq] Empty final content from model=%s", settings.groq_model)
+        normalized = _normalize_completion_response(response)
+        if not normalized.content.strip():
+            llm_response_anomalies_total.labels(provider="groq", anomaly="empty_final_content").inc()
+            logger.warning(
+                "[groq] Empty final content from model=%s finish_reason=%s",
+                settings.groq_model,
+                normalized.finish_reason or "unknown",
+            )
+            latency_ms = (time.time() - start_time) * 1000
+            usage = normalized.usage
+            trace_llm_generation(
+                model=f"groq/{settings.groq_model}",
+                messages=messages,
+                output=normalized.content,
+                latency_ms=latency_ms,
+                input_tokens=usage.prompt_tokens if usage else None,
+                output_tokens=usage.completion_tokens if usage else None,
+                metadata={
+                    "finish_reason": normalized.finish_reason,
+                    "has_reasoning": normalized.has_reasoning,
+                    "compat_retry_used": False,
+                },
+            )
+            raise LLMEmptyContentError(
+                provider_name="groq",
+                model=settings.groq_model,
+                finish_reason=normalized.finish_reason,
+                has_reasoning=normalized.has_reasoning,
+                used_compat_retry=False,
+            )
         latency_ms = (time.time() - start_time) * 1000
 
-        usage = response.usage
+        usage = normalized.usage
         trace_llm_generation(
             model=f"groq/{settings.groq_model}",
             messages=messages,
-            output=output,
+            output=normalized.content,
             latency_ms=latency_ms,
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
+            metadata={
+                "finish_reason": normalized.finish_reason,
+                "has_reasoning": normalized.has_reasoning,
+                "compat_retry_used": False,
+            },
         )
-        return output
+        return normalized.content
 
     async def generate_stream(
         self,
@@ -375,6 +683,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
             provider_name="openai",
             max_retries=settings.llm_max_retries,
             disable_env_proxy=False,
+            response_mode="raw",
         )
 
 

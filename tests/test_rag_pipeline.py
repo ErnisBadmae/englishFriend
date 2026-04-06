@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.enums_and_dimensions import MemoryKind
+from app.services.ai.llm_provider import LLMEmptyContentError
 
 
 class TestEmbeddingService:
@@ -71,6 +72,54 @@ class TestMemoryExtractionService:
 
             assert len(result) == 1
             assert result[0].kind == MemoryKind.FACT
+
+    @pytest.mark.asyncio
+    async def test_extract_from_conversation_returns_empty_on_empty_final_content(self):
+        with patch("app.services.ai.memory_extraction_service.get_llm_provider") as mock_provider:
+            mock_llm = MagicMock()
+            mock_llm.generate = AsyncMock(
+                side_effect=LLMEmptyContentError(
+                    provider_name="llama_cpp",
+                    model="CPU Qwen 3.5 256k node3",
+                    finish_reason="length",
+                    has_reasoning=True,
+                    used_compat_retry=True,
+                )
+            )
+            mock_provider.return_value = mock_llm
+
+            from app.services.ai.memory_extraction_service import MemoryExtractionService
+
+            service = MemoryExtractionService()
+            result = await service.extract_from_conversation(
+                [{"role": "user", "content": "Hi, I'm Aaron from Russia"}]
+            )
+
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_extract_error_patterns_returns_empty_on_empty_final_content(self):
+        with patch("app.services.ai.memory_extraction_service.get_llm_provider") as mock_provider:
+            mock_llm = MagicMock()
+            mock_llm.generate = AsyncMock(
+                side_effect=LLMEmptyContentError(
+                    provider_name="llama_cpp",
+                    model="CPU Qwen 3.5 256k node3",
+                    finish_reason="length",
+                    has_reasoning=True,
+                    used_compat_retry=True,
+                )
+            )
+            mock_provider.return_value = mock_llm
+
+            from app.services.ai.memory_extraction_service import MemoryExtractionService
+
+            service = MemoryExtractionService()
+            result = await service.extract_error_patterns(
+                ["I have work on ML project."]
+            )
+
+            assert result == []
 
 
 class TestQdrantService:

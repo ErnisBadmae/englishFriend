@@ -133,6 +133,8 @@ class AgentState(TypedDict, total=False):
     # === Response ===
     pending_response: Optional[str]  # Response to send to user
     pending_audio: Optional[bytes]  # TTS audio to send
+    session_complete_reason: Optional[str]
+    session_complete_return_screen: Optional[str]
 
     # === Control Flags ===
     should_end_session: bool
@@ -247,6 +249,8 @@ def create_initial_state(
         # Response
         pending_response=None,
         pending_audio=None,
+        session_complete_reason=None,
+        session_complete_return_screen=None,
 
         # Control flags
         should_end_session=False,

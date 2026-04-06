@@ -1,13 +1,4 @@
-/**
- * Hook для WebSocket соединения с бэкендом.
- *
- * Протокол:
- * - Client -> Server: {"type": "text", "text": "распознанный текст"}
- * - Server -> Client: {"type": "transcript", "role": "assistant", "text": "ответ"}
- * - Server -> Client: {"type": "audio", "data": "<base64 MP3>", "format": "mp3"}
- */
-
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -15,7 +6,7 @@ interface Message {
 }
 
 interface WebSocketMessage {
-  type: 'connected' | 'transcript' | 'audio' | 'error';
+  type: 'connected' | 'transcript' | 'audio' | 'error' | 'session_complete';
   role?: 'user' | 'assistant';
   text?: string;
   data?: string;
@@ -23,6 +14,8 @@ interface WebSocketMessage {
   message?: string;
   session_id?: string;
   greeting?: string;
+  reason?: string;
+  return_screen?: string;
 }
 
 interface UseWebSocketOptions {
@@ -33,7 +26,17 @@ interface UseWebSocketOptions {
   onError?: (error: string) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  onSessionComplete?: (payload: {
+    reason: string;
+    returnScreen?: string;
+  }) => void;
   query?: Record<string, string | number | undefined | null>;
+}
+
+interface DisconnectOptions {
+  sendEnd?: boolean;
+  resetMessages?: boolean;
+  reason?: string;
 }
 
 interface UseWebSocketReturn {
@@ -43,8 +46,18 @@ interface UseWebSocketReturn {
   messages: Message[];
   sendText: (text: string) => void;
   connect: () => void;
-  disconnect: () => void;
+  disconnect: (options?: DisconnectOptions) => void;
   error: string | null;
+}
+
+function shouldSuppressAssistantDuplicate(previous: Message[], next: Message): boolean {
+  if (next.role !== 'assistant') {
+    return false;
+  }
+  if (previous.some((item) => item.role === 'user')) {
+    return false;
+  }
+  return previous.some((item) => item.role === 'assistant' && item.text === next.text);
 }
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
@@ -56,6 +69,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     onError,
     onConnect,
     onDisconnect,
+    onSessionComplete,
     query,
   } = options;
 
@@ -68,12 +82,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
+  const isConnectingRef = useRef<boolean>(false);
+  const manualCloseRef = useRef<boolean>(false);
 
-  // Подключение к WebSocket
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    if (isConnecting) return;
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN
+      || wsRef.current?.readyState === WebSocket.CONNECTING
+      || isConnectingRef.current
+    ) {
+      return;
+    }
 
+    manualCloseRef.current = false;
+    isConnectingRef.current = true;
     setIsConnecting(true);
     setError(null);
 
@@ -93,9 +115,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
     ws.onopen = () => {
       console.log('WebSocket connected');
+      isConnectingRef.current = false;
       setIsConnected(true);
       setIsConnecting(false);
-      reconnectAttemptsRef.current = 0; // Reset on success
+      reconnectAttemptsRef.current = 0;
       onConnect?.();
     };
 
@@ -113,7 +136,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 role: 'assistant',
                 text: data.greeting,
               };
-              setMessages(prev => (prev.length === 0 ? [greetingMessage] : prev));
+              setMessages((previous) => (
+                shouldSuppressAssistantDuplicate(previous, greetingMessage)
+                  ? previous
+                  : [...previous, greetingMessage]
+              ));
               onMessage?.(greetingMessage);
             }
             break;
@@ -124,31 +151,42 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 role: data.role,
                 text: data.text,
               };
-              setMessages(prev => [...prev, message]);
+              setMessages((previous) => (
+                shouldSuppressAssistantDuplicate(previous, message)
+                  ? previous
+                  : [...previous, message]
+              ));
               onMessage?.(message);
             }
             break;
 
           case 'audio':
             if (data.data) {
-              // Декодируем base64 в ArrayBuffer
               const binaryString = atob(data.data);
               const bytes = new Uint8Array(binaryString.length);
-              for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+              for (let index = 0; index < binaryString.length; index++) {
+                bytes[index] = binaryString.charCodeAt(index);
               }
               onAudio?.(bytes.buffer);
             }
             break;
 
-          case 'error':
-            const errorMsg = data.message || 'Unknown error';
-            setError(errorMsg);
-            onError?.(errorMsg);
+          case 'error': {
+            const errorMessage = data.message || 'Unknown error';
+            setError(errorMessage);
+            onError?.(errorMessage);
+            break;
+          }
+
+          case 'session_complete':
+            onSessionComplete?.({
+              reason: data.reason || 'completed',
+              returnScreen: data.return_screen || undefined,
+            });
             break;
         }
-      } catch (err) {
-        console.error('Failed to parse WebSocket message:', err);
+      } catch (parseError) {
+        console.error('Failed to parse WebSocket message:', parseError);
       }
     };
 
@@ -160,13 +198,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
     ws.onclose = (event) => {
       console.log('WebSocket closed:', event.code, event.reason);
+      isConnectingRef.current = false;
       setIsConnected(false);
       setIsConnecting(false);
       setSessionId(null);
       wsRef.current = null;
       onDisconnect?.();
 
-      // Автоматическое переподключение через 5 секунд (максимум 3 попытки)
+      if (manualCloseRef.current) {
+        manualCloseRef.current = false;
+        return;
+      }
+
       if (event.code !== 1000 && reconnectAttemptsRef.current < 3) {
         reconnectAttemptsRef.current++;
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -178,58 +221,63 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setError('Cannot connect to server. Please refresh the page.');
       }
     };
-  }, [url, userId, query, isConnecting, onConnect, onDisconnect, onMessage, onAudio, onError]);
+  }, [url, userId, query, onAudio, onConnect, onDisconnect, onError, onMessage, onSessionComplete]);
 
-  // Отключение с отправкой "end" сообщения для PostSessionService
-  const disconnect = useCallback(() => {
+  const disconnect = useCallback((options: DisconnectOptions = {}) => {
+    const {
+      sendEnd = true,
+      resetMessages = true,
+      reason = 'User disconnected',
+    } = options;
+
+    manualCloseRef.current = true;
+    isConnectingRef.current = false;
+
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
 
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      // Отправляем "end" чтобы backend обработал сессию
-      wsRef.current.send(JSON.stringify({ type: 'end' }));
-      console.log('[WS] Sent end message for post-session processing');
-
-      // Даём время на обработку перед закрытием
-      setTimeout(() => {
-        if (wsRef.current) {
-          wsRef.current.close(1000, 'User disconnected');
-          wsRef.current = null;
-        }
-      }, 500);
-    } else if (wsRef.current) {
-      wsRef.current.close(1000, 'User disconnected');
-      wsRef.current = null;
+    const activeSocket = wsRef.current;
+    if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+      if (sendEnd) {
+        activeSocket.send(JSON.stringify({ type: 'end' }));
+        console.log('[WS] Sent end message for post-session processing');
+        setTimeout(() => {
+          if (wsRef.current === activeSocket) {
+            activeSocket.close(1000, reason);
+          }
+        }, 500);
+      } else {
+        activeSocket.close(1000, reason);
+      }
+    } else if (activeSocket) {
+      activeSocket.close(1000, reason);
     }
 
     setIsConnected(false);
+    setIsConnecting(false);
     setSessionId(null);
-    setMessages([]);
+    if (resetMessages) {
+      setMessages([]);
+    }
   }, []);
 
-  // Отправка текста
   const sendText = useCallback((text: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       console.error('WebSocket not connected');
       return;
     }
 
-    const message = JSON.stringify({
+    wsRef.current.send(JSON.stringify({
       type: 'text',
-      text: text,
-    });
-
-    wsRef.current.send(message);
+      text,
+    }));
     console.log('Sent text:', text);
   }, []);
 
-  // Cleanup при размонтировании
-  useEffect(() => {
-    return () => {
-      disconnect();
-    };
+  useEffect(() => () => {
+    disconnect();
   }, [disconnect]);
 
   return {

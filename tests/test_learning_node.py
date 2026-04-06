@@ -5,6 +5,7 @@ import pytest
 from app.agent.graph_v2 import initialize_session_v2
 from app.agent.nodes_v2.learning import learning_node
 from app.agent.state import AgentPhase, LearningModeEnum, create_initial_state
+from app.services.ai.llm_provider import LLMEmptyContentError
 
 
 def _foundation_state() -> dict:
@@ -42,6 +43,35 @@ async def test_initialize_session_v2_infers_foundation_mission_context():
     assert state["mission_task_type"] == "foundation_speaking_drill"
     assert state["mission_title"] == "Run a foundation speaking drill"
     assert state["mission_linked_goal_context"] == "foundation"
+
+
+@pytest.mark.asyncio
+async def test_initialize_session_v2_prefers_explicit_mission_contract_over_roadmap_inference():
+    state = await initialize_session_v2(
+        user_id=1,
+        session_id="session-explicit",
+        username="Student",
+        is_new_user=False,
+        language_level="B1",
+        explicit_mode="free_conversation",
+        roadmap={
+            "program_plan": {
+                "current_stage": "foundation",
+                "weekly_focus": ["Stabilize grammar, fluency, and core workplace answers"],
+            }
+        },
+        mission_task_type="project_walkthrough_drill",
+        mission_title="Explain one recent ML project",
+        mission_reason="Stay on project walkthrough instead of a foundation drill.",
+        mission_success_signal="You can explain a project with metric and impact.",
+        mission_linked_goal_context="project_walkthrough",
+    )
+
+    assert state["mission_task_type"] == "project_walkthrough_drill"
+    assert state["mission_title"] == "Explain one recent ML project"
+    assert state["mission_reason"] == "Stay on project walkthrough instead of a foundation drill."
+    assert state["mission_success_signal"] == "You can explain a project with metric and impact."
+    assert state["mission_linked_goal_context"] == "project_walkthrough"
 
 
 @pytest.mark.asyncio
@@ -121,6 +151,37 @@ async def test_learning_node_empty_llm_content_uses_mission_fallback():
 
     llm = MagicMock()
     llm.generate = AsyncMock(return_value="")
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert "Let's keep it focused on your current work" in updated["pending_response"]
+    assert "What do you do now" in updated["pending_response"]
+
+
+@pytest.mark.asyncio
+async def test_learning_node_empty_final_content_error_uses_mission_fallback():
+    state = _foundation_state()
+    state["last_user_message"] = "I work as a data scientist on ranking models."
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        side_effect=LLMEmptyContentError(
+            provider_name="llama_cpp",
+            model="CPU Qwen 3.5 256k node3",
+            finish_reason="length",
+            has_reasoning=True,
+            used_compat_retry=True,
+        )
+    )
     prompt_service = MagicMock()
     prompt_service.log_usage = AsyncMock()
 

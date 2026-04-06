@@ -35,7 +35,7 @@ from app.core.metrics import (
     agent_v2_llm_latency,
     agent_v2_parse_success,
 )
-from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
 
@@ -123,6 +123,108 @@ _BASELINE_PROMPTS: list[tuple[str, str]] = [
     ("target_role", "What role do you want next: ML engineer, data scientist, or software engineer?"),
     ("project_task", "Tell me about one ML or work task in simple words."),
 ]
+_ASSESSMENT_FILLER_TOKENS = {
+    "a",
+    "ah",
+    "an",
+    "and",
+    "as",
+    "at",
+    "eh",
+    "erm",
+    "hmm",
+    "i",
+    "im",
+    "is",
+    "just",
+    "let",
+    "lets",
+    "like",
+    "mean",
+    "mm",
+    "my",
+    "no",
+    "now",
+    "of",
+    "ok",
+    "okay",
+    "please",
+    "say",
+    "sorry",
+    "test",
+    "the",
+    "to",
+    "uh",
+    "um",
+    "well",
+    "yeah",
+    "yes",
+    "you",
+    "your",
+}
+_ASSESSMENT_NUMBER_WORDS = {
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+}
+_CURRENT_ROLE_PATTERNS = (
+    "i work",
+    "i am",
+    "my role",
+    "data analyst",
+    "data scientist",
+    "ml engineer",
+    "engineer",
+    "scientist",
+    "analyst",
+    "developer",
+    "researcher",
+    "manager",
+    "intern",
+    "build",
+    "built",
+    "working on",
+)
+_TARGET_ROLE_PATTERNS = (
+    "ml engineer",
+    "machine learning engineer",
+    "data scientist",
+    "software engineer",
+    "backend engineer",
+    "frontend engineer",
+    "developer",
+    "scientist",
+    "engineer",
+    "analyst",
+)
+_PROJECT_TASK_PATTERNS = (
+    "project",
+    "task",
+    "model",
+    "models",
+    "prediction",
+    "recommendation",
+    "recommender",
+    "churn",
+    "fraud",
+    "pipeline",
+    "dataset",
+    "feature",
+    "classification",
+    "training",
+    "recall",
+    "precision",
+    "e commerce",
+    "ecommerce",
+)
 
 
 async def onboarding_node(state: AgentState) -> AgentState:
@@ -174,6 +276,14 @@ async def onboarding_node(state: AgentState) -> AgentState:
         )
         latency_ms = int((time.time() - start_time) * 1000)
         agent_v2_llm_latency.labels(node="onboarding").observe(latency_ms / 1000)
+    except LLMEmptyContentError as exc:
+        logger.warning("[Onboarding] Empty final content: %s", exc)
+        state["pending_response"] = _build_goal_followup_question(
+            state.get("goal_brief") or {},
+            state.get("last_user_message"),
+        )
+        state["needs_user_input"] = True
+        return state
     except Exception as exc:
         logger.error("[Onboarding] LLM error: %s", exc)
         state["pending_response"] = "I'm having trouble right now. Could you repeat that?"
@@ -604,14 +714,97 @@ def _is_meta_progress_message(message: str) -> bool:
     return _has_any_signal(normalized, _PROCEED_PATTERNS) or _has_any_signal(normalized, _LOW_SIGNAL_PATTERNS)
 
 
-def _is_usable_baseline_answer(message: str) -> bool:
+def _extract_assessment_content_tokens(message: str) -> list[str]:
+    normalized = _normalize_user_message(message).strip()
+    if not normalized:
+        return []
+    tokens = [word for word in normalized.split() if word]
+    return [
+        token
+        for token in tokens
+        if token not in _ASSESSMENT_FILLER_TOKENS
+        and token not in _ASSESSMENT_NUMBER_WORDS
+        and not token.isdigit()
+    ]
+
+
+def _is_low_signal_assessment_answer(
+    message: str,
+    question_key: str,
+    state: AgentState,
+) -> bool:
+    normalized = _normalize_user_message(message).strip()
+    if not normalized:
+        return True
+
+    content_tokens = _extract_assessment_content_tokens(normalized)
+    if len(content_tokens) < 2:
+        return True
+
+    words = [word for word in normalized.split() if word]
+    filler_ratio = 1.0 - (len(content_tokens) / max(len(words), 1))
+    if filler_ratio > 0.55 and len(content_tokens) < 4:
+        return True
+
+    goal_role = str((state.get("goal_brief") or {}).get("target_role") or "").lower()
+
+    if question_key == "target_role":
+        role_patterns = list(_TARGET_ROLE_PATTERNS)
+        if goal_role:
+            role_patterns.append(goal_role)
+        return not any(pattern in normalized for pattern in role_patterns)
+
+    if question_key == "current_role":
+        return not (
+            any(pattern in normalized for pattern in _CURRENT_ROLE_PATTERNS)
+            or _has_any_signal(normalized, _ML_SIGNAL_PATTERNS)
+        )
+
+    if question_key == "project_task":
+        return not (
+            any(pattern in normalized for pattern in _PROJECT_TASK_PATTERNS)
+            or _has_any_signal(normalized, _ML_SIGNAL_PATTERNS)
+        )
+
+    return len(content_tokens) < 3
+
+
+def _is_usable_baseline_answer(
+    message: str,
+    question_key: str,
+    state: AgentState,
+) -> bool:
     normalized = _normalize_user_message(message).strip()
     if not normalized:
         return False
     if _is_meta_progress_message(normalized):
         return False
-    words = [word for word in normalized.split() if word]
-    return len(words) >= 4
+    return not _is_low_signal_assessment_answer(normalized, question_key, state)
+
+
+def _build_low_signal_assessment_response(
+    state: AgentState,
+    question_key: str,
+) -> str:
+    streak = int(state.get("low_signal_turn_streak", 0) or 0)
+    if question_key == "target_role":
+        base = "I did not catch the target role. Choose one short answer: ML engineer, data scientist, or software engineer."
+    elif question_key == "project_task":
+        base = (
+            "I did not catch the project answer clearly. Say one short example, for example: "
+            "churn prediction for e-commerce."
+        )
+    else:
+        base = (
+            "I did not catch your current work clearly. Say one short sentence, for example: "
+            "I work as a data analyst."
+        )
+
+    if streak >= 3:
+        return f"{base} Speech recognition is still noisy, so type the key words in the composer and send them."
+    if streak >= 2:
+        return f"{base} If speech recognition is weak, type the key words in the composer."
+    return base
 
 
 def _store_baseline_answer(state: AgentState, key: str, value: str) -> None:
@@ -682,9 +875,11 @@ def _complete_baseline_assessment(state: AgentState) -> None:
     state["level_confidence"] = confidence
     state["setup_step"] = "ready_for_program"
     state["last_question_type"] = "baseline_complete"
+    state["session_complete_reason"] = "baseline_complete"
+    state["session_complete_return_screen"] = "home"
     state["pending_response"] = (
         f"I have enough for a {qualifier} baseline for {role}. "
-        f"Current level looks around {level}. I can now build the first mission around your weakest area."
+        f"Current level looks around {level}. Your first mission is ready on the dashboard."
     )
 
 
@@ -705,17 +900,26 @@ async def _handle_assessment_turn(state: AgentState, pedagogy) -> AgentState:
         state["needs_user_input"] = True
         return state
 
-    if _is_usable_baseline_answer(user_message):
+    meta_progress = _is_meta_progress_message(user_message)
+
+    if _is_usable_baseline_answer(user_message, current_key, state):
         _store_baseline_answer(state, current_key, user_message)
+        state["low_signal_turn_streak"] = 0
     elif current_key == "target_role":
         role = (state.get("goal_brief") or {}).get("target_role")
         if role:
             _store_baseline_answer(state, current_key, role)
-    elif current_key == "project_task" and _usable_baseline_answer((state.get("goal_brief") or {}).get("primary_goal", "")):
-        _store_baseline_answer(state, current_key, str((state.get("goal_brief") or {}).get("primary_goal")))
+            state["low_signal_turn_streak"] = 0
+    elif not meta_progress and _is_low_signal_assessment_answer(user_message, current_key, state):
+        state["low_signal_turn_streak"] = int(state.get("low_signal_turn_streak", 0) or 0) + 1
+        state["pending_response"] = _build_low_signal_assessment_response(state, current_key)
+        state["last_question_type"] = current_key
+        state["needs_user_input"] = True
+        return state
+    else:
+        state["low_signal_turn_streak"] = 0
 
     usable_answers = _usable_baseline_answer_count(state)
-    meta_progress = _is_meta_progress_message(user_message)
     reached_last_question = state.get("assessment_step_index", 0) >= len(_BASELINE_PROMPTS) - 1
 
     if usable_answers >= 3:
@@ -728,7 +932,7 @@ async def _handle_assessment_turn(state: AgentState, pedagogy) -> AgentState:
         state["needs_user_input"] = True
         return state
     else:
-        if _is_usable_baseline_answer(user_message) or meta_progress:
+        if _is_usable_baseline_answer(user_message, current_key, state) or meta_progress:
             next_prompt = _advance_baseline_prompt(state)
             if usable_answers >= 2 and state.get("assessment_step_index", 0) >= 2:
                 _complete_baseline_assessment(state)

@@ -22,3 +22,5 @@ class TestConfig:
     def test_cluster_llm_defaults_present(self):
         assert settings.vllm_base_url == "http://192.168.0.27:8000/v1"
         assert settings.llama_cpp_base_url == "http://192.168.0.18:8001/v1"
+        assert settings.llama_cpp_response_mode == "final_only"
+        assert settings.llama_cpp_extra_body_json == ""

@@ -338,6 +338,8 @@ async def initialize_session_v2(
         # Response
         "pending_response": None,
         "needs_user_input": True,
+        "session_complete_reason": None,
+        "session_complete_return_screen": None,
 
         # Control
         "should_end_session": False,

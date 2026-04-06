@@ -122,6 +122,12 @@ from app.services.voice_runtime import (
     VoiceSessionController,
     WebSocketTransport,
 )
+from app.services.voice_session import (
+    SessionBootstrapService,
+    SessionPersistRequest,
+    SessionPersistenceService,
+    VoiceSessionDependencies,
+)
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
@@ -153,6 +159,11 @@ async def voice_chat_realtime(
     user_id: int = Query(..., description="ID пользователя"),
     mode: Optional[str] = Query(None, description="Режим обучения"),
     interview_track: Optional[str] = Query(None, description="ID трека интервью"),
+    mission_task_type: Optional[str] = Query(None, description="Тип активной mission"),
+    mission_title: Optional[str] = Query(None, description="Заголовок активной mission"),
+    mission_reason: Optional[str] = Query(None, description="Причина текущей mission"),
+    mission_success_signal: Optional[str] = Query(None, description="Success signal текущей mission"),
+    mission_linked_goal_context: Optional[str] = Query(None, description="Контекст цели для текущей mission"),
     db: AsyncSession = Depends(get_db),
 ):
     """Feature-flagged modular runtime for the next voice session architecture."""
@@ -177,6 +188,11 @@ async def voice_chat_realtime(
             user_id=user_id,
             mode=mode,
             interview_track=interview_track,
+            mission_task_type=mission_task_type,
+            mission_title=mission_title,
+            mission_reason=mission_reason,
+            mission_success_signal=mission_success_signal,
+            mission_linked_goal_context=mission_linked_goal_context,
             transport=transport,
             stt_provider=PassthroughTextSTTProvider(),
             tts_provider=EdgeTTSTTSProvider(),
@@ -715,6 +731,11 @@ async def voice_chat_v2(
     user_id: int = Query(..., description="ID пользователя"),
     mode: Optional[str] = Query(None, description="Режим обучения"),
     interview_track: Optional[str] = Query(None, description="ID трека интервью"),
+    mission_task_type: Optional[str] = Query(None, description="Тип активной mission"),
+    mission_title: Optional[str] = Query(None, description="Заголовок активной mission"),
+    mission_reason: Optional[str] = Query(None, description="Причина текущей mission"),
+    mission_success_signal: Optional[str] = Query(None, description="Success signal текущей mission"),
+    mission_linked_goal_context: Optional[str] = Query(None, description="Контекст цели для текущей mission"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -737,160 +758,88 @@ async def voice_chat_v2(
     """
     await websocket.accept()
 
-    # Metrics: increment active sessions
     voice_sessions_active.inc()
-    session_start_time = time.time()
     final_mode = "unknown"
     session_status = "disconnected"
+    completion_signal_sent = False
 
     try:
-        # === INITIALIZATION ===
-        session_id = str(uuid.uuid4())
+        session_deps = VoiceSessionDependencies()
+        bootstrap_service = SessionBootstrapService(db, dependencies=session_deps)
+        persistence_service = SessionPersistenceService(
+            db,
+            dependencies=session_deps,
+            learning_plan_service=bootstrap_service.learning_plan_service,
+            memory_pipeline=bootstrap_service.memory_pipeline,
+        )
+        session_context = await bootstrap_service.build(user_id=user_id)
+        session_id = session_context.session_id
 
-        # Load user data
-        user = None
-        is_new_user = True
-        username = "Student"
-        language_level = "B1"
-
-        try:
-            user_service = UserService(db)
-            user = await user_service.get_user(user_id)
-
-            # Auto-create user if doesn't exist (fixes FK violation)
-            if not user:
-                logger.info(f"[Voice] User {user_id} not found, auto-creating...")
-                user = await user_service.create_user(UserCreate(
-                    telegram_id=user_id,
-                    username=f"User_{user_id}",
-                    language_level="B1"
-                ))
-                logger.info(f"[Voice] Auto-created user {user_id}")
-
-            if user:
-                username = user.username or "Student"
-                language_level = user.language_level or "B1"
-        except Exception as e:
-            logger.warning(f"Could not fetch/create user from DB: {e}")
-            voice_errors_total.labels(stage="db").inc()
-
-        # Load learning context
-        learning_plan_service = LearningPlanService(db)
-        vocabulary_service = VocabularyService(db)
-        memory_pipeline = create_memory_pipeline(db)
-
-        confirmed_goal = None
-        confirmed_interests = None
-        roadmap = None
-        due_vocabulary_count = 0
-        due_vocabulary_words = []
-        memory_section = ""
-
-        try:
-            learning_plan = await learning_plan_service.get_or_create_plan(user_id)
-            confirmed_goal = learning_plan_service.get_goal(learning_plan)
-            roadmap = learning_plan.roadmap
-            language_level = learning_plan_service.get_current_level(learning_plan) or language_level
-
-            # Determine if new user
-            total_sessions = learning_plan_service.get_session_count(learning_plan)
-            is_new_user = total_sessions == 0 and not confirmed_goal
-
-            # Load vocabulary due
-            due_vocabulary = await vocabulary_service.get_due_cards(user_id, limit=10)
-            due_vocabulary_count = len(due_vocabulary)
-            due_vocabulary_words = [card.word for card in due_vocabulary]
-
-            # Load memory context
-            memory_section = await memory_pipeline.format_memory_for_prompt(user_id)
-
-            logger.info(f"[AgentV2] User {user_id}: is_new={is_new_user}, "
-                       f"goal={confirmed_goal}, due_vocab={due_vocabulary_count}")
-
-        except Exception as e:
-            logger.warning(f"Could not load learning context: {e}")
-            voice_errors_total.labels(stage="db").inc()
-
-        # Determine agent version based on feature flag
         use_v2 = USE_AGENT_V2
         agent_version = "v2" if use_v2 else "v1"
         logger.info(f"[Voice] Using agent {agent_version} for user {user_id}")
-
-        # Track version usage
         agent_version_sessions.labels(version=agent_version).inc()
 
-        # Initialize agent state (v1 or v2)
-        if use_v2:
-            agent_state = await initialize_session_v2(
-                user_id=user_id,
-                session_id=session_id,
-                username=username,
-                is_new_user=is_new_user,
-                language_level=language_level,
-                confirmed_goal=confirmed_goal,
-                confirmed_interests=confirmed_interests,
-                roadmap=roadmap,
-                due_vocabulary_count=due_vocabulary_count,
-                due_vocabulary_words=due_vocabulary_words,
-                memory_section=memory_section,
-                explicit_mode=mode,
-                interview_track_id=interview_track,
-            )
-        else:
-            agent_state = await initialize_session(
-                user_id=user_id,
-                session_id=session_id,
-                username=username,
-                is_new_user=is_new_user,
-                language_level=language_level,
-                confirmed_goal=confirmed_goal,
-                confirmed_interests=confirmed_interests,
-                roadmap=roadmap,
-                due_vocabulary_count=due_vocabulary_count,
-                due_vocabulary_words=due_vocabulary_words,
-                memory_section=memory_section,
-            )
-
-        # Initialize TTS service
+        agent_state = await bootstrap_service.initialize_agent_state(
+            user_id=user_id,
+            context=session_context,
+            use_v2_agent=use_v2,
+            explicit_mode=mode,
+            interview_track_id=interview_track,
+            mission_task_type=mission_task_type,
+            mission_title=mission_title,
+            mission_reason=mission_reason,
+            mission_success_signal=mission_success_signal,
+            mission_linked_goal_context=mission_linked_goal_context,
+        )
         tts = get_tts_service()
 
-        # Run initial agent turn (greeting/first question)
         if use_v2:
             agent_state = await run_agent_turn_v2(agent_state, user_message=None)
         else:
             agent_state = await run_agent_turn(agent_state, user_message=None)
 
-        # Get initial response
         initial_response = agent_state.get("pending_response", "")
         current_phase = agent_state.get("current_phase", AgentPhase.START)
         current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
+        final_mode = getattr(current_mode, "value", str(current_mode))
 
-        final_mode = current_mode.value
+        async def persist_session(status: str) -> None:
+            request = SessionPersistRequest.from_agent_state(
+                status=status,
+                user_id=user_id,
+                session_id=session_id,
+                final_mode=final_mode,
+                existing_goal=session_context.confirmed_goal,
+                agent_state=agent_state,
+            )
+            completion = await persistence_service.persist(request)
+            if completion.error:
+                logger.warning("[Voice] Error persisting session data (%s): %s", status, completion.error)
 
-        # Send connected message
-        await websocket.send_json({
-            "type": "connected",
-            "session_id": session_id,
-            "phase": current_phase.value,
-            "mode": current_mode.value,
-            "is_new_user": is_new_user,
-            "goal": confirmed_goal,
-            "due_vocabulary_count": due_vocabulary_count,
-        })
-
-        # Send initial greeting/question
-        if initial_response:
-            await websocket.send_json({
+        async def send_assistant_message(
+            text: str,
+            *,
+            phase: str,
+            mode_value: Optional[str] = None,
+            turn: Optional[int] = None,
+        ) -> None:
+            payload = {
                 "type": "transcript",
                 "role": "assistant",
-                "text": initial_response,
-                "phase": current_phase.value,
-            })
+                "text": text,
+                "phase": phase,
+            }
+            if mode_value is not None:
+                payload["mode"] = mode_value
+            if turn is not None:
+                payload["turn"] = turn
 
-            # Synthesize audio
+            await websocket.send_json(payload)
+
             try:
                 tts_start = time.time()
-                audio_bytes = await tts.synthesize(initial_response)
+                audio_bytes = await tts.synthesize(text)
                 voice_tts_latency_seconds.observe(time.time() - tts_start)
 
                 await websocket.send_json({
@@ -900,10 +849,37 @@ async def voice_chat_v2(
                 })
                 voice_messages_total.labels(direction="outbound", type="audio").inc()
             except Exception as e:
-                logger.warning(f"TTS error for greeting: {e}")
+                logger.warning(f"TTS error: {e}")
                 voice_errors_total.labels(stage="tts").inc()
 
-        # === MESSAGE LOOP ===
+        async def emit_session_complete_if_needed() -> None:
+            nonlocal completion_signal_sent
+            if completion_signal_sent or not agent_state.get("session_complete_reason"):
+                return
+
+            await websocket.send_json({
+                "type": "session_complete",
+                "reason": agent_state.get("session_complete_reason"),
+                "return_screen": agent_state.get("session_complete_return_screen") or "home",
+            })
+            completion_signal_sent = True
+
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "phase": getattr(current_phase, "value", str(current_phase)),
+            "mode": getattr(current_mode, "value", str(current_mode)),
+            "is_new_user": session_context.is_new_user,
+            "goal": session_context.confirmed_goal,
+            "due_vocabulary_count": session_context.due_vocabulary_count,
+        })
+
+        if initial_response:
+            await send_assistant_message(
+                initial_response,
+                phase=getattr(current_phase, "value", str(current_phase)),
+            )
+
         while True:
             try:
                 data = await websocket.receive_text()
@@ -914,232 +890,91 @@ async def voice_chat_v2(
                     if not user_text:
                         continue
 
+                    if agent_state.get("session_complete_reason"):
+                        await emit_session_complete_if_needed()
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "This setup session is already complete. End it and start your first mission from the dashboard.",
+                        })
+                        continue
+
                     turn_start = time.time()
                     voice_messages_total.labels(direction="inbound", type="text").inc()
 
-                    # Send user transcript
                     await websocket.send_json({
                         "type": "transcript",
                         "role": "user",
                         "text": user_text,
                     })
 
-                    # Run agent turn (v1 or v2)
                     old_phase = agent_state.get("current_phase", AgentPhase.START)
                     if use_v2:
                         agent_state = await run_agent_turn_v2(agent_state, user_message=user_text)
                     else:
                         agent_state = await run_agent_turn(agent_state, user_message=user_text)
 
-                    # Get response
                     response_text = agent_state.get("pending_response", "")
                     current_phase = agent_state.get("current_phase", AgentPhase.START)
                     current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
                     turn_count = agent_state.get("turn_count", 0)
+                    current_phase_value = getattr(current_phase, "value", str(current_phase))
+                    current_mode_value = getattr(current_mode, "value", str(current_mode))
+                    final_mode = current_mode_value
 
-                    final_mode = current_mode.value
-
-                    # Check for phase change
                     if old_phase != current_phase:
                         await websocket.send_json({
                             "type": "phase_changed",
-                            "phase": current_phase.value,
-                            "mode": current_mode.value,
+                            "phase": current_phase_value,
+                            "mode": current_mode_value,
                         })
 
-                        # Track onboarding completion (transition to learning)
                         if current_phase == AgentPhase.LEARNING_SESSION:
                             agent_version_onboarding_complete.labels(
                                 version=agent_version
                             ).inc()
 
                     if response_text:
-                        # Send transcript
-                        await websocket.send_json({
-                            "type": "transcript",
-                            "role": "assistant",
-                            "text": response_text,
-                            "phase": current_phase.value,
-                            "mode": current_mode.value,
-                            "turn": turn_count,
-                        })
+                        await send_assistant_message(
+                            response_text,
+                            phase=current_phase_value,
+                            mode_value=current_mode_value,
+                            turn=turn_count,
+                        )
+                        voice_turn_total_seconds.labels(mode=current_mode_value).observe(
+                            time.time() - turn_start
+                        )
 
-                        # Synthesize audio
-                        try:
-                            tts_start = time.time()
-                            audio_bytes = await tts.synthesize(response_text)
-                            voice_tts_latency_seconds.observe(time.time() - tts_start)
+                    await emit_session_complete_if_needed()
 
-                            await websocket.send_json({
-                                "type": "audio",
-                                "data": base64.b64encode(audio_bytes).decode(),
-                                "format": "mp3",
-                            })
-                            voice_messages_total.labels(direction="outbound", type="audio").inc()
-
-                            voice_turn_total_seconds.labels(mode=current_mode.value).observe(
-                                time.time() - turn_start
-                            )
-                        except Exception as e:
-                            logger.warning(f"TTS error: {e}")
-                            voice_errors_total.labels(stage="tts").inc()
-
-                    # Check for session end
                     if agent_state.get("should_end_session"):
                         session_status = "completed"
+                        await persist_session("completed")
                         break
 
                 elif message.get("type") == "end":
                     session_status = "completed"
 
-                    # Process session end (v1 or v2)
                     agent_state["should_end_session"] = True
                     if use_v2:
                         agent_state = await run_agent_turn_v2(agent_state, user_message=None)
                     else:
                         agent_state = await run_agent_turn(agent_state, user_message=None)
 
-                    # Send farewell if generated
                     farewell = agent_state.get("pending_response", "")
+                    current_mode = agent_state.get("current_mode", current_mode)
+                    final_mode = getattr(current_mode, "value", str(current_mode))
+
                     if farewell:
-                        await websocket.send_json({
-                            "type": "transcript",
-                            "role": "assistant",
-                            "text": farewell,
-                            "phase": "session_end",
-                        })
+                        await send_assistant_message(farewell, phase="session_end")
 
-                        try:
-                            audio_bytes = await tts.synthesize(farewell)
-                            await websocket.send_json({
-                                "type": "audio",
-                                "data": base64.b64encode(audio_bytes).decode(),
-                                "format": "mp3",
-                            })
-                        except Exception as e:
-                            logger.warning(f"TTS error for farewell: {e}")
-
-                    # Persist session data
-                    try:
-                        await persist_goal_state_if_needed(
-                            user_id=user_id,
-                            existing_goal=confirmed_goal,
-                            agent_state=agent_state,
-                            learning_plan_service=learning_plan_service,
-                        )
-
-                        # Update session count
-                        await learning_plan_service.increment_session_count(
-                            user_id,
-                            mode=current_mode.value,
-                            duration_minutes=agent_state.get("turn_count", 0) * 2,
-                        )
-
-                        # Record assessment if done
-                        if agent_state.get("assessed_level"):
-                            await learning_plan_service.record_assessment(
-                                user_id,
-                                assessed_level=agent_state["assessed_level"],
-                                scores=agent_state.get("assessment_scores"),
-                                provisional=bool(agent_state.get("baseline_provisional")),
-                                confidence_override=agent_state.get("baseline_confidence"),
-                            )
-
-                        # Process memories
-                        conversation_history = agent_state.get("conversation_history", [])
-                        if conversation_history:
-                            await memory_pipeline.process_conversation(
-                                user_id=user_id,
-                                messages=conversation_history,
-                                session_id=session_id,
-                            )
-
-                        # Gamification
-                        await award_session_gamification(db, user_id, session_id)
-
-                        # Persist interview run if this was a mock_interview session
-                        interview_run = await persist_interview_run_if_needed(
-                            db=db,
-                            user_id=user_id,
-                            session_id=session_id,
-                            current_mode=current_mode.value,
-                            interview_track_id=agent_state.get("interview_track_id"),
-                            conversation_history=agent_state.get("conversation_history", []),
-                            corrections_made=len(agent_state.get("corrections_made", [])),
-                            vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
-                        )
-                        await persist_session_evidence_if_needed(
-                            db=db,
-                            user_id=user_id,
-                            session_id=session_id,
-                            current_mode=current_mode.value,
-                            conversation_history=agent_state.get("conversation_history", []),
-                            corrections_made=agent_state.get("corrections_made", []),
-                            vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
-                            duration_minutes=agent_state.get("turn_count", 0) * 2,
-                            assessed_level=agent_state.get("assessed_level"),
-                            assessment_scores=agent_state.get("assessment_scores", {}),
-                            interview_run=interview_run,
-                        )
-
-                    except Exception as e:
-                        logger.warning(f"Error persisting session data: {e}")
-
+                    await emit_session_complete_if_needed()
+                    await persist_session("completed")
                     break
 
             except WebSocketDisconnect:
                 logger.info(f"Client disconnected: session {session_id}")
                 session_status = "disconnected"
-
-                # Try to persist on disconnect
-                try:
-                    await persist_goal_state_if_needed(
-                        user_id=user_id,
-                        existing_goal=confirmed_goal,
-                        agent_state=agent_state,
-                        learning_plan_service=learning_plan_service,
-                    )
-                    if agent_state.get("assessed_level"):
-                        await learning_plan_service.record_assessment(
-                            user_id,
-                            assessed_level=agent_state["assessed_level"],
-                            scores=agent_state.get("assessment_scores"),
-                            provisional=bool(agent_state.get("baseline_provisional")),
-                            confidence_override=agent_state.get("baseline_confidence"),
-                        )
-                    await learning_plan_service.increment_session_count(
-                        user_id,
-                        mode=current_mode.value,
-                        duration_minutes=agent_state.get("turn_count", 0) * 2,
-                    )
-                    if agent_state.get("turn_count", 0) > 0:
-                        await award_session_gamification(db, user_id, session_id)
-                    interview_run = await persist_interview_run_if_needed(
-                        db=db,
-                        user_id=user_id,
-                        session_id=session_id,
-                        current_mode=current_mode.value,
-                        interview_track_id=agent_state.get("interview_track_id"),
-                        conversation_history=agent_state.get("conversation_history", []),
-                        corrections_made=len(agent_state.get("corrections_made", [])),
-                        vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
-                    )
-                    await persist_session_evidence_if_needed(
-                        db=db,
-                        user_id=user_id,
-                        session_id=session_id,
-                        current_mode=current_mode.value,
-                        conversation_history=agent_state.get("conversation_history", []),
-                        corrections_made=agent_state.get("corrections_made", []),
-                        vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
-                        duration_minutes=agent_state.get("turn_count", 0) * 2,
-                        assessed_level=agent_state.get("assessed_level"),
-                        assessment_scores=agent_state.get("assessment_scores", {}),
-                        interview_run=interview_run,
-                    )
-                except Exception:
-                    pass
-
+                await persist_session("disconnected")
                 break
 
     except Exception as e:
@@ -1777,3 +1612,4 @@ async def voice_stream_legacy(
     finally:
         await provider.disconnect()
         await websocket.close()
+

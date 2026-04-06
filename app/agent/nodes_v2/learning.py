@@ -17,7 +17,7 @@ from app.data.interview_tracks import get_interview_track
 from app.agent.response_parser import parse_llm_response
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
-from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.ai.mode_prompts import LearningMode
 from app.core.metrics import (
     agent_v2_llm_latency,
@@ -219,6 +219,21 @@ async def learning_node(state: AgentState) -> AgentState:
         )
         latency_ms = int((time.time() - start_time) * 1000)
         agent_v2_llm_latency.labels(node="learning").observe(latency_ms / 1000)
+    except LLMEmptyContentError as exc:
+        logger.warning("[Learning] Empty final content from LLM: %s", exc)
+        action = _build_mission_error_action(state, "empty_final_content") if mission_anchored else {
+            "action": "continue",
+            "response_text": "Sorry, I didn't catch that. Could you say it again?",
+        }
+        return _record_learning_turn(
+            state,
+            action,
+            pedagogy,
+            conversation_history,
+            user_message,
+            reason="Empty final content fallback",
+            strategy="empty_final_content",
+        )
     except Exception as exc:
         logger.error(f"[Learning] LLM error: {exc}")
         action = _build_mission_error_action(state, "llm_error") if mission_anchored else {

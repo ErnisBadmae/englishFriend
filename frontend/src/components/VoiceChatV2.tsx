@@ -17,6 +17,8 @@ interface VoiceChatV2Props {
   onSessionEnded?: (payload: {
     sessionId: string | null;
     messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+    completionReason?: string;
+    returnScreen?: string;
   }) => void;
 }
 
@@ -69,6 +71,14 @@ export function VoiceChatV2({
 }: VoiceChatV2Props) {
   const [draftText, setDraftText] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const autoCompletionHandledRef = useRef(false);
+  const autoCompleteHandlerRef = useRef<(payload: {
+    reason: string;
+    returnScreen?: string;
+  }) => void>(() => {});
+  const latestMessagesRef = useRef<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+  const latestSessionIdRef = useRef<string | null>(null);
+  const latestListeningRef = useRef(false);
   const isStrictMission = mission?.task_type === 'foundation_speaking_drill'
     || mission?.task_type === 'grammar_rescue';
 
@@ -87,6 +97,27 @@ export function VoiceChatV2({
     ),
     [isStrictMission, mode]
   );
+  const wsQuery = useMemo(
+    () => ({
+      mode,
+      interview_track: interviewTrackId,
+      mission_task_type: mission?.task_type,
+      mission_title: mission?.title,
+      mission_reason: mission?.reason,
+      mission_success_signal: mission?.success_signal,
+      mission_linked_goal_context: mission?.linked_goal_context,
+    }),
+    [mode, interviewTrackId, mission]
+  );
+  const forwardSessionComplete = useCallback((payload: {
+    reason: string;
+    returnScreen?: string;
+  }) => {
+    autoCompleteHandlerRef.current(payload);
+  }, []);
+  const handleWsConnect = useCallback(() => {
+    console.log('[VoiceChatV2] Connected');
+  }, []);
 
   const {
     isModelLoading,
@@ -111,6 +142,9 @@ export function VoiceChatV2({
   });
 
   const { isPlaying, play } = useAudioPlayer();
+  const handleWsAudio = useCallback((audioData: ArrayBuffer) => {
+    play(audioData);
+  }, [play]);
 
   const {
     isConnected,
@@ -124,22 +158,58 @@ export function VoiceChatV2({
   } = useWebSocket({
     url: wsUrl,
     userId,
-    query: {
-      mode,
-      interview_track: interviewTrackId,
-    },
-    onAudio: (audioData) => {
-      play(audioData);
-    },
-    onConnect: () => {
-      console.log('[VoiceChatV2] Connected');
-    },
+    query: wsQuery,
+    onAudio: handleWsAudio,
+    onConnect: handleWsConnect,
+    onSessionComplete: forwardSessionComplete,
   });
 
   useEffect(() => {
-    if (isModelLoaded && !isConnected && !isConnecting) {
-      connect();
+    autoCompleteHandlerRef.current = (payload) => {
+      if (autoCompletionHandledRef.current) {
+        return;
+      }
+      autoCompletionHandledRef.current = true;
+      const transcriptSnapshot = [...latestMessagesRef.current];
+      if (latestListeningRef.current) {
+        cancelAndReset();
+      }
+      disconnect({ resetMessages: false });
+      window.setTimeout(() => {
+        onSessionEnded?.({
+          sessionId: latestSessionIdRef.current,
+          messages: transcriptSnapshot,
+          completionReason: payload.reason,
+          returnScreen: payload.returnScreen,
+        });
+      }, 900);
+    };
+  }, [cancelAndReset, disconnect, onSessionEnded]);
+
+  useEffect(() => {
+    latestMessagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    latestSessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    latestListeningRef.current = isListening;
+  }, [isListening]);
+
+  useEffect(() => {
+    if (!isModelLoaded || isConnected || isConnecting) {
+      return;
     }
+
+    const timer = window.setTimeout(() => {
+      connect();
+    }, 150);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [isModelLoaded, isConnected, isConnecting, connect]);
 
   useEffect(() => {
@@ -267,6 +337,7 @@ export function VoiceChatV2({
   }, []);
 
   const handleEndSession = useCallback(() => {
+    autoCompletionHandledRef.current = true;
     const transcriptSnapshot = [...messages];
     if (isListening) {
       cancelAndReset();

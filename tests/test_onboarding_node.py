@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from app.agent.nodes_v2.onboarding import (
@@ -9,6 +11,7 @@ from app.agent.nodes_v2.onboarding import (
 )
 from app.agent.graph_v2 import initialize_session_v2
 from app.agent.state import AgentPhase, LearningModeEnum, create_initial_state
+from app.services.ai.llm_provider import LLMEmptyContentError
 
 
 def test_coerce_goal_brief_marks_routing_ready_goal_as_draft():
@@ -219,3 +222,90 @@ async def test_onboarding_meta_answer_produces_provisional_baseline_instead_of_l
     assert updated["baseline_provisional"] is True
     assert updated["assessment_status"] == "provisional"
     assert "what do you do now?" not in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_baseline_completion_marks_session_handoff():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 2
+    state["assessment_answers"] = {
+        "current_role": "I work as a data analyst now.",
+        "target_role": "I want to become an ML engineer.",
+    }
+    state["last_user_message"] = "My recent project was churn prediction for e-commerce."
+
+    updated = await onboarding_node(state)
+
+    assert updated["assessed_level"] in {"A2", "B1"}
+    assert updated["session_complete_reason"] == "baseline_complete"
+    assert updated["session_complete_return_screen"] == "home"
+    assert "dashboard" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_rejects_low_signal_project_answer():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 2
+    state["assessment_answers"] = {
+        "current_role": "I work as a data scientist.",
+        "target_role": "ML engineer.",
+    }
+    state["last_user_message"] = "now sorry want to name to fire smoke test using and my age of test"
+
+    updated = await onboarding_node(state)
+
+    assert updated.get("assessed_level") is None
+    assert updated["low_signal_turn_streak"] == 1
+    assert "did not catch the project answer" in updated["pending_response"].lower()
+    assert "project_task" not in updated["assessment_answers"]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_empty_final_content_uses_goal_followup():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_user_message"] = "help me"
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        side_effect=LLMEmptyContentError(
+            provider_name="llama_cpp",
+            model="CPU Qwen 3.5 256k node3",
+            finish_reason="length",
+            has_reasoning=True,
+            used_compat_retry=True,
+        )
+    )
+
+    with patch("app.agent.nodes_v2.onboarding.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await onboarding_node(state)
+
+    assert updated["needs_user_input"] is True
+    assert "What is closest right now" in updated["pending_response"]

@@ -53,6 +53,12 @@ openai_api_calls_total = Counter(
     ['operation', 'model', 'status']
 )
 
+llm_response_anomalies_total = Counter(
+    'llm_response_anomalies_total',
+    'Аномалии в ответах LLM провайдеров',
+    ['provider', 'anomaly']  # anomaly: empty_final_content/reasoning_only/compat_retry/compat_retry_failed
+)
+
 openai_api_duration_seconds = Histogram(
     'openai_api_duration_seconds',
     'Время ответа OpenAI API в секундах',

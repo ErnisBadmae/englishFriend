@@ -17,11 +17,18 @@ import {
   type InterviewTrack,
   type MissionSummary,
   type ProgramSnapshot,
-  type SessionEvidence,
+  type SessionEvidence
 } from './lib/api';
 import './App.css';
 
-type Screen = 'home' | 'session' | 'interview' | 'review' | 'progress' | 'interview_results' | 'session_results';
+type Screen =
+  | 'home'
+  | 'session'
+  | 'interview'
+  | 'review'
+  | 'progress'
+  | 'interview_results'
+  | 'session_results';
 
 interface SessionConfig {
   wsUrl: string;
@@ -38,16 +45,22 @@ function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
   if (!mission) {
     return false;
   }
-  return mission.mode === 'assessment'
-    || mission.mode === 'guided_setup'
-    || mission.task_type === 'foundation_speaking_drill'
-    || mission.task_type === 'grammar_rescue';
+  return (
+    mission.mode === 'assessment' ||
+    mission.mode === 'guided_setup' ||
+    mission.task_type === 'foundation_speaking_drill' ||
+    mission.task_type === 'grammar_rescue'
+  );
 }
 
-function buildMissionSessionConfig(mission: MissionSummary, returnScreen: Screen): SessionConfig {
-  const mode = mission.mode === 'guided_setup'
-    ? undefined
-    : mission.launch_mode ?? mission.mode;
+function buildMissionSessionConfig(
+  mission: MissionSummary,
+  returnScreen: Screen
+): SessionConfig {
+  const mode =
+    mission.mode === 'guided_setup'
+      ? undefined
+      : mission.launch_mode ?? mission.mode;
   return {
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
     mode,
@@ -56,19 +69,19 @@ function buildMissionSessionConfig(mission: MissionSummary, returnScreen: Screen
     subtitle: mission.reason,
     reviewBeforeSend: shouldForceGuidedReview(mission),
     mission,
-    returnScreen,
+    returnScreen
   };
 }
 
 function readScreenFromHash(): Screen {
   const normalized = window.location.hash.replace('#', '');
   if (
-    normalized === 'session'
-    || normalized === 'interview'
-    || normalized === 'review'
-    || normalized === 'progress'
-    || normalized === 'interview_results'
-    || normalized === 'session_results'
+    normalized === 'session' ||
+    normalized === 'interview' ||
+    normalized === 'review' ||
+    normalized === 'progress' ||
+    normalized === 'interview_results' ||
+    normalized === 'session_results'
   ) {
     return normalized as Screen;
   }
@@ -76,18 +89,22 @@ function readScreenFromHash(): Screen {
 }
 
 function App() {
-  const [telegramId, setTelegramId] = useState<number>(1);
-  const [telegramUsername, setTelegramUsername] = useState<string>('Local User');
+  const [telegramId, setTelegramId] = useState<number>(4);
+  const [telegramUsername, setTelegramUsername] =
+    useState<string>('Local User');
   const [userId, setUserId] = useState<number | null>(null);
   const [snapshot, setSnapshot] = useState<ProgramSnapshot | null>(null);
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>({
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
     reviewBeforeSend: false,
-    returnScreen: 'progress',
+    returnScreen: 'progress'
   });
-  const [lastInterviewRun, setLastInterviewRun] = useState<InterviewRun | null>(null);
-  const [lastSessionEvidence, setLastSessionEvidence] = useState<SessionEvidence | null>(null);
+  const [lastInterviewRun, setLastInterviewRun] = useState<InterviewRun | null>(
+    null
+  );
+  const [lastSessionEvidence, setLastSessionEvidence] =
+    useState<SessionEvidence | null>(null);
   const [lastMission, setLastMission] = useState<MissionSummary | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [isResolvingUser, setIsResolvingUser] = useState(true);
@@ -104,7 +121,9 @@ function App() {
       const tgUser = tg.initDataUnsafe?.user;
       if (tgUser?.id) {
         setTelegramId(tgUser.id);
-        setTelegramUsername(tgUser.username || tgUser.first_name || `tg_${tgUser.id}`);
+        setTelegramUsername(
+          tgUser.username || tgUser.first_name || `tg_${tgUser.id}`
+        );
         console.log('Telegram user ID:', tgUser.id);
       }
 
@@ -170,13 +189,20 @@ function App() {
       setIsResolvingUser(true);
       setError(null);
       try {
-        const resolved = await resolveOrCreateUser(telegramId, telegramUsername);
+        const resolved = await resolveOrCreateUser(
+          telegramId,
+          telegramUsername
+        );
         if (!cancelled) {
           setUserId(resolved.id);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to resolve user identity');
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to resolve user identity'
+          );
         }
       } finally {
         if (!cancelled) {
@@ -203,7 +229,9 @@ function App() {
       setSnapshot(data);
       return data;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load program snapshot');
+      setError(
+        err instanceof Error ? err.message : 'Failed to load program snapshot'
+      );
       return null;
     } finally {
       setIsLoadingSnapshot(false);
@@ -226,7 +254,9 @@ function App() {
     }
 
     if (snapshot.mission.mode === 'mock_interview') {
-      const recommendedTrackId = snapshot.mission.interview_track_id ?? snapshot.interview.recommended_track.id;
+      const recommendedTrackId =
+        snapshot.mission.interview_track_id ??
+        snapshot.interview.recommended_track.id;
       const track: InterviewTrack = {
         id: recommendedTrackId,
         title: snapshot.mission.title,
@@ -235,8 +265,9 @@ function App() {
         prompt_focus: '',
         starter_question: '',
         rubric_focus: [],
-        recommended: recommendedTrackId === snapshot.interview.recommended_track.id,
-        completed_runs: 0,
+        recommended:
+          recommendedTrackId === snapshot.interview.recommended_track.id,
+        completed_runs: 0
       };
       startInterviewTrack(track);
       return;
@@ -260,7 +291,7 @@ function App() {
       title: track.title,
       subtitle: track.subtitle,
       reviewBeforeSend: false,
-      returnScreen: 'interview',
+      returnScreen: 'interview'
     });
     setScreen('session');
   }
@@ -268,9 +299,28 @@ function App() {
   async function handleSessionEnded(_payload: {
     sessionId: string | null;
     messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+    completionReason?: string;
+    returnScreen?: Screen | string;
   }) {
     const fresh = await refreshSnapshot();
-    if (sessionConfig.mode === 'mock_interview' && fresh?.interview.latest_run) {
+    const requestedReturnScreen =
+      _payload.returnScreen === 'home'
+      || _payload.returnScreen === 'session'
+      || _payload.returnScreen === 'interview'
+      || _payload.returnScreen === 'review'
+      || _payload.returnScreen === 'progress'
+      || _payload.returnScreen === 'interview_results'
+      || _payload.returnScreen === 'session_results'
+        ? _payload.returnScreen
+        : undefined;
+    if (_payload.completionReason === 'baseline_complete') {
+      setScreen(requestedReturnScreen ?? 'home');
+      return;
+    }
+    if (
+      sessionConfig.mode === 'mock_interview' &&
+      fresh?.interview.latest_run
+    ) {
       setLastInterviewRun(fresh.interview.latest_run);
       setLastMission(fresh.mission);
       setScreen('interview_results');
@@ -279,7 +329,7 @@ function App() {
       setLastMission(fresh.mission);
       setScreen('session_results');
     } else {
-      setScreen(sessionConfig.returnScreen);
+      setScreen(requestedReturnScreen ?? sessionConfig.returnScreen);
     }
   }
 
@@ -316,7 +366,11 @@ function App() {
 
       {error && <div className="app-error">{error}</div>}
 
-      <main className={`app-content ${screen === 'session' ? 'session-layout' : ''}`}>
+      <main
+        className={`app-content ${
+          screen === 'session' ? 'session-layout' : ''
+        }`}
+      >
         {isLoadingSnapshot && !snapshot ? (
           <div className="loading page-loading">
             <div className="loading-spinner"></div>
@@ -341,7 +395,11 @@ function App() {
                     await submitVacancy(userId, { vacancy_text: vacancyText });
                     await refreshSnapshot();
                   } catch (err) {
-                    setError(err instanceof Error ? err.message : 'Failed to save vacancy');
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Failed to save vacancy'
+                    );
                   }
                 }}
                 onSubmitPaidIntent={async () => {
@@ -351,7 +409,11 @@ function App() {
                     await submitPaidIntent(userId, { source: 'home_cta' });
                     await refreshSnapshot();
                   } catch (err) {
-                    setError(err instanceof Error ? err.message : 'Failed to save paid beta intent');
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Failed to save paid beta intent'
+                    );
                   }
                 }}
               />
@@ -391,7 +453,7 @@ function App() {
                     starter_question: '',
                     rubric_focus: [],
                     recommended: false,
-                    completed_runs: 0,
+                    completed_runs: 0
                   };
                   startInterviewTrack(track);
                 }}
@@ -401,7 +463,9 @@ function App() {
                   if (lastMission.mode === 'mock_interview') {
                     setScreen('interview');
                   } else {
-                    setSessionConfig(buildMissionSessionConfig(lastMission, 'progress'));
+                    setSessionConfig(
+                      buildMissionSessionConfig(lastMission, 'progress')
+                    );
                     setScreen('session');
                   }
                 }}
@@ -418,7 +482,9 @@ function App() {
                     setScreen('interview');
                     return;
                   }
-                  setSessionConfig(buildMissionSessionConfig(lastMission, 'progress'));
+                  setSessionConfig(
+                    buildMissionSessionConfig(lastMission, 'progress')
+                  );
                   setScreen('session');
                 }}
               />
@@ -436,8 +502,14 @@ function App() {
         ) : (
           <div className="empty-state-card">
             <h2>Program data unavailable</h2>
-            <p>Could not load your snapshot yet. Try refreshing or open a session to bootstrap your profile.</p>
-            <button className="primary-action" onClick={() => void refreshSnapshot()}>
+            <p>
+              Could not load your snapshot yet. Try refreshing or open a session
+              to bootstrap your profile.
+            </p>
+            <button
+              className="primary-action"
+              onClick={() => void refreshSnapshot()}
+            >
               Retry
             </button>
           </div>
@@ -445,21 +517,33 @@ function App() {
       </main>
 
       <nav className="bottom-nav">
-        <button className={screen === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('home')}>
+        <button
+          className={screen === 'home' ? 'nav-item active' : 'nav-item'}
+          onClick={() => setScreen('home')}
+        >
           Home
         </button>
         {snapshot?.vocabulary?.stats?.due_now ? (
-          <button className={screen === 'review' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('review')}>
+          <button
+            className={screen === 'review' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setScreen('review')}
+          >
             Review
           </button>
         ) : null}
         {snapshot?.setup?.assessment_complete ? (
-          <button className={screen === 'progress' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('progress')}>
+          <button
+            className={screen === 'progress' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setScreen('progress')}
+          >
             Progress
           </button>
         ) : null}
         {snapshot?.setup?.state === 'ready_for_program' ? (
-          <button className={screen === 'interview' ? 'nav-item active' : 'nav-item'} onClick={() => setScreen('interview')}>
+          <button
+            className={screen === 'interview' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setScreen('interview')}
+          >
             Career
           </button>
         ) : null}

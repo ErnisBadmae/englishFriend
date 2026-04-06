@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.learning_plan_service import LearningPlanService
 from app.services.data_flow_logger import data_logger
@@ -125,6 +125,9 @@ class PostSessionService:
                 data={"vocabulary_count": len(analysis.get("vocabulary", []))},
                 user_id=user_id,
             )
+        except LLMEmptyContentError as e:
+            logger.warning(f"Session analysis returned no final content: {e}")
+            return result
         except Exception as e:
             logger.warning(f"Session analysis failed: {e}")
             return result
