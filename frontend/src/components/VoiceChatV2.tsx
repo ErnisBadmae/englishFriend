@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVoskWithVAD } from '../hooks/useVoskWithVAD';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
+import type { MissionSummary } from '../lib/api';
 import './VoiceChat.css';
 
 interface VoiceChatV2Props {
@@ -9,6 +10,7 @@ interface VoiceChatV2Props {
   wsUrl: string;
   mode?: string;
   interviewTrackId?: string;
+  mission?: MissionSummary;
   title?: string;
   subtitle?: string;
   reviewBeforeSend?: boolean;
@@ -33,6 +35,12 @@ const BASELINE_CHIPS = [
   'One project is about predictions for users',
 ];
 
+const FOUNDATION_CHIPS = [
+  'I work as a data scientist',
+  'My recent project was a recommendation model',
+  'My next step is to improve grammar for project answers',
+];
+
 function mergeTranscriptDraft(previous: string, incoming: string): string {
   const next = incoming.trim();
   if (!next) {
@@ -53,6 +61,7 @@ export function VoiceChatV2({
   wsUrl,
   mode,
   interviewTrackId,
+  mission,
   title,
   subtitle,
   reviewBeforeSend = false,
@@ -60,15 +69,23 @@ export function VoiceChatV2({
 }: VoiceChatV2Props) {
   const [draftText, setDraftText] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const isStrictMission = mission?.task_type === 'foundation_speaking_drill'
+    || mission?.task_type === 'grammar_rescue';
 
   const guidedReviewMode = useMemo(
-    () => reviewBeforeSend || mode === 'assessment' || mode === 'guided_setup' || !mode,
-    [mode, reviewBeforeSend]
+    () => reviewBeforeSend || isStrictMission || mode === 'assessment' || mode === 'guided_setup' || !mode,
+    [isStrictMission, mode, reviewBeforeSend]
   );
 
   const composerChips = useMemo(
-    () => (mode === 'assessment' ? BASELINE_CHIPS : GOAL_SETUP_CHIPS),
-    [mode]
+    () => (
+      isStrictMission
+        ? FOUNDATION_CHIPS
+        : mode === 'assessment'
+          ? BASELINE_CHIPS
+          : GOAL_SETUP_CHIPS
+    ),
+    [isStrictMission, mode]
   );
 
   const {
@@ -396,11 +413,19 @@ export function VoiceChatV2({
       {guidedReviewMode && (
         <div className="guided-composer-card">
           <div className="guided-composer-header">
-            <strong>{mode === 'assessment' ? 'Answer composer' : 'Goal composer'}</strong>
+            <strong>
+              {mode === 'assessment'
+                ? 'Answer composer'
+                : isStrictMission
+                  ? 'Mission composer'
+                  : 'Goal composer'}
+            </strong>
             <span>
               {mode === 'assessment'
                 ? 'Keep only the important words. You can answer in simple English or mixed Russian and English.'
-                : 'Add the key words the coach must understand. Typing is normal if recognition is weak.'}
+                : isStrictMission
+                  ? 'Keep one short career answer. The coach should get your role, project, or next step without guessing.'
+                  : 'Add the key words the coach must understand. Typing is normal if recognition is weak.'}
             </span>
           </div>
           <textarea
@@ -411,7 +436,9 @@ export function VoiceChatV2({
             rows={4}
             placeholder={mode === 'assessment'
               ? 'Type your short answer here if speech recognition is weak'
-              : 'Type your goal or key words here if speech recognition is weak'}
+              : isStrictMission
+                ? 'Type one short career answer here if speech recognition is weak'
+                : 'Type your goal or key words here if speech recognition is weak'}
           />
           <div className="guided-chip-row">
             {composerChips.map((chip) => (

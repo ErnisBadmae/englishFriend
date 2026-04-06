@@ -45,9 +45,12 @@ function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
 }
 
 function buildMissionSessionConfig(mission: MissionSummary, returnScreen: Screen): SessionConfig {
+  const mode = mission.mode === 'guided_setup'
+    ? undefined
+    : mission.launch_mode ?? mission.mode;
   return {
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
-    mode: mission.launch_mode ?? mission.mode,
+    mode,
     interviewTrackId: mission.interview_track_id ?? undefined,
     title: mission.title,
     subtitle: mission.reason,
