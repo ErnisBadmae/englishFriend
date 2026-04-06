@@ -93,12 +93,20 @@ class AgentState(TypedDict, total=False):
     interview_track_title: Optional[str]
     session_focus: Optional[str]
     interview_question_prompts: list[str]  # curated questions for this session
+    mission_task_type: Optional[str]
+    mission_title: Optional[str]
+    mission_reason: Optional[str]
+    mission_success_signal: Optional[str]
+    mission_linked_goal_context: Optional[str]
 
     # === Current Session Learning ===
     current_mode: LearningModeEnum
     mode_reason: Optional[str]  # Why this mode was selected
     conversation_history: list[dict[str, str]]  # {role, content}
     system_prompt: Optional[str]  # Current system prompt
+    low_signal_turn_streak: int
+    anchor_question_id: int
+    anchor_follow_up_pending: bool
 
     # === Vocabulary (FSRS) ===
     due_vocabulary_count: int
@@ -199,12 +207,20 @@ def create_initial_state(
         interview_track_title=None,
         session_focus=None,
         interview_question_prompts=[],
+        mission_task_type=None,
+        mission_title=None,
+        mission_reason=None,
+        mission_success_signal=None,
+        mission_linked_goal_context=None,
 
         # Current Session
         current_mode=LearningModeEnum.FREE_CONVERSATION,
         mode_reason=None,
         conversation_history=[],
         system_prompt=None,
+        low_signal_turn_streak=0,
+        anchor_question_id=0,
+        anchor_follow_up_pending=False,
 
         # Vocabulary
         due_vocabulary_count=0,

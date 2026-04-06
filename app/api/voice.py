@@ -115,6 +115,13 @@ from app.agent.graph_v2 import (
     run_agent_turn_v2,
     USE_AGENT_V2,
 )
+from app.services.voice_runtime import (
+    EdgeTTSTTSProvider,
+    ExplicitMessageTurnDetector,
+    PassthroughTextSTTProvider,
+    VoiceSessionController,
+    WebSocketTransport,
+)
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
 
@@ -138,6 +145,66 @@ async def voice_chat(
     # Redirect to v2 (LangGraph) implementation
     logger.info(f"[Voice] /chat redirecting to v2 (LangGraph) for user {user_id}")
     await voice_chat_v2(websocket, user_id=user_id, mode=mode, interview_track=interview_track, db=db)
+
+
+@router.websocket("/realtime")
+async def voice_chat_realtime(
+    websocket: WebSocket,
+    user_id: int = Query(..., description="ID пользователя"),
+    mode: Optional[str] = Query(None, description="Режим обучения"),
+    interview_track: Optional[str] = Query(None, description="ID трека интервью"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Feature-flagged modular runtime for the next voice session architecture."""
+    transport = WebSocketTransport(websocket)
+
+    if not settings.realtime_runtime_enabled:
+        await transport.accept()
+        await transport.send({
+            "type": "error",
+            "message": "Realtime runtime is disabled. Set REALTIME_RUNTIME_ENABLED=true to use /api/v1/voice/realtime.",
+        })
+        await transport.close(code=1008, reason="Realtime runtime disabled")
+        return
+
+    voice_sessions_active.inc()
+    final_mode = "unknown"
+    session_status = "disconnected"
+
+    try:
+        controller = VoiceSessionController(
+            db=db,
+            user_id=user_id,
+            mode=mode,
+            interview_track=interview_track,
+            transport=transport,
+            stt_provider=PassthroughTextSTTProvider(),
+            tts_provider=EdgeTTSTTSProvider(),
+            turn_detector=ExplicitMessageTurnDetector(),
+        )
+        result = await controller.run()
+        final_mode = result.final_mode
+        session_status = result.status
+    except Exception as e:
+        logger.error(f"[VoiceRuntime] WebSocket error: {e}", exc_info=True)
+        session_status = "error"
+        voice_errors_total.labels(stage="websocket").inc()
+        try:
+            await transport.send({
+                "type": "error",
+                "message": "Server error. Please refresh the page.",
+            })
+            await transport.close(code=1011, reason="Internal server error")
+        except Exception:
+            pass
+    finally:
+        voice_sessions_active.dec()
+        voice_sessions_total.labels(mode=final_mode, status=session_status).inc()
+
+        try:
+            await transport.close()
+        except Exception:
+            pass
 
 
 @router.websocket("/chat-legacy")

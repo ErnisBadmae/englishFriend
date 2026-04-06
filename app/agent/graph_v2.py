@@ -143,6 +143,11 @@ async def initialize_session_v2(
     memory_section: str = "",
     explicit_mode: Optional[str] = None,
     interview_track_id: Optional[str] = None,
+    mission_task_type: Optional[str] = None,
+    mission_title: Optional[str] = None,
+    mission_reason: Optional[str] = None,
+    mission_success_signal: Optional[str] = None,
+    mission_linked_goal_context: Optional[str] = None,
 ) -> AgentState:
     """Initialize a new agent session.
 
@@ -262,11 +267,19 @@ async def initialize_session_v2(
         "interview_track_title": selected_track["title"] if selected_track else None,
         "session_focus": selected_track["prompt_focus"] if selected_track else None,
         "interview_question_prompts": interview_question_prompts,
+        "mission_task_type": mission_task_type,
+        "mission_title": mission_title,
+        "mission_reason": mission_reason,
+        "mission_success_signal": mission_success_signal,
+        "mission_linked_goal_context": mission_linked_goal_context,
 
         # Current session
         "current_mode": initial_mode,
         "conversation_history": [],
         "system_prompt": None,
+        "low_signal_turn_streak": 0,
+        "anchor_question_id": 0,
+        "anchor_follow_up_pending": False,
 
         # Vocabulary
         "due_vocabulary_count": due_vocabulary_count,

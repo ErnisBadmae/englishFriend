@@ -37,6 +37,12 @@ class InternalToolRegistry:
                     category="speech",
                 ),
                 InternalToolDescriptor(
+                    id="modular_voice_runtime",
+                    title="Modular Voice Runtime",
+                    description="Feature-flagged voice session controller with pluggable transport, STT, turn detection, and TTS boundaries.",
+                    category="speech",
+                ),
+                InternalToolDescriptor(
                     id="fsrs_scheduler",
                     title="FSRS Scheduler",
                     description="Vocabulary review scheduling and spaced repetition logic.",

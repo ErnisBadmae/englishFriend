@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # TTS
     tts_voice: str = "american_female"
 
+    # Experimental modular voice runtime
+    realtime_runtime_enabled: bool = False
+
     # Pronunciation assessment
     pronunciation_provider: Literal["heuristic", "azure"] = "heuristic"
     pronunciation_locale: str = "en-US"
