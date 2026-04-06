@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agent.state import AgentPhase, LearningModeEnum
+from app.services.voice_session import BootstrapContext, SessionCompletion
 from app.services.voice_runtime.controller import VoiceRuntimeDependencies, VoiceSessionController
 from app.services.voice_runtime.stt import PassthroughTextSTTProvider
 from app.services.voice_runtime.turn_detection import ExplicitMessageTurnDetector
@@ -129,16 +130,11 @@ async def test_controller_processes_text_turn_with_phase_change_and_audio():
 
 @pytest.mark.asyncio
 async def test_controller_explicit_end_runs_farewell_and_persists_state():
-    learning_plan_service = MagicMock()
-    learning_plan_service.increment_session_count = AsyncMock()
-    learning_plan_service.record_assessment = AsyncMock()
-    memory_pipeline = MagicMock()
-    memory_pipeline.process_conversation = AsyncMock()
     deps = VoiceRuntimeDependencies(
         user_service_factory=lambda db: MagicMock(),
-        learning_plan_service_factory=lambda db: learning_plan_service,
+        learning_plan_service_factory=lambda db: MagicMock(),
         vocabulary_service_factory=lambda db: MagicMock(),
-        memory_pipeline_factory=lambda db: memory_pipeline,
+        memory_pipeline_factory=lambda db: MagicMock(),
     )
 
     tts_provider = MagicMock()
@@ -168,6 +164,9 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
         "vocabulary_reviewed": [],
         "should_end_session": False,
     }
+    controller._persistence_service.persist = AsyncMock(
+        return_value=SessionCompletion(status="completed")
+    )
 
     farewell_state = {
         "pending_response": "Nice work today. Let's continue tomorrow.",
@@ -183,18 +182,6 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
     with patch(
         "app.services.voice_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(return_value=farewell_state),
-    ), patch(
-        "app.services.voice_runtime.controller.persist_goal_state_if_needed",
-        new=AsyncMock(),
-    ), patch(
-        "app.services.voice_runtime.controller.persist_interview_run_if_needed",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "app.services.voice_runtime.controller.persist_session_evidence_if_needed",
-        new=AsyncMock(),
-    ), patch(
-        "app.services.voice_runtime.controller.award_session_gamification",
-        new=AsyncMock(),
     ):
         outcome = await controller.handle_message({"type": "end"})
 
@@ -206,5 +193,59 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
         and "Nice work today" in event.get("text", "")
         for event in outcome.events
     )
-    learning_plan_service.increment_session_count.assert_awaited_once()
-    memory_pipeline.process_conversation.assert_awaited_once()
+    controller._persistence_service.persist.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_controller_initialize_passes_explicit_mission_contract_to_bootstrap():
+    controller = VoiceSessionController(
+        db=AsyncMock(),
+        user_id=11,
+        mode="free_conversation",
+        interview_track=None,
+        mission_task_type="foundation_speaking_drill",
+        mission_title="Run a foundation speaking drill",
+        mission_reason="Stabilize grammar before interviews.",
+        mission_success_signal="One cleaner career answer.",
+        mission_linked_goal_context="foundation",
+        transport=MagicMock(),
+        stt_provider=PassthroughTextSTTProvider(),
+        tts_provider=MagicMock(synthesize=AsyncMock(return_value=b"audio")),
+        turn_detector=ExplicitMessageTurnDetector(),
+        dependencies=_mock_dependencies(),
+        use_v2_agent=True,
+    )
+    controller._bootstrap_service.build = AsyncMock(
+        return_value=BootstrapContext(session_id="mission-session")
+    )
+    controller._bootstrap_service.initialize_agent_state = AsyncMock(
+        return_value={
+            "current_phase": AgentPhase.START,
+            "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        }
+    )
+
+    with patch(
+        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        new=AsyncMock(
+            return_value={
+                "pending_response": "What do you do now?",
+                "current_phase": AgentPhase.LEARNING_SESSION,
+                "current_mode": LearningModeEnum.FREE_CONVERSATION,
+            }
+        ),
+    ):
+        await controller.initialize()
+
+    controller._bootstrap_service.initialize_agent_state.assert_awaited_once_with(
+        user_id=11,
+        context=controller._context,
+        use_v2_agent=True,
+        explicit_mode="free_conversation",
+        interview_track_id=None,
+        mission_task_type="foundation_speaking_drill",
+        mission_title="Run a foundation speaking drill",
+        mission_reason="Stabilize grammar before interviews.",
+        mission_success_signal="One cleaner career answer.",
+        mission_linked_goal_context="foundation",
+    )
