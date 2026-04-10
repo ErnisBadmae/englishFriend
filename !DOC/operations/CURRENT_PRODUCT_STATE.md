@@ -1,7 +1,10 @@
 # Current Product State
 
-Last updated: 2026-04-06
+Last updated: 2026-04-10
 Status: Active source of truth for product progress and agent continuity
+
+Canonical long-form vision and architecture:
+[../research/deep-research-report.md](../research/deep-research-report.md)
 
 ## Reporting Rule
 This file is the single place for short progress reports from Codex and Claude Code.
@@ -28,6 +31,7 @@ Do not create a new session log if this file is enough.
 - Primary audience: Russian-speaking ML/AI and adjacent IT specialists
 - Core outcome: prepare for international jobs, interviews, project walkthroughs, and workplace communication
 - Main UX principle: one guided path, not a toolbox of disconnected modes
+- Moat candidate: goal-relative career state + pedagogy for weak spoken English + evidence-driven next-mission adaptation
 
 ## Golden Path
 1. Noisy user intent comes in through text or voice.
@@ -55,30 +59,90 @@ Do not create a new session log if this file is enough.
 - Graph/session init now treats `draft` as setup-complete enough to move into baseline routing.
 - Experimental modular voice runtime now exists behind `REALTIME_RUNTIME_ENABLED` at `/api/v1/voice/realtime` with explicit transport, STT, turn detection, TTS, and controller boundaries.
 - The new runtime keeps the current text protocol and LangGraph brain, so the stack can benchmark new voice paths without rewriting product state logic.
+- Shared `voice_session` lifecycle now powers both `/chat/v2` and `/realtime`, so user bootstrap and post-session persistence are no longer duplicated across the two main voice paths.
 - Foundation and grammar missions now run through a stricter guided voice flow on `/chat/v2`, so weak STT no longer auto-sends noisy turns into a free-form tutor loop.
 - Learning turns for early foundation work now stay anchored to current work -> recent ML project -> next step, with deterministic clarifications instead of semantic guessing.
+- Primary frontend voice sessions now pass explicit mission metadata from `ProgramSnapshot.mission` into backend init, so `/chat/v2` and `/realtime` do not rely only on roadmap inference for early mission anchoring.
+- `llama_cpp` / Qwen compatibility is now hardened in the adapter layer: empty final content no longer silently propagates, and `final-only` mode is the default contract for the CPU endpoint.
+- Voice bootstrap now assembles a compact `LearnerProfileSummary` plus mission-scoped memory context from roadmap, evidence, and stored memories, so prompt memory is less raw and more stable across sessions.
+- Memory persistence now does a lightweight self-healing pass before save: relative dates are normalized, exact duplicates are dropped, and semantic conflicts are surfaced for profile-level resolution instead of silently bloating prompt context.
+- Mainline voice paths now emit a shared observability envelope across backend layers, including `runtime`, `session_id`, `turn_id`, `phase`, and `mode`.
+- Frontend dev voice sessions now expose a local debug panel with event capture and JSON export, so browser STT, websocket flow, and session handoff can be correlated with backend logs.
+- `/chat/v2` and `/realtime` now enrich websocket payloads with optional runtime metadata, so both paths can be compared through the same smoke harness.
+- Mainline voice paths now carry an explicit `stt_provider` label through session init, websocket payloads, and observability, so smoke runs and benchmark reports can be grouped by STT lane instead of only by transport source.
+- A product-oriented STT benchmark layer now exists: frontend debug exports keep full sent transcripts in dev mode, and `scripts/run_stt_benchmark.py` can score live smoke artifacts or multi-provider case files against role/project/technical-term expectations.
 
 ## Known Issues
-- Live onboarding and foundation voice still need manual smoke testing after the latest mission-anchored turn policy changes.
+- Full-stack observability is now wired for the mainline voice paths, but it still needs live validation to prove that each failure mode is diagnosable in one pass.
+- Live onboarding and foundation voice still need manual smoke testing after the latest explicit mission-contract wiring.
 - Old users with stale data can surface edge cases; snapshot fallback has been hardened, but more live verification is needed.
 - Frontend bundle is still too large and warns on build.
 - Langfuse is configured in code but disabled locally unless credentials are set.
 - Some old docs are noisy or outdated; use this file as the active continuity source.
 - Browser Vosk is still weak on broken English; the product now has a stronger typed fallback, but STT quality itself is unchanged.
 - `/chat/v2` still contains the older large endpoint implementation; the new modular runtime is additive for now and has not yet replaced that path.
-- Foundation mission context is currently inferred from roadmap/program state in backend init; explicit session-contract wiring is still optional, not mandatory.
+- Legacy and premium voice paths are not fully aligned yet; `/chat-legacy` and `/chat/plex` still use older init patterns outside the shared mission-contract path.
+- Live retest on the real `llama_cpp` endpoint is still needed after the new Qwen compatibility pass.
+- Memory consolidation is still request-time only; there is no background job yet for periodic profile refresh or deep contradiction cleanup.
+- Cloud LLM resilience is still thin; the practical path today is mostly `Groq -> llama.cpp`.
+- The vocabulary scheduling layer still runs on the current Python FSRS path and has not yet been reviewed against Rust-backed alternatives.
+- The dev debug panel is local-only; frontend debug events are not yet persisted or queryable from the backend.
+- The benchmark layer is artifact-first for now; it can score browser/live exports and structured case files, but first-class server adapters for `faster-whisper` and `Parakeet-TDT` are not wired yet.
+- Strategic risk: product breadth can still drift toward a generic tutor / learning workspace if new features are not filtered through the career-loop moat.
 
 ## Next Step
-- Run a live smoke test for the stricter foundation path on `/chat/v2`:
-  - start `Run a foundation speaking drill`
-  - say a noisy or partial answer
-  - verify transcript stays in composer and does not auto-send
-  - send one short cleaned answer
-  - verify the coach stays on current work / recent project / next step instead of inventing a new topic
-- If that path feels reliable, continue with vacancy -> interview pack -> mission -> paid-intent loop and collect 3-5 real session transcripts.
-- Then enable `REALTIME_RUNTIME_ENABLED=true` locally and smoke-test `/api/v1/voice/realtime` against the same frontend protocol before wiring any new STT/TTS provider.
+- Run the instrumented 3-session live smoke set on the current stack using `VOICE_OBSERVABILITY_RUNBOOK.md`.
+- For each run, collect:
+  - frontend debug JSON export
+  - backend logs by `session_id`
+  - `/metrics` snapshot before and after
+- Use the new shared `runtime/session_id/turn_id` contract to identify whether the next real bottleneck is STT, pedagogy, LLM fallback, memory, or persistence.
+- Keep the roadmap filtered by moat:
+  - prioritize features that improve goal precision, pedagogy, evidence, or next-mission adaptation
+  - deprioritize features that only add generic tutor breadth
+- Then start the STT benchmark track:
+  - collect the first benchmark-ready artifacts with `STT_BENCHMARK_RUNBOOK.md`
+  - compare current browser Vosk first
+  - then add backend `faster-whisper`
+  - then add backend `Parakeet-TDT`
+  - then add browser-side `Whisper-small/WebGPU`
+- Keep `Cerebras` as the near-term resilience sidecar and keep FSRS review as a parallel, lower-priority track.
+- Keep `deep-research-report.md` as the broader architecture map, but treat this file as the current execution source of truth.
 
 ## Last Update
+### 2026-04-10
+- Added a product-oriented STT benchmark layer: explicit `stt_provider` metadata now flows through the main voice paths, dev debug exports retain full sent text, and `scripts/run_stt_benchmark.py` can score live smoke artifacts or structured multi-provider cases.
+- Added `!DOC/operations/STT_BENCHMARK_RUNBOOK.md` to lock the benchmark contract, expected inputs, and acceptance criteria around role/project/technical-term capture rather than generic WER.
+- Locked the moat framing in the canonical strategy docs: EnglishFriend should compete as a vertical career-English operating loop, not as a generic AI tutor or learning OS.
+- Added an explicit anti-roadmap to guard against DeepTutor-like breadth drift: no general tutor platform, no notebook/research workspace core, no user-facing multi-agent shell.
+- Recorded the strategic implication of recent external signals: horizontal tutoring stacks are commoditizing, so moat must come from career-state precision, pedagogy, evidence, and audience-specific adaptation.
+- No code changes in this update; this was a strategy/documentation lock to guide the next implementation passes.
+### 2026-04-09
+- Added the observability-first instrumentation pass for `/chat/v2` and `/realtime`: shared backend voice envelopes, stage metrics, websocket metadata enrichment, and a dev-only frontend debug panel/export flow.
+- Added an operational runbook for instrumented live smoke capture in `!DOC/operations/VOICE_OBSERVABILITY_RUNBOOK.md`.
+- Added regression coverage for observability helpers and updated runtime/session tests for `runtime`, `turn_id`, and enriched payloads.
+- Verification:
+  - pending targeted `pytest`, backend import check, and frontend build after the observability pass
+### 2026-04-09
+- Added a DB-first hybrid memory layer with compact `LearnerProfileSummary`, mission-scoped memory context, and bootstrap wiring into `/chat/v2` and `/realtime`.
+- Added lightweight memory self-healing in the persistence path: relative-date normalization, duplicate dropping, and conflict surfacing before save.
+- Added regression coverage for learner profile assembly, mission memory rendering, memory consolidation contracts, and updated bootstrap tests.
+- Verification:
+  - `venv\Scripts\python.exe -m pytest tests/test_memory_contracts.py tests/test_learner_profile_service.py tests/test_voice_session_services.py tests/test_voice_runtime.py tests/test_rag_pipeline.py -q`
+  - `25 passed`
+  - `venv\Scripts\python.exe -c "import main; print('main import ok')"` passed
+### 2026-04-06
+- Added `llama_cpp` final-only compatibility mode with typed empty-content errors, one compat retry for reasoning-only responses, and safe fallbacks in onboarding, learning, session_end, memory extraction, and post-session analysis.
+- Added config/docs contract for `LLAMA_CPP_RESPONSE_MODE` and `LLAMA_CPP_EXTRA_BODY_JSON`.
+- Added regression coverage for llama.cpp compat retry, raw-mode behavior, empty-content node fallbacks, and post-session/memory safety.
+### 2026-04-06
+- Extracted a shared `voice_session` bootstrap/persistence layer and wired it into both `/chat/v2` and `/realtime`.
+- Added explicit mission-contract wiring from `ProgramSnapshot.mission` through frontend websocket query into backend session init for the main voice paths.
+- Added regression coverage for explicit mission precedence over roadmap fallback and for realtime controller pass-through of mission metadata.
+- Verification:
+  - `venv\Scripts\python.exe -m pytest tests/test_learning_node.py tests/test_voice_runtime.py tests/test_voice_session_services.py tests/test_voice_helpers.py -q`
+  - `27 passed`
+  - `venv\Scripts\python.exe -c "import main; print('main import ok')"` passed
 ### 2026-04-06
 - Stabilized early foundation voice turns: `/chat/v2` now treats `foundation_speaking_drill` and `grammar_rescue` as mission-anchored guided sessions instead of generic free conversation.
 - Added low-signal handling that keeps the coach on one anchor question, asks for one shorter answer, then falls back to typed/composer input if STT stays noisy.

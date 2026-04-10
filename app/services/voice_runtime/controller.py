@@ -35,6 +35,14 @@ from app.services.voice_runtime.base import (
     VoiceControllerOutcome,
     VoiceRuntimeResult,
 )
+from app.services.voice_observability import (
+    VoiceSessionScope,
+    bind_voice_context,
+    enrich_ws_event,
+    log_voice_event,
+    make_turn_envelope,
+    observe_voice_stage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +77,7 @@ class VoiceSessionController:
         mission_reason: Optional[str] = None,
         mission_success_signal: Optional[str] = None,
         mission_linked_goal_context: Optional[str] = None,
+        stt_provider_name: Optional[str] = None,
         transport: TransportAdapter,
         stt_provider: STTProvider,
         tts_provider: TTSProvider,
@@ -85,6 +94,7 @@ class VoiceSessionController:
         self._mission_reason = mission_reason
         self._mission_success_signal = mission_success_signal
         self._mission_linked_goal_context = mission_linked_goal_context
+        self._stt_provider_name = stt_provider_name or getattr(stt_provider, "provider_id", None)
         self._transport = transport
         self._stt_provider = stt_provider
         self._tts_provider = tts_provider
@@ -105,6 +115,17 @@ class VoiceSessionController:
         self._agent_version = "v2" if self._use_v2_agent else "v1"
         self._final_mode = "unknown"
         self._completion_signal_sent = False
+        self._runtime = "realtime"
+
+    def _scope(self) -> VoiceSessionScope:
+        return VoiceSessionScope(
+            runtime=self._runtime,
+            session_id=self._context.session_id,
+            user_id=self._user_id,
+            agent_version=self._agent_version,
+            mission_task_type=self._mission_task_type or self._agent_state.get("mission_task_type"),
+            stt_provider=self._stt_provider_name,
+        )
 
     async def run(self) -> VoiceRuntimeResult:
         """Run the modular runtime until the session closes."""
@@ -143,7 +164,10 @@ class VoiceSessionController:
         self._context = await self._bootstrap_service.build(
             user_id=self._user_id,
             session_id=self._context.session_id,
+            runtime=self._runtime,
+            stt_provider=self._stt_provider_name,
         )
+        bind_voice_context(self._scope())
         agent_version_sessions.labels(version=self._agent_version).inc()
 
         self._agent_state = await self._bootstrap_service.initialize_agent_state(
@@ -157,6 +181,8 @@ class VoiceSessionController:
             mission_reason=self._mission_reason,
             mission_success_signal=self._mission_success_signal,
             mission_linked_goal_context=self._mission_linked_goal_context,
+            runtime=self._runtime,
+            stt_provider=self._stt_provider_name,
         )
         self._agent_state = await self._run_agent_turn(user_message=None)
 
@@ -170,6 +196,21 @@ class VoiceSessionController:
         )
         self._final_mode = current_mode
 
+        scope = self._scope()
+        log_voice_event(
+            logger,
+            envelope=make_turn_envelope(
+                scope,
+                phase=current_phase,
+                mode=current_mode,
+            ),
+            layer="bootstrap",
+            event="agent_session_ready",
+            is_new_user=self._context.is_new_user,
+            due_vocabulary_count=self._context.due_vocabulary_count,
+            goal_present=bool(self._context.confirmed_goal),
+        )
+
         events = [
             {
                 "type": "connected",
@@ -179,7 +220,9 @@ class VoiceSessionController:
                 "is_new_user": self._context.is_new_user,
                 "goal": self._context.confirmed_goal,
                 "due_vocabulary_count": self._context.due_vocabulary_count,
-                "runtime": "modular",
+                "runtime": self._runtime,
+                "agent_version": self._agent_version,
+                "stt_provider": self._stt_provider_name,
             }
         ]
 
@@ -215,15 +258,43 @@ class VoiceSessionController:
         if decision.disposition == "end":
             return await self._complete_session()
 
+        stt_start = time.perf_counter()
         stt_event = await self._stt_provider.transcribe_text(
             decision.text,
             user_id=self._user_id,
             session_id=self._context.session_id,
         )
+        stt_duration = time.perf_counter() - stt_start
+        next_turn_index = int(self._agent_state.get("turn_count", 0) or 0) + 1
+        turn_id = f"t{next_turn_index}"
+        scope = self._scope()
+        envelope = make_turn_envelope(
+            scope,
+            turn_id=turn_id,
+            turn_index=next_turn_index,
+            phase=_enum_value(
+                self._agent_state.get("current_phase", AgentPhase.START),
+                AgentPhase.START.value,
+            ),
+            mode=_enum_value(
+                self._agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION),
+                LearningModeEnum.FREE_CONVERSATION.value,
+            ),
+        )
+        bind_voice_context(scope, turn_id=turn_id)
         if stt_event.type == "error":
             voice_errors_total.labels(stage="stt").inc()
             return VoiceControllerOutcome(
-                events=[{"type": "error", "message": stt_event.text or "STT failed."}]
+                events=[
+                    enrich_ws_event(
+                        {
+                            "type": "error",
+                            "message": stt_event.text or "STT failed.",
+                            "stage": "stt",
+                        },
+                        envelope=envelope,
+                    )
+                ]
             )
 
         user_text = stt_event.text.strip()
@@ -233,24 +304,66 @@ class VoiceSessionController:
         if self._agent_state.get("session_complete_reason"):
             events = self._build_session_complete_events()
             events.append(
-                {
-                    "type": "error",
-                    "message": "This setup session is already complete. End it and start your first mission from the dashboard.",
-                }
+                enrich_ws_event(
+                    {
+                        "type": "error",
+                        "message": "This setup session is already complete. End it and start your first mission from the dashboard.",
+                        "stage": "session",
+                    },
+                    envelope=envelope,
+                )
             )
             return VoiceControllerOutcome(events=events)
 
         turn_start = time.time()
         voice_messages_total.labels(direction="inbound", type="text").inc()
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="transport",
+            event="turn_received",
+            text=user_text,
+            source=decision.metadata.get("source") or stt_event.metadata.get("source") or "websocket_text",
+        )
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="stt",
+            event="stt_completed",
+            latency_ms=stt_duration * 1000,
+            text=user_text,
+            confidence=stt_event.confidence,
+            source=decision.metadata.get("source") or stt_event.metadata.get("source") or "websocket_text",
+        )
+        observe_voice_stage(
+            runtime=self._runtime,
+            stage="stt",
+            duration_seconds=stt_duration,
+        )
 
-        events = [{"type": "transcript", "role": "user", "text": user_text}]
+        events = [
+            enrich_ws_event(
+                {
+                    "type": "transcript",
+                    "role": "user",
+                    "text": user_text,
+                },
+                envelope=envelope,
+            )
+        ]
 
         old_phase = _enum_value(
             self._agent_state.get("current_phase", AgentPhase.START),
             AgentPhase.START.value,
         )
 
+        agent_start = time.perf_counter()
         self._agent_state = await self._run_agent_turn(user_message=user_text)
+        observe_voice_stage(
+            runtime=self._runtime,
+            stage="agent",
+            duration_seconds=time.perf_counter() - agent_start,
+        )
 
         current_phase = _enum_value(
             self._agent_state.get("current_phase", AgentPhase.START),
@@ -262,14 +375,55 @@ class VoiceSessionController:
         )
         turn_count = int(self._agent_state.get("turn_count", 0) or 0)
         self._final_mode = current_mode
+        envelope = make_turn_envelope(
+            scope,
+            turn_id=turn_id,
+            turn_index=turn_count,
+            phase=current_phase,
+            mode=current_mode,
+        )
+        last_intent = self._agent_state.get("last_intent") or {}
+        if last_intent:
+            log_voice_event(
+                logger,
+                envelope=envelope,
+                layer="intent",
+                event="intent_classified",
+                latency_ms=last_intent.get("latency_ms"),
+                shadow_mode=bool(last_intent.get("shadow_mode", False)),
+                intent_type=last_intent.get("type"),
+                intent_confidence=last_intent.get("confidence"),
+                classifier_source=last_intent.get("classifier_source"),
+                reason_codes=last_intent.get("reason_codes"),
+                policy_action=last_intent.get("policy_action"),
+                needs_composer_hint=last_intent.get("needs_composer_hint"),
+            )
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="agent",
+            event="agent_turn_completed",
+            latency_ms=(time.perf_counter() - agent_start) * 1000,
+            pending_response_chars=len(self._agent_state.get("pending_response", "") or ""),
+            session_complete_reason=self._agent_state.get("session_complete_reason"),
+            low_signal_turn_streak=int(self._agent_state.get("low_signal_turn_streak", 0) or 0),
+            anchor_question_id=self._agent_state.get("anchor_question_id"),
+            intent_type=last_intent.get("type"),
+            intent_confidence=last_intent.get("confidence"),
+            intent_source=last_intent.get("classifier_source"),
+            intent_policy_action=last_intent.get("policy_action"),
+        )
 
         if old_phase != current_phase:
             events.append(
-                {
-                    "type": "phase_changed",
-                    "phase": current_phase,
-                    "mode": current_mode,
-                }
+                enrich_ws_event(
+                    {
+                        "type": "phase_changed",
+                        "phase": current_phase,
+                        "mode": current_mode,
+                    },
+                    envelope=envelope,
+                )
             )
 
             if current_phase == AgentPhase.LEARNING_SESSION.value:
@@ -282,6 +436,7 @@ class VoiceSessionController:
                 phase=current_phase,
                 mode=current_mode,
                 turn=turn_count,
+                turn_id=turn_id,
             )
             events.extend(assistant_events)
             voice_turn_total_seconds.labels(mode=current_mode).observe(time.time() - turn_start)
@@ -300,6 +455,19 @@ class VoiceSessionController:
 
     async def handle_disconnect(self) -> VoiceControllerOutcome:
         """Persist best-effort state on disconnect."""
+        log_voice_event(
+            logger,
+            envelope=make_turn_envelope(
+                self._scope(),
+                phase=_enum_value(
+                    self._agent_state.get("current_phase", AgentPhase.START),
+                    AgentPhase.START.value,
+                ),
+                mode=self._final_mode,
+            ),
+            layer="session",
+            event="session_disconnected",
+        )
         await self._persist_session(status="disconnected")
         return VoiceControllerOutcome(should_close=True, status="disconnected")
 
@@ -336,35 +504,69 @@ class VoiceSessionController:
         phase: str,
         mode: str,
         turn: Optional[int],
+        turn_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        envelope = make_turn_envelope(
+            self._scope(),
+            turn_id=turn_id,
+            turn_index=turn,
+            phase=phase,
+            mode=mode,
+        )
         events: list[dict[str, Any]] = [
-            {
-                "type": "transcript",
-                "role": "assistant",
-                "text": text,
-                "phase": phase,
-                "mode": mode,
-            }
+            enrich_ws_event(
+                {
+                    "type": "transcript",
+                    "role": "assistant",
+                    "text": text,
+                    "phase": phase,
+                    "mode": mode,
+                },
+                envelope=envelope,
+            )
         ]
-        if turn is not None:
-            events[0]["turn"] = turn
 
         try:
             tts_start = time.time()
             audio_bytes = await self._tts_provider.synthesize(text)
             voice_tts_latency_seconds.observe(time.time() - tts_start)
+            observe_voice_stage(
+                runtime=self._runtime,
+                stage="tts",
+                duration_seconds=time.time() - tts_start,
+            )
+            log_voice_event(
+                logger,
+                envelope=envelope,
+                layer="tts",
+                event="tts_completed",
+                latency_ms=(time.time() - tts_start) * 1000,
+                char_count=len(text),
+                audio_bytes=len(audio_bytes),
+            )
 
             events.append(
-                {
-                    "type": "audio",
-                    "data": base64.b64encode(audio_bytes).decode(),
-                    "format": "mp3",
-                }
+                enrich_ws_event(
+                    {
+                        "type": "audio",
+                        "data": base64.b64encode(audio_bytes).decode(),
+                        "format": "mp3",
+                    },
+                    envelope=envelope,
+                )
             )
             voice_messages_total.labels(direction="outbound", type="audio").inc()
         except Exception as exc:
             logger.warning("[VoiceRuntime] TTS error: %s", exc)
             voice_errors_total.labels(stage="tts").inc()
+            log_voice_event(
+                logger,
+                envelope=envelope,
+                layer="tts",
+                event="tts_failed",
+                level=logging.WARNING,
+                error=str(exc),
+            )
 
         return events
 
@@ -375,6 +577,7 @@ class VoiceSessionController:
             user_id=self._user_id,
             session_id=self._context.session_id,
             final_mode=self._final_mode,
+            runtime=self._runtime,
             existing_goal=self._context.confirmed_goal,
             agent_state=self._agent_state,
         )
@@ -388,12 +591,31 @@ class VoiceSessionController:
             return []
 
         self._completion_signal_sent = True
+        envelope = make_turn_envelope(
+            self._scope(),
+            phase=_enum_value(
+                self._agent_state.get("current_phase", AgentPhase.START),
+                AgentPhase.START.value,
+            ),
+            mode=self._final_mode,
+        )
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="session",
+            event="session_completed",
+            reason=self._agent_state.get("session_complete_reason"),
+            return_screen=self._agent_state.get("session_complete_return_screen") or "home",
+        )
         return [
-            {
-                "type": "session_complete",
-                "reason": self._agent_state.get("session_complete_reason"),
-                "return_screen": self._agent_state.get("session_complete_return_screen") or "home",
-            }
+            enrich_ws_event(
+                {
+                    "type": "session_complete",
+                    "reason": self._agent_state.get("session_complete_reason"),
+                    "return_screen": self._agent_state.get("session_complete_return_screen") or "home",
+                },
+                envelope=envelope,
+            )
         ]
 
     async def _send_events(self, events: list[dict[str, Any]]) -> None:

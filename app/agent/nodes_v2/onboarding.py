@@ -21,6 +21,8 @@ from app.agent.guardrails import (
     validate_and_sanitize,
     validate_confidence,
 )
+from app.agent.intent_policy import build_intent_context_from_state, classify_intent
+from app.agent.pedagogy_policy import shadow_policy_action_for_intent
 from app.agent.response_parser import (
     extract_assessment_from_action,
     extract_goal_brief_from_action,
@@ -193,6 +195,17 @@ _CURRENT_ROLE_PATTERNS = (
     "built",
     "working on",
 )
+_NO_CURRENT_ROLE_PATTERNS = (
+    "dont work now",
+    "don't work now",
+    "don t work now",
+    "not working now",
+    "i am not working",
+    "im not working",
+    "between jobs",
+    "looking for my first role",
+    "student now",
+)
 _TARGET_ROLE_PATTERNS = (
     "ml engineer",
     "machine learning engineer",
@@ -225,6 +238,17 @@ _PROJECT_TASK_PATTERNS = (
     "e commerce",
     "ecommerce",
 )
+_FUTURE_ROLE_PATTERNS = (
+    "want",
+    "want to",
+    "want next",
+    "next role",
+    "become",
+    "looking for",
+    "job abroad",
+    "role abroad",
+)
+_ASSESSMENT_AFFIRMATION_PREFIX_RE = re.compile(r"^(yes|yeah|yep|ok|okay|sure)\b[\s,:.-]*")
 
 
 async def onboarding_node(state: AgentState) -> AgentState:
@@ -238,8 +262,35 @@ async def onboarding_node(state: AgentState) -> AgentState:
     session_id = state.get("session_id", "")
 
     _record_onboarding_user_turn(state, user_message)
+    _update_shadow_intent(state, user_message)
+
+    if not user_message.strip():
+        if state.get("goal_setup_complete") and not state.get("assessed_level") and not state.get("_skip_assessment", False):
+            state["pending_response"] = _build_assessment_followup_question(state)
+            state["needs_user_input"] = True
+            state["current_phase"] = AgentPhase.ASSESSMENT
+            state["current_mode"] = LearningModeEnum.ASSESSMENT
+            return state
+
+        if not state.get("goal_setup_complete"):
+            state["pending_response"] = _build_goal_followup_question(
+                state.get("goal_brief") or {},
+                state.get("confirmed_goal") or state.get("detected_goal"),
+            )
+            state["needs_user_input"] = True
+            state["current_phase"] = AgentPhase.ONBOARDING
+            state["setup_step"] = "goal_setup"
+            state["last_question_type"] = "goal_setup"
+            _record_onboarding_assistant_turn(state)
+            return state
+
+        state["pending_response"] = "I have enough to keep building your program. Let's continue."
+        state["needs_user_input"] = True
+        _record_onboarding_assistant_turn(state)
+        return state
 
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
+    goal_became_routing_ready_this_turn = False
     inferred_goal_brief = _infer_goal_brief_from_message(user_message, state.get("goal_brief") or {})
     if inferred_goal_brief:
         normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
@@ -248,6 +299,18 @@ async def onboarding_node(state: AgentState) -> AgentState:
         state["setup_step"] = "baseline_assessment" if state["goal_setup_complete"] else "goal_setup"
         if not state.get("detected_goal"):
             state["detected_goal"] = normalized_goal_brief.get("primary_goal")
+        goal_became_routing_ready_this_turn = bool(
+            state.get("goal_setup_complete") and state.get("last_question_type") == "goal_setup"
+        )
+        if goal_became_routing_ready_this_turn:
+            state["_skip_assessment"] = False
+
+    if goal_became_routing_ready_this_turn and not state.get("assessed_level"):
+        _enter_assessment_phase(state)
+        state["pending_response"] = _build_assessment_followup_question(state)
+        state["needs_user_input"] = True
+        _record_onboarding_assistant_turn(state)
+        return state
 
     if state.get("goal_setup_complete") and not state.get("assessed_level") and not state.get("_skip_assessment", False):
         state = await _handle_assessment_turn(state, pedagogy)
@@ -715,7 +778,7 @@ def _is_meta_progress_message(message: str) -> bool:
 
 
 def _extract_assessment_content_tokens(message: str) -> list[str]:
-    normalized = _normalize_user_message(message).strip()
+    normalized = _normalize_assessment_answer(message).strip()
     if not normalized:
         return []
     tokens = [word for word in normalized.split() if word]
@@ -733,17 +796,12 @@ def _is_low_signal_assessment_answer(
     question_key: str,
     state: AgentState,
 ) -> bool:
-    normalized = _normalize_user_message(message).strip()
+    normalized = _normalize_assessment_answer(message).strip()
     if not normalized:
         return True
 
     content_tokens = _extract_assessment_content_tokens(normalized)
     if len(content_tokens) < 2:
-        return True
-
-    words = [word for word in normalized.split() if word]
-    filler_ratio = 1.0 - (len(content_tokens) / max(len(words), 1))
-    if filler_ratio > 0.55 and len(content_tokens) < 4:
         return True
 
     goal_role = str((state.get("goal_brief") or {}).get("target_role") or "").lower()
@@ -755,10 +813,21 @@ def _is_low_signal_assessment_answer(
         return not any(pattern in normalized for pattern in role_patterns)
 
     if question_key == "current_role":
-        return not (
-            any(pattern in normalized for pattern in _CURRENT_ROLE_PATTERNS)
-            or _has_any_signal(normalized, _ML_SIGNAL_PATTERNS)
-        )
+        no_current_role_signal = any(pattern in normalized for pattern in _NO_CURRENT_ROLE_PATTERNS)
+        current_role_signal = any(pattern in normalized for pattern in _CURRENT_ROLE_PATTERNS)
+        future_role_signal = any(pattern in normalized for pattern in _FUTURE_ROLE_PATTERNS)
+        content_tokens = _extract_assessment_content_tokens(normalized)
+        compact_role_label = len(content_tokens) <= 2
+        if no_current_role_signal:
+            return False
+        if current_role_signal and not future_role_signal and not compact_role_label:
+            return False
+        return True
+
+    words = [word for word in normalized.split() if word]
+    filler_ratio = 1.0 - (len(content_tokens) / max(len(words), 1))
+    if filler_ratio > 0.55 and len(content_tokens) < 4:
+        return True
 
     if question_key == "project_task":
         return not (
@@ -774,7 +843,7 @@ def _is_usable_baseline_answer(
     question_key: str,
     state: AgentState,
 ) -> bool:
-    normalized = _normalize_user_message(message).strip()
+    normalized = _normalize_assessment_answer(message).strip()
     if not normalized:
         return False
     if _is_meta_progress_message(normalized):
@@ -934,12 +1003,9 @@ async def _handle_assessment_turn(state: AgentState, pedagogy) -> AgentState:
     else:
         if _is_usable_baseline_answer(user_message, current_key, state) or meta_progress:
             next_prompt = _advance_baseline_prompt(state)
-            if usable_answers >= 2 and state.get("assessment_step_index", 0) >= 2:
-                _complete_baseline_assessment(state)
-            else:
-                state["pending_response"] = next_prompt
-                state["needs_user_input"] = True
-                return state
+            state["pending_response"] = next_prompt
+            state["needs_user_input"] = True
+            return state
         else:
             state["pending_response"] = (
                 "It is OK to answer in simple English or mixed Russian and English. "
@@ -976,6 +1042,28 @@ def _normalize_user_message(message: Optional[str]) -> str:
     normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return f" {normalized} "
+
+
+def _normalize_assessment_answer(message: Optional[str]) -> str:
+    normalized = _normalize_user_message(message).strip()
+    if not normalized:
+        return ""
+    previous = None
+    while normalized and previous != normalized:
+        previous = normalized
+        normalized = _ASSESSMENT_AFFIRMATION_PREFIX_RE.sub("", normalized).strip()
+    return normalized
+
+
+def _update_shadow_intent(state: AgentState, user_message: str) -> None:
+    if not (user_message or "").strip():
+        state["last_intent"] = None
+        return
+    result = classify_intent(user_message, build_intent_context_from_state(state))
+    state["last_intent"] = result.to_payload(
+        policy_action=shadow_policy_action_for_intent(result.type),
+        shadow_mode=True,
+    )
 
 
 def _has_any_signal(message: str, patterns: tuple[str, ...]) -> bool:

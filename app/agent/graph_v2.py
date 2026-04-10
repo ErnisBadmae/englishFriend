@@ -42,6 +42,8 @@ from app.core.observability import (
     set_request_context,
     get_langfuse,
     get_request_id,
+    get_turn_id,
+    get_runtime,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,8 @@ async def initialize_session_v2(
     due_vocabulary_count: int = 0,
     due_vocabulary_words: Optional[list[str]] = None,
     memory_section: str = "",
+    learner_profile_summary: Optional[dict[str, Any]] = None,
+    mission_memory_context: Optional[dict[str, Any]] = None,
     explicit_mode: Optional[str] = None,
     interview_track_id: Optional[str] = None,
     mission_task_type: Optional[str] = None,
@@ -324,6 +328,8 @@ async def initialize_session_v2(
 
         # Memory
         "memory_section": memory_section,
+        "learner_profile_summary": learner_profile_summary,
+        "mission_memory_context": mission_memory_context,
         "new_memories_to_save": [],
 
         # Corrections
@@ -334,6 +340,7 @@ async def initialize_session_v2(
 
         # Logging
         "decision_log": [],
+        "last_intent": None,
 
         # Response
         "pending_response": None,
@@ -386,6 +393,8 @@ async def run_agent_turn_v2(
 
     # Set request context for this turn (enables log correlation)
     request_id = set_request_context(user_id=user_id, session_id=session_id)
+    runtime = get_runtime()
+    turn_id = get_turn_id()
 
     logger.info(
         f"[Agent V2] ▶ Turn start | phase={phase.value if hasattr(phase, 'value') else phase} | "
@@ -404,7 +413,11 @@ async def run_agent_turn_v2(
                 session_id=session_id,
                 metadata={
                     "turn_count": turn_count,
+                    "turn_id": turn_id,
+                    "runtime": runtime,
                     "phase": phase.value if hasattr(phase, "value") else str(phase),
+                    "mode": getattr(state.get("current_mode"), "value", str(state.get("current_mode"))),
+                    "mission_task_type": state.get("mission_task_type"),
                     "user_message": (user_message or "")[:100],
                 },
             )
@@ -447,8 +460,12 @@ async def run_agent_turn_v2(
                     output=result.get("pending_response", "")[:500],
                     metadata={
                         "turn_count": turn_count,
+                        "turn_id": turn_id,
+                        "runtime": runtime,
                         "phase_start": phase.value if hasattr(phase, "value") else str(phase),
                         "phase_end": new_phase.value if hasattr(new_phase, "value") else str(new_phase),
+                        "mode_end": getattr(result.get("current_mode"), "value", str(result.get("current_mode"))),
+                        "mission_task_type": result.get("mission_task_type"),
                         "latency_ms": round(latency_ms, 2),
                         "decision": latest if decision_log else None,
                     },

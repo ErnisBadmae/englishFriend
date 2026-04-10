@@ -12,7 +12,9 @@ import re
 import time
 from typing import Optional
 
+from app.agent.intent_policy import build_intent_context_from_state, classify_intent
 from app.agent.state import AgentState, AgentPhase, add_decision_log
+from app.agent.pedagogy_policy import shadow_policy_action_for_intent
 from app.data.interview_tracks import get_interview_track
 from app.agent.response_parser import parse_llm_response
 from app.services.pedagogy_logger import get_pedagogy_logger
@@ -106,6 +108,40 @@ ANCHORS = [
         "example": "My next step is to improve grammar for project answers.",
     },
 ]
+ANCHOR_SIGNAL_PATTERNS = {
+    "current_work": (
+        "current work",
+        "i work",
+        "my role",
+        "data scientist",
+        "data analyst",
+        "engineer",
+        "build recommendation",
+        "work now",
+    ),
+    "recent_project": (
+        "recent project",
+        "my project",
+        "project was",
+        "recommendation model",
+        "churn model",
+        "fraud model",
+        "pipeline",
+        "problem",
+        "result",
+        "metric",
+    ),
+    "next_step": (
+        "next step",
+        "my next step",
+        "in our program",
+        "improve grammar",
+        "improve fluency",
+        "improve vocabulary",
+        "my plan",
+        "skill i want",
+    ),
+}
 STATIC_CAREER_KEYWORDS = {
     "career",
     "data",
@@ -140,6 +176,23 @@ STATIC_CAREER_KEYWORDS = {
     "vocabulary",
     "work",
 }
+SUPPORT_REQUEST_PATTERNS = (
+    "my english is bad",
+    "my english is very bad",
+    "my english is weak",
+    "could you teach me",
+    "teach me",
+    "i can not describe",
+    "i cannot describe",
+    "i cant describe",
+    "i dont know how to say",
+    "i don't know how to say",
+    "i dont know how can i say",
+    "i don't know how can i say",
+    "i cant explain in english",
+    "i can't explain in english",
+    "i do not know how to say",
+)
 
 
 async def learning_node(state: AgentState) -> AgentState:
@@ -156,6 +209,8 @@ async def learning_node(state: AgentState) -> AgentState:
 
     turn_count = state.get("turn_count", 0) + 1
     state["turn_count"] = turn_count
+
+    _update_shadow_intent(state, user_message)
 
     is_allowed, rate_limit_message = check_rate_limit(turn_count)
     if not is_allowed:
@@ -177,6 +232,19 @@ async def learning_node(state: AgentState) -> AgentState:
             strategy="mission_opener",
         )
 
+    if mission_anchored and _needs_supportive_anchor_recovery(user_message):
+        state["low_signal_turn_streak"] = int(state.get("low_signal_turn_streak", 0) or 0) + 1
+        action = _build_supportive_anchor_action(state)
+        return _record_learning_turn(
+            state,
+            action,
+            pedagogy,
+            conversation_history,
+            user_message,
+            reason=f"Supportive recovery {state['low_signal_turn_streak']}",
+            strategy="supportive_recovery",
+        )
+
     if mission_anchored and _is_low_signal_text(user_message, state):
         state["low_signal_turn_streak"] = int(state.get("low_signal_turn_streak", 0) or 0) + 1
         action = _build_low_signal_action(state)
@@ -192,6 +260,7 @@ async def learning_node(state: AgentState) -> AgentState:
 
     if mission_anchored:
         state["low_signal_turn_streak"] = 0
+        _apply_anchor_shift_if_needed(state, user_message)
 
     template = None
     template_variant = "fallback"
@@ -684,10 +753,17 @@ def _get_anchor(state: AgentState, offset: int = 0) -> dict:
 
 def _build_mission_opener_action(state: AgentState) -> dict:
     anchor = _get_anchor(state)
-    mission_title = state.get("mission_title") or "today's foundation drill"
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type == "foundation_speaking_drill":
+        intro = "Let's keep this foundation speaking drill focused."
+    elif mission_task_type == "grammar_rescue":
+        intro = "Let's keep this grammar rescue session focused."
+    else:
+        mission_title = state.get("mission_title") or "today's mission"
+        intro = f"Let's keep {mission_title.lower()} focused."
     return {
         "action": "continue",
-        "response_text": f"Let's keep {mission_title.lower()} focused. {anchor['question']}",
+        "response_text": f"{intro} {anchor['question']}",
         "should_end": False,
     }
 
@@ -721,6 +797,34 @@ def _build_low_signal_action(state: AgentState) -> dict:
     }
 
 
+def _build_supportive_anchor_action(state: AgentState) -> dict:
+    streak = int(state.get("low_signal_turn_streak", 0) or 0)
+    anchor = _get_anchor(state)
+    example = anchor["example"]
+
+    if streak <= 1:
+        response_text = (
+            f"No problem. Use very simple English. Example: \"{example}\" "
+            f"{anchor['question']}"
+        )
+    elif streak == 2:
+        response_text = (
+            f"No problem. Type one short answer in the composer if speaking is hard. "
+            f"Example: \"{example}\""
+        )
+    else:
+        response_text = (
+            f"We can keep it very short. Say or type 3-6 words only. "
+            f"Example: \"{example}\""
+        )
+
+    return {
+        "action": "continue",
+        "response_text": response_text,
+        "should_end": False,
+    }
+
+
 def _build_mission_error_action(state: AgentState, reason: str) -> dict:
     anchor = _get_anchor(state)
     logger.warning(
@@ -751,6 +855,50 @@ def _advance_anchor_state(state: AgentState) -> None:
 
     state["anchor_question_id"] = len(ANCHORS) - 1
     state["anchor_follow_up_pending"] = False
+
+
+def _apply_anchor_shift_if_needed(state: AgentState, user_message: Optional[str]) -> None:
+    if not state.get("anchor_follow_up_pending"):
+        return
+    current_index = int(state.get("anchor_question_id", 0) or 0)
+    next_index = min(current_index + 1, len(ANCHORS) - 1)
+    if next_index == current_index:
+        return
+    if _matches_anchor(ANCHORS[next_index]["id"], user_message):
+        state["anchor_question_id"] = next_index
+        state["anchor_follow_up_pending"] = False
+
+
+def _matches_anchor(anchor_id: str, text: Optional[str]) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return any(pattern in normalized for pattern in ANCHOR_SIGNAL_PATTERNS.get(anchor_id, ()))
+
+
+def _normalize_text(text: Optional[str]) -> str:
+    source = (text or "").lower().replace("-", " ")
+    normalized = re.sub(r"[^a-z0-9\s]", " ", source)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return f" {normalized} "
+
+
+def _update_shadow_intent(state: AgentState, user_message: Optional[str]) -> None:
+    if not (user_message or "").strip():
+        state["last_intent"] = None
+        return
+    result = classify_intent(str(user_message), build_intent_context_from_state(state))
+    state["last_intent"] = result.to_payload(
+        policy_action=shadow_policy_action_for_intent(result.type),
+        shadow_mode=True,
+    )
+
+
+def _needs_supportive_anchor_recovery(text: Optional[str]) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized.strip():
+        return False
+    return any(pattern in normalized for pattern in SUPPORT_REQUEST_PATTERNS)
 
 
 def route_after_learning(state: AgentState) -> str:

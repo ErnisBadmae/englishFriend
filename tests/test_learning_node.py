@@ -145,6 +145,55 @@ async def test_learning_node_second_low_signal_turn_prompts_for_composer():
 
 
 @pytest.mark.asyncio
+async def test_learning_node_supportive_recovery_uses_example_for_help_request():
+    state = _foundation_state()
+    state["last_user_message"] = "sorry my english is very bad could you teach me"
+
+    with patch(
+        "app.agent.nodes_v2.learning.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock()),
+    ) as llm_patch, patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert updated["low_signal_turn_streak"] == 1
+    assert "no problem" in updated["pending_response"].lower()
+    assert "example" in updated["pending_response"].lower()
+    assert "what do you do now" in updated["pending_response"].lower()
+    assert updated["last_intent"]["type"] == "support_request"
+    assert updated["last_intent"]["policy_action"] == "simplify_with_example"
+    llm_patch.return_value.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_supportive_recovery_second_turn_prefers_composer_without_ending():
+    state = _foundation_state()
+    state["low_signal_turn_streak"] = 1
+    state["last_user_message"] = "he cant explain english cause i dont know how can i say in english"
+
+    with patch(
+        "app.agent.nodes_v2.learning.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert updated["low_signal_turn_streak"] == 2
+    assert "composer" in updated["pending_response"].lower()
+    assert updated.get("should_end_session") is not True
+
+
+@pytest.mark.asyncio
 async def test_learning_node_empty_llm_content_uses_mission_fallback():
     state = _foundation_state()
     state["last_user_message"] = "I work as a data scientist on ranking models."
@@ -222,3 +271,31 @@ async def test_learning_node_advances_anchor_after_clear_answer():
     assert updated["anchor_follow_up_pending"] is True
     assert updated["anchor_question_id"] == 0
     assert "recent task" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_accepts_shift_to_next_step_anchor():
+    state = _foundation_state()
+    state["anchor_question_id"] = 1
+    state["anchor_follow_up_pending"] = True
+    state["last_user_message"] = "My next step is to improve grammar for project answers."
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action":"continue","response_text":"Good. Say it as one short plan: next step, skill, and why it matters.","should_end":false}'
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert updated["anchor_question_id"] == 2
+    assert updated["anchor_follow_up_pending"] is True
+    assert "short plan" in updated["pending_response"].lower()

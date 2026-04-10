@@ -3,6 +3,7 @@
 Provides:
 - Langfuse client singleton for LLM tracing
 - Request context (request_id) for correlation
+- Voice/websocket context (session_id, turn_id, runtime)
 - Helper functions for creating traces and spans
 
 Usage:
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 _request_id: ContextVar[str] = ContextVar("request_id", default="")
 _user_id: ContextVar[Optional[int]] = ContextVar("user_id", default=None)
 _session_id: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
+_turn_id: ContextVar[Optional[str]] = ContextVar("turn_id", default=None)
+_runtime: ContextVar[Optional[str]] = ContextVar("runtime", default=None)
 
 # Langfuse client singleton
 _langfuse_client = None
@@ -105,6 +108,8 @@ def set_request_context(
     request_id: Optional[str] = None,
     user_id: Optional[int] = None,
     session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    runtime: Optional[str] = None,
 ) -> str:
     """Set request context for current async task.
 
@@ -122,6 +127,10 @@ def set_request_context(
         _user_id.set(user_id)
     if session_id is not None:
         _session_id.set(session_id)
+    if turn_id is not None:
+        _turn_id.set(turn_id)
+    if runtime is not None:
+        _runtime.set(runtime)
     return rid
 
 
@@ -140,11 +149,23 @@ def get_session_id() -> Optional[str]:
     return _session_id.get()
 
 
+def get_turn_id() -> Optional[str]:
+    """Get current turn ID."""
+    return _turn_id.get()
+
+
+def get_runtime() -> Optional[str]:
+    """Get current runtime label."""
+    return _runtime.get()
+
+
 def clear_request_context():
     """Clear request context."""
     _request_id.set("")
     _user_id.set(None)
     _session_id.set(None)
+    _turn_id.set(None)
+    _runtime.set(None)
 
 
 # ============== Langfuse Helpers ==============

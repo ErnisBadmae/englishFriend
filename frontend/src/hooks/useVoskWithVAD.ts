@@ -35,6 +35,7 @@ interface UseVoskWithVADOptions {
   onPartialResult?: (text: string) => void;
   onSilenceDetected?: () => void;
   onError?: (error: Error) => void;
+  onDebugEvent?: (source: string, event: string, data?: Record<string, unknown>) => void;
 }
 
 interface UseVoskWithVADReturn {
@@ -61,6 +62,7 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
     onPartialResult,
     onSilenceDetected,
     onError,
+    onDebugEvent,
   } = options;
 
   const [isModelLoading, setIsModelLoading] = useState(false);
@@ -104,6 +106,7 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
 
     try {
       console.log('[VoskVAD] Loading model from:', modelUrl);
+      onDebugEvent?.('vosk', 'model_loading_started', { modelUrl });
       const model = await createModel(modelUrl);
 
       // Проверяем, что компонент ещё смонтирован
@@ -143,19 +146,21 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       modelRef.current = model;
       setIsModelLoaded(true);
       console.log('[VoskVAD] Model loaded and ready');
+      onDebugEvent?.('vosk', 'model_loaded', { modelUrl });
     } catch (err) {
       if (!isMountedRef.current) return; // Игнорируем ошибки после unmount
       const error = err instanceof Error ? err : new Error('Failed to load Vosk model');
       setError(error);
       onError?.(error);
       console.error('[VoskVAD] Failed to load model:', err);
+      onDebugEvent?.('vosk', 'model_load_failed', { message: error.message });
     } finally {
       isLoadingRef.current = false;
       if (isMountedRef.current) {
         setIsModelLoading(false);
       }
     }
-  }, [modelUrl, onError]);
+  }, [modelUrl, onDebugEvent, onError]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -206,8 +211,13 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       // Пауза достаточно длинная - готов к отправке
       setVoiceStatus('ready_to_send');
       onSilenceDetected?.();
+      onDebugEvent?.('vosk', 'silence_detected', {
+        text: lastTranscriptRef.current,
+        transcriptPreview: lastTranscriptRef.current.slice(0, 120),
+        charCount: lastTranscriptRef.current.length,
+      });
     }
-  }, [silenceTimeoutMs, onSilenceDetected]);
+  }, [onDebugEvent, onSilenceDetected, silenceTimeoutMs]);
 
   // Начать запись
   const startListening = useCallback(async () => {
@@ -217,6 +227,7 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       setError(err);
       onError?.(err);
       console.error('[VoskVAD] Cannot start: model not ready');
+      onDebugEvent?.('vosk', 'start_failed', { message: err.message });
       return;
     }
 
@@ -226,6 +237,7 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       setError(err);
       onError?.(err);
       console.error('[VoskVAD] Cannot start: KaldiRecognizer not available');
+      onDebugEvent?.('vosk', 'start_failed', { message: err.message });
       return;
     }
 
@@ -271,6 +283,11 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
           onFinalResult?.(fullText);
 
           console.log('[VoskVAD] accumulated:', fullText);
+          onDebugEvent?.('vosk', 'transcript_accumulated', {
+            text: fullText,
+            textPreview: fullText.slice(0, 120),
+            charCount: fullText.length,
+          });
         }
       });
 
@@ -288,6 +305,11 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
           lastTranscriptRef.current = displayText;
           setTranscript(displayText);
           onPartialResult?.(displayText);
+          onDebugEvent?.('vosk', 'transcript_partial', {
+            text: displayText,
+            textPreview: displayText.slice(0, 120),
+            charCount: displayText.length,
+          });
 
           // Сброс таймера тишины при новом тексте
           hasSpokenRef.current = true;
@@ -382,13 +404,15 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       currentPartialRef.current = '';
 
       console.log('[VoskVAD] Started listening with VAD (accumulator reset)');
+      onDebugEvent?.('vosk', 'listening_started', { silenceTimeoutMs });
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to start listening');
       setError(error);
       onError?.(error);
       console.error('[VoskVAD] Failed to start listening:', err);
+      onDebugEvent?.('vosk', 'start_failed', { message: error.message });
     }
-  }, [isListening, isModelLoaded, onFinalResult, onPartialResult, onError, updateSilenceProgress]);
+  }, [isListening, isModelLoaded, onDebugEvent, onFinalResult, onPartialResult, onError, silenceTimeoutMs, updateSilenceProgress]);
 
   // Остановить запись
   const stopListening = useCallback(() => {
@@ -423,7 +447,8 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
     setVoiceStatus('idle');
     setSilenceProgress(0);
     console.log('[VoskVAD] Stopped listening');
-  }, [isListening]);
+    onDebugEvent?.('vosk', 'listening_stopped');
+  }, [isListening, onDebugEvent]);
 
   // Отмена и сброс (включая аккумулятор)
   const cancelAndReset = useCallback(() => {
@@ -446,10 +471,14 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       accumulatedTextRef.current = '';
       currentPartialRef.current = '';
       console.log('[VoskVAD] confirmSend:', text);
+      onDebugEvent?.('vosk', 'confirm_send', {
+        textPreview: text.slice(0, 120),
+        charCount: text.length,
+      });
       return text;
     }
     return null;
-  }, [stopListening]);
+  }, [onDebugEvent, stopListening]);
 
   return {
     isModelLoading,

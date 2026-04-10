@@ -9,7 +9,7 @@ from app.agent.nodes_v2.onboarding import (
     _infer_goal_brief_from_message,
     onboarding_node,
 )
-from app.agent.graph_v2 import initialize_session_v2
+from app.agent.graph_v2 import initialize_session_v2, run_agent_turn_v2
 from app.agent.state import AgentPhase, LearningModeEnum, create_initial_state
 from app.services.ai.llm_provider import LLMEmptyContentError
 
@@ -196,6 +196,175 @@ async def test_onboarding_baseline_counts_turns_and_updates_history():
     assert updated["conversation_history"][0]["role"] == "user"
     assert updated["conversation_history"][-1]["role"] == "assistant"
     assert "what role do you want" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_current_role_rejects_goal_statement_as_answer():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 0
+    state["last_user_message"] = "I want an ML engineer job abroad."
+
+    updated = await onboarding_node(state)
+
+    assert updated["assessment_answers"] == {}
+    assert updated["assessment_step_index"] == 0
+    assert "did not catch your current work clearly" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_empty_first_turn_asks_deterministic_goal_question():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_user_message"] = ""
+
+    updated = await onboarding_node(state)
+
+    assert updated["current_phase"] == AgentPhase.ONBOARDING
+    assert updated["setup_step"] == "goal_setup"
+    assert updated["last_question_type"] == "goal_setup"
+    assert "what is closest right now" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_current_role_accepts_not_working_now_answer():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 0
+    state["last_user_message"] = "I don't work now. I want to get an ML engineer role."
+
+    updated = await onboarding_node(state)
+
+    assert updated["assessment_answers"]["current_role"] == "I don't work now. I want to get an ML engineer role."
+    assert updated["assessment_step_index"] == 1
+    assert "what role do you want next" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_current_role_accepts_affirmative_prefix_answer():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 0
+    state["low_signal_turn_streak"] = 1
+    state["last_user_message"] = "Yes, I work as a data analyst now."
+
+    updated = await onboarding_node(state)
+
+    assert updated["assessment_answers"]["current_role"] == "Yes, I work as a data analyst now."
+    assert updated["assessment_step_index"] == 1
+    assert updated["low_signal_turn_streak"] == 0
+    assert "what role do you want next" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_baseline():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_question_type"] = "goal_setup"
+    state["last_user_message"] = "I want a machine learning engineer job abroad."
+
+    updated = await onboarding_node(state)
+
+    assert updated["goal_setup_complete"] is True
+    assert updated["current_phase"] == AgentPhase.ASSESSMENT
+    assert updated["current_mode"] == LearningModeEnum.ASSESSMENT
+    assert "one quick baseline first" in updated["pending_response"].lower()
+    assert "what do you do now?" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_turn_v2_first_goal_answer_transitions_to_baseline():
+    state = await initialize_session_v2(
+        user_id=1,
+        session_id="session-1",
+        username="Student",
+        is_new_user=True,
+    )
+
+    state = await run_agent_turn_v2(state)
+    updated = await run_agent_turn_v2(state, user_message="I want a machine learning engineer job abroad.")
+
+    assert updated["goal_setup_complete"] is True
+    assert updated["current_phase"] == AgentPhase.ASSESSMENT
+    assert updated["current_mode"] == LearningModeEnum.ASSESSMENT
+    assert updated["last_question_type"] == "current_role"
+    assert updated["last_intent"]["type"] == "direct_answer"
+    assert updated["last_intent"]["policy_action"] == "llm_turn"
+    assert "one quick baseline first" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_assessment_only_route_consumes_current_role_answer():
+    state = await initialize_session_v2(
+        user_id=1,
+        session_id="session-1",
+        username="Student",
+        is_new_user=True,
+    )
+    state = await run_agent_turn_v2(state)
+    state = await run_agent_turn_v2(state, user_message="I want a machine learning engineer job abroad.")
+    updated = await run_agent_turn_v2(state, user_message="Yes, I work as a data analyst now.")
+
+    assert updated["assessment_answers"]["current_role"] == "Yes, I work as a data analyst now."
+    assert updated["assessment_step_index"] == 1
+    assert updated["last_question_type"] == "target_role"
+    assert "what role do you want next" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_second_baseline_answer_asks_project_before_completion():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 1
+    state["assessment_answers"] = {
+        "current_role": "I work as a data analyst now.",
+    }
+    state["last_user_message"] = "ML engineer."
+
+    updated = await onboarding_node(state)
+
+    assert updated.get("session_complete_reason") is None
+    assert updated["assessment_step_index"] == 2
+    assert updated["assessment_answers"]["target_role"] == "ML engineer."
+    assert "tell me about one ml or work task" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio

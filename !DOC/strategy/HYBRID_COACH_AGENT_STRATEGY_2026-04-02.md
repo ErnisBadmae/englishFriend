@@ -10,6 +10,13 @@ status: active
 EnglishFriend should continue evolving on top of the current architecture.
 The product should **not** pivot into a general-purpose assistant in the style of OpenClaw, ChatGPT, Claude, or Gemini.
 
+For the current long-form architecture and execution direction, use
+[../research/deep-research-report.md](../research/deep-research-report.md)
+as the canonical vision document.
+
+DeepTutor-like breadth is explicitly **not** our direction.
+Recent market signals reinforce that horizontal tutoring stacks are commoditizing; our moat has to stay in the vertical career-English loop.
+
 The correct direction is:
 
 - **external product identity**: vertical career-English coach
@@ -99,6 +106,13 @@ The product moat should remain:
    - interviews, project walkthroughs, workplace communication
 6. **Russian-speaker-aware coaching**
    - recurring error patterns and correction strategy
+
+This means the moat is:
+
+- not multi-agent orchestration itself
+- not generic RAG
+- not voice runtime polish by itself
+- not a broad learning workspace
 
 ## Product Identity
 
@@ -244,4 +258,3 @@ For every new idea, ask:
 **Does this make EnglishFriend a better career-English coach for international ML/AI/IT roles?**
 
 If the answer is no, it should not be a near-term priority.
-

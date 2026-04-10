@@ -117,6 +117,8 @@ class AgentState(TypedDict, total=False):
     relevant_memories: list[str]  # Retrieved from Qdrant
     new_memories_to_save: list[dict[str, Any]]  # To be saved after session
     memory_section: Optional[str]  # Formatted memory for prompt
+    learner_profile_summary: Optional[dict[str, Any]]  # Compact server-owned learner profile
+    mission_memory_context: Optional[dict[str, Any]]  # Bounded mission-scoped memory payload
 
     # === Corrections & Feedback ===
     errors_detected: list[dict[str, Any]]  # Grammar/vocab errors this session
@@ -129,6 +131,7 @@ class AgentState(TypedDict, total=False):
 
     # === Logging ===
     decision_log: list[DecisionLogEntry]  # Log of key decisions
+    last_intent: Optional[dict[str, Any]]  # Shadow-mode intent classification for the latest user turn
 
     # === Response ===
     pending_response: Optional[str]  # Response to send to user
@@ -233,6 +236,8 @@ def create_initial_state(
         relevant_memories=[],
         new_memories_to_save=[],
         memory_section=None,
+        learner_profile_summary=None,
+        mission_memory_context=None,
 
         # Corrections
         errors_detected=[],
@@ -245,6 +250,7 @@ def create_initial_state(
 
         # Logging
         decision_log=[],
+        last_intent=None,
 
         # Response
         pending_response=None,

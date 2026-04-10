@@ -1,440 +1,715 @@
-# Реструктуризация englishFriend под современную архитектуру с измеримым улучшением продукта и будущим real‑time voice
+# EnglishFriend Vision and Architecture - 2026-04-10
 
-## Executive summary
+Status: Canonical long-form product and architecture vision  
+Operational source of truth: [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md)
 
-Ваш текущий `englishFriend` уже содержит сильные заделы для «производственного» AI‑продукта: **LangGraph‑агент v2 с JSON‑выходом**, A/B‑шаблоны промптов из БД, **Langfuse‑трейсинг**, Prometheus‑метрики (включая голосовые), а также отдельный **full‑duplex voice endpoint `/chat/plex`** для PersonaPlex с graceful fallback на `/chat/v2`. Это отличная база для стартапа «English mentor для русскоязычных в IT» — особенно если следующий шаг сделать не «добавим ещё моделей», а **превратить систему в измеряемый конвейер навыков: интервью → ошибки → упражнения → повторение → прогресс**. fileciteturn31file0L1-L1 fileciteturn42file0L1-L1 fileciteturn28file0L1-L1 fileciteturn22file0L1-L1 fileciteturn18file0L1-L1
+## How To Use This Document
 
-Главные «узкие места» сейчас — **архитектурные, а не модельные**: `voice.py` выполняет роль «God object» (transport + orchestration + persistence + prompts), STT зависит от клиента (Vosk на фронте) и пока не оформлен как заменяемый backend‑модуль, а PersonaPlex передаёт `system_prompt` через query‑string (риск утечки через логи/прокси). fileciteturn18file0L1-L1 fileciteturn23file0L1-L1
+Use this file when you need the current long-form answer to:
 
-**IBM Granite 4.0 1B Speech** — реально полезный элемент для вашего домена, но не как «серебряная пуля», а как **опция STT‑провайдера с keyword biasing** (имена, аббревиатуры, техтермины) и хорошей скоростью/размером. По модельной карте Granite 4.0 1B Speech: 1B параметров, языки (EN/FR/DE/ES/PT/JA), улучшенная скорость (в т.ч. speculative decoding), и ключевое — **keyword list biasing**. citeturn19search0turn19search5  При этом Granite Speech по дизайну двухпроходный: отдельно транскрипция, отдельно «языковая обработка» — и это совпадает с тем, как вам правильно строить систему (STT отдельно от агента). citeturn19search4
+- what EnglishFriend is building
+- what architecture we are intentionally converging toward
+- what we refuse to turn the product into
+- what the near-term execution order should be
 
-Рекомендуемая траектория архитектуры на 6–8 недель:
-- сохранить скорость итераций (модульный монолит), но **жёстко выделить интерфейсы**: `STTProvider`, `TTSProvider`, `RealtimeTransport`, `AgentHarness` (LangGraph), `MemoryStore`;
-- добавить «реальный продуктовый выигрыш» через измерения: WER/термины/латентности + метрики обучения (retention, completion, conversion);
-- подготовить real‑time voice через один из двух путей: **LiveKit Agents** (как готовый runtime для голосовых агентов) или **Pipecat** (как транспорто‑агностичный pipeline). LiveKit явно документирует `AgentSession` как оркестратор STT→LLM→TTS с поддержкой turn detection/interruptions и выбором провайдеров. citeturn20search0turn20search1 Pipecat позиционируется как open‑source framework для realtime voice/multimodal агентов. citeturn20search2
+Do not use this file for day-to-day continuity updates.  
+Those belong in [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md).
 
----
+## Executive Summary
 
-## Текущее состояние репозитория englishFriend в ветке dev
+EnglishFriend should stay a vertical career-English coach for Russian-speaking ML/AI and adjacent IT specialists preparing for international work.
 
-### Срез модулей и ответственности
+The correct architecture is:
 
-Backend — FastAPI‑приложение (`main.py`) с CORS, middleware для request‑id и Prometheus, маршрутизаторы по доменам (users/sessions/voice/agent_chat и т.д.). fileciteturn51file0L1-L1 fileciteturn52file0L1-L1
+- product identity: vertical coach
+- runtime style: bounded coach with agentic internals
+- memory style: DB-first hybrid memory, not filesystem memory as the source of truth
+- voice strategy: improve observability and STT quality first, not rewrite around a new realtime framework immediately
 
-Ключевой голосовой контур сосредоточен в `app/api/voice.py` и состоит из нескольких WebSocket endpoints:
-- `/chat` (редиректит на v2),
-- `/chat-legacy` (старый режим, текст→LLM→TTS),
-- `/chat/v2` (LangGraph агент v1/v2, text→LLM→TTS),
-- `/chat/plex` (PersonaPlex full‑duplex speech‑to‑speech + LangGraph «как мозг»),
-- `/stream` legacy для старых realtime‑провайдеров. fileciteturn18file0L1-L1
+The product moat is not "AI that can talk" and not "agent with tools".  
+The moat is a measurable career loop:
 
-LLM слой сделан правильно: есть абстракция провайдеров с вариантами `vllm`, `llama_cpp`, `personaplex` (text endpoint), `groq`, `openai`, плюс базовая санитизация prompt injection и Langfuse‑трейсинг генераций. fileciteturn25file0L1-L1
+`goal brief -> baseline -> program -> mission -> live session -> evidence -> next mission`
 
-TTS сейчас — `edge-tts` (простой, дешёвый, но «сервисный» online TTS), уже обёрнут в сервис с `synthesize()` и `synthesize_stream()`. fileciteturn26file0L1-L1 citeturn21search0
+As of 2026-04-10, the backend already owns the critical control plane:
 
-Память сделана как отдельный pipeline: извлечение памяти, эмбеддинги, upsert в Qdrant (если доступно) + хранение в Postgres. fileciteturn27file0L1-L1
+- product state and mission routing
+- shared voice session lifecycle
+- explicit mission contract for primary voice sessions
+- Qwen `final-only` compatibility safeguards
+- compact learner profile plus mission-scoped memory
 
-LangGraph‑агент существует в двух реализациях:
-- v1 (большая схема с множеством узлов и фаз), fileciteturn41file0L1-L1
-- v2 (упрощённая 4‑узловая архитектура `router → onboarding → learning → session_end`, структурированные JSON‑решения, метрики, логирование промптов). fileciteturn31file0L1-L1 fileciteturn33file0L1-L1 fileciteturn34file0L1-L1 fileciteturn35file0L1-L1 fileciteturn36file0L1-L1 fileciteturn37file0L1-L1
+The next architecture work should prioritize:
 
-Также видно, что вы уже перенесли в репозиторий практику «memory‑as‑files» для дев‑ассистента: присутствует `CLAUDE.md` со структурированным описанием системы, потоков, команд и важных файлов — это прямо пересекается с «уроками» архитектуры Claude Code (иерархия инструкций как файлов). fileciteturn50file0L1-L1
+1. observability across every live voice layer
+2. repeatable live smoke scenarios
+3. STT benchmark and replacement path, including browser-side candidates
+4. resilience sidecars that improve reliability without stealing focus
+5. pronunciation upgrade after STT evidence
+6. only then a decision on `Pipecat` or `LiveKit Agents`
 
-### Dataflow на практике
+## Product Position
 
-Фактический (текущий) голосовой продуктовый поток выглядит так:
-- **клиент** (Telegram miniapp) делает STT через Vosk и отправляет текст по WebSocket (описано прямо в докстринге voice API), fileciteturn18file0L1-L1
-- **backend** генерирует ответ (Groq/vLLM/OpenAI и т.д.) и синтезирует TTS через edge‑tts, fileciteturn25file0L1-L1 fileciteturn26file0L1-L1
-- параллельно: память, словарь, план обучения и геймификация обновляются по ходу сессии и на завершении. fileciteturn18file0L1-L1 fileciteturn30file0L1-L1 fileciteturn27file0L1-L1
+### What EnglishFriend Is
 
-В `/chat/plex` поток другой: audio(opus) ↔ PersonaPlex по WebSocket, а LangGraph принимает текстовые транскрипты для педагогики и может обновлять «персону» (prompt) mid‑session. fileciteturn18file0L1-L1 fileciteturn23file0L1-L1
+EnglishFriend is:
 
-### Observability и измеримость
+- a career-English coach
+- optimized for Russian-speaking technical specialists
+- focused on interviews, project walkthroughs, and workplace communication
+- built around one guided path instead of a toolbox of unrelated modes
+- designed to produce evidence, not just conversation
 
-Плюсы:
-- Prometheus метрики уже покрывают HTTP, voice latency, ошибки, agent v2 parse success, сравнение версий агента, и отдельные метрики PersonaPlex. fileciteturn22file0L1-L1
-- Langfuse включён как «наблюдаемость LLM», с контекстом request_id/user_id/session_id и логированием генераций. fileciteturn28file0L1-L1 fileciteturn25file0L1-L1 citeturn23search0turn23search1
-- Есть логер педагогических решений (`PedagogyLogger`) и dataflow logger (Postgres/Qdrant/Neo4j/PersonaPlex events). fileciteturn43file0L1-L1 fileciteturn29file0L1-L1
+### What EnglishFriend Is Not
 
-Минусы / «возможность для скачка»:
-- request‑id middleware работает для HTTP, но WebSocket‑сессии (особенно voice) требуют своего «session trace id» и сквозной корреляции (вы частично делаете это в agent v2 через `set_request_context`, но transport‑уровень WebSocket остаётся отдельным). fileciteturn52file0L1-L1 fileciteturn31file0L1-L1
-- нет стандартного слоя для «качества STT» (WER, терминология, confidence), потому что STT сейчас на клиенте. fileciteturn18file0L1-L1
+EnglishFriend is not:
 
-### Security и риски в текущем виде
+- a general-purpose assistant
+- a generic voice tutor
+- a user-facing skill marketplace
+- an "agent console" product
+- a realtime voice product whose main value is the conversation itself
 
-Критичный момент: `PersonaPlexProvider.connect()` передаёт `text_prompt` (системный педагогический промпт) **в query‑string** WebSocket URL. Query‑string часто попадает в логи reverse‑proxy, мониторинга, трассировщиков, а иногда — в историю браузера/кэши, поэтому это риск утечки промптов/персональных данных. fileciteturn23file0L1-L1
+### Core Product Promise
 
-Есть базовая санитизация prompt injection (regex‑паттерны) в LLM provider. Это хороший старт, но для production‑интервью‑продукта (где пользователь может «ломать» систему) лучше усиливать. fileciteturn25file0L1-L1
+The product promise should remain:
 
-Инфра‑риски:
-- В compose‑файлах встречаются дефолтные/простые пароли БД (dev‑контекст), их легко случайно «утащить» в staging. fileciteturn44file0L1-L1 fileciteturn46file0L1-L1
-- При использовании LangChain/LangGraph важно внимательно следить за обновлениями: в конце марта 2026 сообщалось о нескольких уязвимостях в LangChain‑экосистеме (path traversal, deserialization, SQL injection) и необходимости патчей/аудита конфиг‑загрузок и небезопасной десериализации. citeturn24news46
+- understand the user's real career target
+- estimate readiness relative to that target
+- route the next useful mission
+- collect evidence from real sessions
+- adapt the next step from that evidence
 
----
+This is the real product loop.  
+Voice, memory, and agent patterns only matter if they make this loop more reliable.
 
-## Целевая архитектура и варианты
+## Moat
 
-Ниже — три варианта, которые **дают измеримые улучшения** и готовят вас к real‑time voice, при этом не «убивают» скорость разработки.
+EnglishFriend's moat is not a generic AI tutoring stack.
 
-### Вариант модульного монолита с чистыми интерфейсами
+The moat should be defined as:
 
-Подходит, если вам важно быстро итераться, но при этом разнести ответственность.
+- a vertical career-English operating loop
+- for Russian-speaking IT/ML specialists
+- with weak-to-mid spoken English
+- targeting international jobs, interviews, project walkthroughs, and workplace communication
 
-**Идея:** оставить FastAPI как основной сервис, но выделить технические «порты/адаптеры» (hexagonal):
-- `core/domain` (сущности: session, turn, evidence, interview rubric),
-- `app/agent` (LangGraph harness),
-- `app/voice` (transport‑агностичный voice pipeline),
-- `infra/providers` (STT/TTS/LLM/Telemetry).
+The real moat is:
 
-Это минимизирует рефакторинг, но позволяет аккуратно подключить real‑time транспорт позже.
+`career target -> baseline -> mission -> live session -> evidence -> next mission`
 
-### Вариант выделения voice‑gateway как отдельного сервиса
+This moat has four parts:
 
-Подходит, если вы планируете быстро расти по voice‑нагрузке и хотите отделить realtime от API/БД.
+### 1. Career-State Precision
 
-**Идея:** FastAPI остаётся «Product API» (users, plans, vocabulary, analytics), а отдельный `voice-gateway` держит WebRTC/WebSocket realtime и общается с Product API по gRPC/HTTP.
+The system should understand:
 
-Плюс: независимое масштабирование по CPU/GPU (STT/TTS). Минус: сложнее деплой и DevOps.
+- target role
+- target market or company context
+- current stage of readiness
+- blockers relative to that target
 
-### Вариант «LiveKit Agents как runtime для голоса»
+This is stronger than generic "user profile" memory because it is goal-relative.
 
-Подходит, если вы хотите **максимально быстро** получить production‑уровень realtime voice (turn detection, interruptions, media tracks, noise cancellation) без изобретения WebRTC‑инфры.
-
-LiveKit Agents документирует `AgentSession` как главный оркестратор voice‑приложения: он собирает аудио, управляет voice pipeline, вызывает LLM, публикует аудио назад, а также поддерживает провайдерные плагины (STT/LLM/TTS/VAD/turn detection). citeturn20search0turn20search1
-
-Pipecat — альтернатива, если вы хотите более «проводной» (pipeline‑first) подход и меньше привязки к одному транспорту. citeturn20search2turn23search8
-
-### Сравнение вариантов
-
-| Критерий | Модульный монолит | Voice‑gateway сервис | LiveKit Agents runtime |
-|---|---|---|---|
-| Скорость итераций | высокая | средняя | высокая (особенно voice) |
-| Realtime‑готовность (interruptions, turn detection) | надо доделывать | надо доделывать | встроено/поддержано концептуально citeturn20search0turn20search5 |
-| Масштабирование STT/TTS | через воркеры внутри | отдельно масштабируется | отдельно масштабируется (agents workers) citeturn20search1 |
-| Риск «арх‑долга» | средний | ниже | ниже в voice‑части, но появляется зависимость от LiveKit |
-| Лучший выбор на 6–8 недель | ✅ да | возможно | ✅ да (если voice — главная ставка) |
-
-### Технологический стек STT/TTS/Transport и «что даст преимущество»
-
-**STT (Speech‑to‑Text):**
-- **IBM Granite 4.0 1B Speech** — интересен для вашей ниши тем, что модель заявляет **keyword list biasing** (имена/акронимы/термины) и фокус на эффективности/edge. Но важно: входные языки ограничены (EN/FR/DE/ES/PT/JA), то есть «русскую речь» он не закроет, зато отлично подходит для английских ответов кандидата на собесе. citeturn19search0turn19search5
-- **faster‑whisper** — практичный дефолт для мультиязычного STT в backend: репозиторий заявляет до ~4× быстрее openai/whisper при той же точности и меньшей памяти, плюс quantization 8‑bit. citeturn21search5
-- **Vosk** — сильный выбор для offline/edge: маленькие модели (~десятки МБ), streaming API, «reconfigurable vocabulary» (полезно для IT‑терминов), работает на слабом железе. citeturn21search4
-- **Cloud STT** (например, Azure Speech) — особенно ценен не только STT, но и **Pronunciation Assessment** с вычислением Accuracy/Fluency/Prosody/Completeness и формулами итогового score. citeturn22search0turn22search5
+### 2. Pedagogy Under Weak Spoken English
 
-**TTS (Text‑to‑Speech):**
-- `edge-tts` — дешёвый и быстрый старт; ваш код уже использует его корректно. fileciteturn26file0L1-L1 citeturn21search0
-- **Cartesia Sonic** — документация подчёркивает low‑latency семейство моделей, подходящее под realtime. citeturn21search1turn21search2
-- **ElevenLabs** — публично позиционирует низкую задержку (например, Flash) и streaming/WebSocket режимы; это удобно, если вам нужна «премиум‑голосовая» подача. citeturn24search1turn24search3turn24search4
+The system should coach people who:
 
-**Realtime transport/runtime:**
-- **LiveKit Agents** — сильная «основа» для production voice (room tracks, orchestration, providers). citeturn20search0turn20search1
-- **Daily** — инфраструктура/SDK для WebRTC и voice‑ботов; также подчёркивает связь с Pipecat. citeturn23search5turn23search8
-- **Pipecat** — open‑source framework для realtime voice/multimodal, часто выбирают когда хотят «пайплайн‑архитектуру». citeturn20search2turn23search8
-
-**Agent harness patterns (уроки Claude Code):**
-- «Инструкции как файлы» (`CLAUDE.md`) — у вас уже есть в репозитории; можно масштабировать эту идею на **prompt policies** и **curriculum** как артефакты. fileciteturn50file0L1-L1
-- «Tool‑facing vs model‑facing schemas» — вы уже применяете в агенте v2 через JSON‑actions + guardrails/парсинг. Это правильный «каркас агента». fileciteturn35file0L1-L1 fileciteturn39file0L1-L1 fileciteturn38file0L1-L1
-- «Trust gating / permissions» — в вашем домене это должно выражаться не в bash‑sandbox, а в **гейтах на записи** (memory/vocab/plan updates), на «опасные» внешние вызовы и на обновления долгоживущих инструкций. (См. чек‑лист безопасности ниже.)
-
----
+- speak imperfectly
+- hesitate
+- mix languages
+- lose structure under pressure
 
-## Дизайн STTProvider и голосового контура
-
-Цель: сделать STT **взаимозаменяемым**, поддержать **streaming + partial transcripts**, keyword biasing (IT‑термины), гибрид (client STT + server STT), и fallback.
+This is not solved by better LLMs alone.  
+It requires stage-aware, low-pressure, deterministic coaching design.
 
-### Архитектурное правило
+### 3. Evidence-Driven Adaptation
 
-Вам выгодно копировать принцип Granite Speech «разделить транскрипцию и последующую обработку текста» — STT не должен «знать» про агента. Granite Speech описывает двухпроходный дизайн именно так (сначала транскрипция, дальше calls к языковой модели). citeturn19search4
+The product should not only remember facts.  
+It should accumulate evidence about:
 
-### Предлагаемая структура файлов и интерфейсы
-
-Добавьте новый пакет (или под‑пакет) в backend:
+- what the learner can already say
+- what still breaks under pressure
+- which mission improved what
+- what next step is actually justified
 
-```text
-app/services/speech/
-  stt/
-    base.py              # интерфейсы и модели событий
-    faster_whisper.py    # реализация
-    vosk.py              # реализация
-    granite_speech.py    # реализация (если/когда внедрите)
-    azure_stt.py         # опционально
-    router.py            # fallback/hybrid routing
-  vad/
-    silero.py or webrtc.py
-  audio/
-    codecs.py            # opus/pcm, ресемплинг
-    frames.py            # типы аудиокадров
-```
+This is stronger than generic memory because it changes program routing.
 
-**Интерфейсы (концепт):**
-- `STTProvider.transcribe_stream(...) -> AsyncIterator[STTEvent]`
-- `STTProvider.transcribe_batch(audio_bytes, ...) -> STTResult`
+### 4. Audience-Specific Data Flywheel
 
-**STTEvent** должен включать:
-- `type`: `partial|final|error`
-- `text`
-- `start_ms/end_ms` (если доступно)
-- `confidence` (если даёт провайдер)
-- `language` (detected/forced)
-- `tokens/words` (если есть)
-- `meta` (например, `oov_terms`, `keyword_hits`)
-
-### Keyword biasing: как сделать «суперсилу для IT интервью»
-
-В вашем продукте «ключевое преимущество над конкурентами» часто будет не LLM‑ответ, а **качество распознавания тех‑терминов** и последующее обучение «как произнести и как объяснить». Практики:
-- Granite 4.0 1B Speech прямо заявляет keyword list biasing для лучшего распознавания имён/акронимов. citeturn19search0turn19search5
-- Vosk заявляет «reconfigurable vocabulary» — можно применять как локальный bias на клиенте или сервере. citeturn21search4
-- В faster‑whisper/Whisper‑подходе часто используют `initial_prompt`/контекст (как soft‑bias) — это не так надёжно как встроенный keyword biasing, но работает для доменных терминов.
+If EnglishFriend keeps focus, it can accumulate the hardest-to-copy layer:
 
-**Практический механизм для englishFriend:**
-- источники keywords:
-  - `due_vocabulary_words` из состояния агента v2, fileciteturn31file0L1-L1
-  - «tech stack» пользователя из профиля/цели (goal brief) — onboarding v2 уже собирает структуру `goal_brief` (роль, домен, контексты). fileciteturn35file0L1-L1
-  - список терминов из конкретного interview track (у вас есть `interview_question_prompts`). fileciteturn31file0L1-L1
+- recurring patterns of Russian-speaker mistakes
+- accent and STT failure modes
+- interview and project-story bottlenecks for ML/IT specialists
+- mission designs that actually move readiness for this audience
 
-### Hybrid mode и fallback
+This is the long-term moat.  
+Voice stack, agent shell, and generic RAG are not.
 
-Ваш backend сейчас часто получает **уже готовый текст** (Vosk на клиенте). Это можно превратить в сильную стратегию:
+## Anti-Roadmap
 
-- **Hybrid mode (recommended):**  
-  1) принимать `client_transcript` как «быстрый путь» (минимальная задержка);  
-  2) параллельно (в фоне) гонять server‑STT на аудио (если доступно) для:
-     - пересчёта WER/термин‑точности,
-     - улучшения качества «исправлений» и pronunciation feedback,
-     - сбора датасета для обучения/оценки.  
-  Это даст измеримую продуктовую метрику **без ухудшения UX**.
+To protect the moat, EnglishFriend should explicitly avoid several tempting expansions.
 
-- **Fallback routing:** `STTRouter` выбирает провайдер по:
-  - языку, требуемой приватности, latency budget,
-  - доступности GPU,
-  - confidence/ошибкам.  
-  Например: `Granite (EN)` → fallback `faster-whisper` → fallback `Azure STT` (если разрешено).
+### What We Are Not Building
 
----
-
-## Дорожная карта миграции и оценки на 6–8 недель
-
-Ниже — план, в котором каждое изменение привязано к метрикам и имеет rollback.
-
-### Milestones и A/B тесты
-
-```mermaid
-gantt
-  title 6–8 недель: реструктуризация + real-time voice readiness
-  dateFormat  YYYY-MM-DD
-  axisFormat  %d.%m
-
-  section Архитектура и измерения
-  Baseline метрики (latency, WER proxy, retention): 2026-04-03, 7d
-  Выделить интерфейсы STT/TTS/Transport + рефактор voice.py: 2026-04-08, 10d
-
-  section STT/TTS провайдеры
-  Реализовать STTProvider (faster-whisper + Vosk): 2026-04-15, 10d
-  Добавить keyword bias слой + словарь IT терминов: 2026-04-22, 7d
+We are not building:
 
-  section Real-time voice PoC
-  PoC transport (LiveKit или Pipecat) + streaming TTS: 2026-04-29, 10d
-  A/B: PersonaPlex vs STT→LLM→TTS pipeline: 2026-05-07, 7d
+- a general AI tutor for every subject
+- a notebook-centric learning OS
+- a research workspace
+- a generic upload-anything RAG tutor
+- a user-facing multi-agent platform
+- a plugin or skill marketplace
+- a voice assistant whose main value is realtime conversation itself
 
-  section Продакшенизация
-  Security hardening + privacy review: 2026-05-14, 7d
-  Финальные эксперименты, dashboards, rollout: 2026-05-21, 7d
-```
+### What We Refuse To Treat As Moat
 
-### Метрики успеха (минимальный набор)
-
-**STT метрики:**
-- WER (общий) и отдельный **WER по тех‑терминам** (словари: Kubernetes, regression, overfitting, CI/CD, etc.).
-- Accuracy на именах/аббревиатурах (особенно если Granite keyword biasing включён). citeturn19search0turn19search5
-- P50/P95 latency STT (stream end‑of‑utterance → final transcript).
-
-**Голосовой UX:**
-- P50/P95 end‑to‑end latency *user stops speaking → first audio byte from mentor*.
-- interrupt success rate (если используете full‑duplex/turn detection).
-
-**Продуктовые метрики:**
-- Retention D1/D7/D30, session length (мин/turns), onboarding completion rate (у вас уже есть метрика `agent_version_onboarding_complete`). fileciteturn22file0L1-L1
-- NPS (простая форма после 3–5 сессий).
-- conversion to paid (если появится).
-
-**Произношение (ваше «killer feature» для интервью):**
-- Оценки Azure Pronunciation Assessment (accuracy/fluency/prosody/completeness) и итоговый score по формуле для speaking/reading сценариев. citeturn22search0turn22search5
-
-### Risk / rollback план
-
-- Все новые компоненты включать через feature flags (аналогично `USE_AGENT_V2`). fileciteturn31file0L1-L1
-- Любой новый STTProvider должен иметь «мягкий rollback»: при ошибках или высокой latency — переключение на client transcript / старый путь.
-- Для prompt‑экспериментов — использовать ваш `PromptService` и log_usage в БД (уже есть). fileciteturn42file0L1-L1
+These are useful infrastructure layers, but not defensible product identity:
 
-### Оценка infra/cost (грубая таблица, т.к. масштаб не задан)
+- voice transport and realtime runtime
+- multi-agent orchestration itself
+- document upload and retrieval
+- long-context memory by itself
+- generic knowledge graphs
+- generic tutor chat quality
 
-| Компонент | Вариант | CPU/GPU | RAM | Bandwidth | Комментарий |
-|---|---|---:|---:|---:|---|
-| STT | Vosk | CPU | низкая | низкая | хорош для edge/offline; streaming API citeturn21search4 |
-| STT | faster‑whisper | CPU или GPU | средняя | средняя | быстрее Whisper, есть quantization citeturn21search5 |
-| STT | Granite 4.0 1B Speech | желательно GPU | средняя | средняя | keyword biasing + эффективность; EN‑фокус citeturn19search0turn19search5 |
-| Pronunciation | Azure Pron. Assessment | cloud | — | средняя | даёт scores/phoneme детали; стоимость как STT citeturn22search0turn22search5 |
-| TTS | edge‑tts | cloud‑service | — | низкая | быстрый старт, но зависимость от online сервиса citeturn21search0 |
-| TTS | Cartesia | cloud | — | средняя | low‑latency realtime семейство моделей citeturn21search1turn21search2 |
-| TTS | ElevenLabs | cloud | — | средняя | streaming/WebSocket; low‑latency модели/гайд citeturn24search1turn24search3turn24search4 |
-| Realtime transport | LiveKit Agents | CPU | средняя | высокая | агент как participant; pipeline abstractions citeturn20search0turn20search1 |
+### Product Drift Risks
 
----
+The biggest strategic risks are:
 
-## PoC real‑time voice: PersonaPlex vs hybrid vs LiveKit Agents
+- breadth drift toward a "learning platform"
+- agent theater instead of measurable learner progress
+- over-investment in voice polish before pedagogy and STT quality
+- memory accumulation without evidence-linked adaptation
 
-У вас уже есть `/chat/plex` — это сильная короткая дорога к «живому голосу». Но стратегически вам нужно выбрать, где будет ядро realtime.
+If a feature improves only breadth and not the career loop, it should be deprioritized.
 
-### Вариант PersonaPlex как основной voice engine
+## Current Architecture As Of 2026-04-10
 
-**Плюсы:** быстрый full‑duplex, минимум вашей инфраструктуры в части STT+TTS.  
-**Минусы:** риск утечки prompt через query‑string, ограничение контролируемости STT (как именно распозналось) и ограниченная воспроизводимость/оценка качества.
+### What Is Already Real In Code
 
-Текущий код:
-- health check с TTL кэшем и fallback на `/chat/v2`. fileciteturn24file0L1-L1 fileciteturn18file0L1-L1
-- `update_persona()` поддерживается. fileciteturn23file0L1-L1
+The current codebase already has the right structural pieces:
 
-**Последовательность:**
+- a product-state engine centered on `learning_plan.roadmap`
+- `ProgramSnapshot` as the main user-facing aggregation layer
+- shared voice bootstrap and persistence for `/chat/v2` and `/realtime`
+- explicit mission metadata wiring from snapshot to voice session init
+- a modular experimental voice runtime behind `REALTIME_RUNTIME_ENABLED`
+- bounded LangGraph coaching logic for onboarding, learning, and session end
+- Qwen `llama_cpp` compatibility with `final-only` behavior
+- a DB-first hybrid memory layer with:
+  - raw stored memories
+  - compact learner profile summary
+  - mission-scoped memory context
+  - lightweight request-time self-healing
 
-```mermaid
-sequenceDiagram
-  participant U as User (client)
-  participant EF as englishFriend /chat/plex
-  participant PX as PersonaPlex
-  participant AG as LangGraph Agent v2
-  participant DB as Postgres/Qdrant
+### What Is Still Weak
 
-  U->>EF: WS connect + audio(opus) chunks
-  EF->>PX: WS connect (voice_prompt + text_prompt)
-  loop streaming
-    U->>EF: audio chunk
-    EF->>PX: audio chunk
-    PX-->>EF: transcript(user/assistant) + audio(opus)
-    EF-->>U: audio(opus) + transcript
-    EF->>AG: user transcript for pedagogy
-    AG-->>EF: mode/phase updates
-    EF->>PX: update_prompt (when mode/phase changes)
-  end
-  EF->>DB: persist evidence/memory/vocab (session end)
-```
+The current weak points are mostly architectural and product-execution related, not "missing one better model":
 
-### Вариант PersonaPlex + Granite hybrid
+- browser Vosk is still the main STT bottleneck
+- live voice debugging is not yet layered enough
+- `/chat/v2` still carries legacy endpoint complexity
+- legacy and premium voice paths are not yet fully aligned
+- memory consolidation is still request-time only, not periodic
+- pronunciation remains heuristic and transcript-based
+- cloud LLM resilience is still narrow and effectively centered on `Groq -> llama.cpp`
+- the FSRS layer still uses the current Python scheduler line and has not been deliberately re-evaluated for newer or Rust-backed paths
+- product discipline still has to be actively protected against horizontal tutor/platform drift
 
-**Идея:** PersonaPlex остаётся для «мгновенного» голоса, но вы добавляете **серверный STT** (например, Granite для EN‑участков) как:
-- «проверочный ре‑транскрайб» для точности терминов (offline evaluation),
-- источник keyword‑biasing на доменных словарях. citeturn19search0turn19search5
+## Four-Layer Model
 
-Это полезно, если вы хотите быть лучшими именно в IT‑терминах и интервью‑лексике.
+EnglishFriend should be reasoned about as four layers.
 
-### Вариант LiveKit Agents как новый runtime real‑time voice
+### 1. Voice and Transport Layer
 
-LiveKit документирует `AgentSession` как «main orchestrator» voice app и даёт готовые abstractions под STT/LLM/TTS/VAD/turn detection. citeturn20search0turn20search1
+This layer includes:
 
-Сильная сторона PoC: вы быстро получаете WebRTC‑клиенты (web/mobile), и production‑фичи вроде interruptions/turn detection. citeturn20search0turn20search5
+- WebSocket transport
+- STT
+- turn detection
+- interruption handling
+- TTS
+- optional future WebRTC runtime
 
-**Последовательность PoC:**
+Rule:
 
-```mermaid
-sequenceDiagram
-  participant U as User (WebRTC client)
-  participant LK as LiveKit Room
-  participant A as LiveKit Agent worker
-  participant STT as STTProvider (Granite/Whisper/Vosk)
-  participant EF as englishFriend API (plans, vocab, memory)
-  participant LG as LangGraph harness
-  participant TTS as TTSProvider
+- treat this as replaceable infrastructure
+- do not confuse transport quality with product differentiation
 
-  U->>LK: join room, publish mic
-  A->>LK: join room as participant
-  A->>STT: stream audio frames
-  STT-->>A: partial/final transcripts
-  A->>LG: text turn (with context from EF)
-  LG-->>A: response_text + pedagogical events
-  A->>TTS: stream synthesis
-  TTS-->>A: audio stream
-  A-->>LK: publish agent audio + transcript
-  A->>EF: persist evidence/memory (async)
-```
+### 2. Coach Runtime Layer
 
-### Что менять в вашем коде (минимально)
+This layer includes:
 
-1) `voice.py`: вынести бизнес‑логику сессии (инициализация агента, persist, memory extraction) в `VoiceSessionController`, оставив в файле только transport‑обвязку. Текущая сложность voice.py это подтверждает. fileciteturn18file0L1-L1
+- bounded session agent
+- stage-aware pedagogy
+- mission scaffolding
+- lexical rescue
+- low-signal and fallback behavior
 
-2) Добавить `STTProvider` слой и «вход audio» в `/chat/v2` (сейчас v2 в основном ждёт `type=text`). fileciteturn18file0L1-L1
+Rule:
 
-3) LangGraph hooks: подключить «события педагоги» как формальные outputs (вы уже делаете decision_log, corrections, vocabulary, memory_to_save) и логировать их в Langfuse как отдельные spans/scores. fileciteturn36file0L1-L1 citeturn23search0turn23search2
+- one session should stay inside one mission boundary
+- the runtime is a coach, not an open-ended autonomous assistant
 
-4) PersonaPlex prompt flow: убрать prompt из query string, сделать **handshake message** (первый JSON кадр после connect) или отдельный защищённый endpoint для получения prompt token.
+### 3. Product State Layer
 
----
+This layer includes:
 
-## Безопасность и приватность
+- goal brief
+- baseline and proficiency profile
+- program plan
+- mission selection
+- interview pack
+- evidence and progress state
 
-### Чек‑лист (практический)
+Rule:
 
-**Prompt leakage / data exfiltration**
-- Запретить передачу `system_prompt` в query‑string (сейчас так делает PersonaPlexProvider). fileciteturn23file0L1-L1
-- Не логировать целиком промпты и пользовательские сообщения на INFO; хранить только hash/preview (у вас уже местами есть preview). fileciteturn29file0L1-L1
-- В Langfuse: включать PII‑редакцию/политику хранения (сам Langfuse подчёркивает работу через SDK/OTel). citeturn23search1turn23search2
+- this remains the source of truth for product behavior
+- LLM output must not directly own state transitions
 
-**Prompt injection**
-- У вас уже есть regex‑санитизация в LLM provider и guardrails для JSON‑выходов. Это хорошо, но добавьте:
-  - строгую схему/валидацию действий на уровне Typed models (Pydantic) и «deny by default»,
-  - отдельный «policy layer» для запрещённых инструкций (например, запретировать менять системные правила, просить секреты). fileciteturn25file0L1-L1 fileciteturn38file0L1-L1
+### 4. Memory and Control Plane Layer
 
-**Secrets**
-- Убрать дефолтные пароли из compose/dev конфигов или явно маркировать как `example`, исключить из production. fileciteturn44file0L1-L1
-- Добавить секрет‑сканер (pre-commit hook / CI) и запрет коммита `.env`.
+This layer includes:
 
-**Trust‑before‑prefetch / permission gating**
-- Прежде чем делать «записи» (memory/vocab/learning plan) — проверять минимальную уверенность/валидность событий (у вас частично есть confidence thresholds для goal detection). fileciteturn38file0L1-L1 fileciteturn35file0L1-L1
-- Разделить «model-facing» и «tool-facing» данные: модель выдаёт намерение, а код решает, можно ли это намерение выполнить.
+- compact learner profile
+- mission memory context
+- internal skill manifests
+- guardrails and write gating
+- evaluation and observability hooks
 
-**Зависимости и CVE‑гигиена**
-- Следить за обновлениями LangGraph/LangChain и оперативно патчиться/аудитить рискованные места (десериализация, загрузка конфигов, metadata keys). citeturn24news46
+Rule:
 
----
+- memory and skills should reinforce product routing and pedagogy
+- they must not become a second product state system
 
-## Эксперименты, eval suite и приоритизация рекомендаций
+## Pedagogy Is The Product Core
 
-### Eval suite: что именно измерять и чем
+The main product differentiator is not the presence of voice.  
+It is the quality of pedagogical control under weak spoken English.
 
-**Langfuse как центр экспериментов**
-- Langfuse описывает: traces/sessions/observations, prompt management и evaluation (datasets + experiments), плюс OpenTelemetry‑совместимость. Это прямо совпадает с вашей задачей «измеряемого улучшения продукта». citeturn23search0turn23search2
-- Вы уже используете Langfuse для LLM tracing в коде. fileciteturn25file0L1-L1
+### Desired Pedagogical Behavior
 
-**Набор тестов**
-- Unit: парсинг JSON‑ответов агента (у вас есть `parse_llm_response` со стратегиями). fileciteturn39file0L1-L1
-- E2E (без микрофона): симулировать turns и проверять, что:
-  - goal brief становится routing‑ready,
-  - interview режим выдаёт правильные вопросы,
-  - сохраняется evidence/memory. (Док в `SYSTEM_OVERVIEW` описывает идею E2E business flow тестов как целевой подход). fileciteturn49file0L1-L1
-- Audio eval: набор коротких аудиоклипов (ваш, друзей, synthetic) с «эталонными» транскриптами и IT‑терминами. Мерить WER и tech‑term accuracy.
+Early career missions should feel:
 
-**Pronunciation eval**
-- Для «английского ментора под собес» лучше иметь объективные score‑метрики. Azure Pronunciation Assessment явно описывает, что оцениваются accuracy/fluency/prosody/completeness и даёт формулы расчёта общего PronScore. citeturn22search0turn22search5
+- simple
+- staged
+- confidence-building
+- corrective without being overwhelming
 
-### A/B тесты: минимальная статистика без перегруза
+That means:
 
-Для старта берите простые дизайны:
-- A/B на уровне пользователя (`user_id % 100 < traffic_percent` у вас уже реализовано в PromptService). fileciteturn42file0L1-L1
-- Метрики: onboarding completion, средняя длина сессии, доля «дошёл до mock interview», CSAT/NPS.
-- Sample size: как практический минимум — **по 50–100 пользователей на вариант** для поведенческих метрик и **по 200–500 сессий** для latency/ошибок (если трафик маленький, начните с «interleaving» на уровне сессий и измеряйте тех‑метрики).
+- short scaffolded questions first
+- deterministic ladders for early `project_walkthrough`, `hr_intro`, and `workplace_update`
+- lexical rescue when the user does not understand a word
+- lower pressure before STAR, architecture trade-offs, or deeper project framing
 
-### Приоритизированные рекомендации
+### Why This Matters
 
-**Короткий горизонт (1–2 недели)**
-- Разрезать `voice.py` на transport‑слой и session‑controller; оставить в роутере минимум логики. fileciteturn18file0L1-L1
-- Исправить риск query‑string prompt в PersonaPlex: перенести prompt в безопасный handshake. fileciteturn23file0L1-L1
-- Добавить KPI‑дашборд: voice latency P50/P95, ошибки по stage, onboarding completion (метрики уже есть). fileciteturn22file0L1-L1
+Without this layer, better STT or better TTS only creates a smoother version of the wrong coach.
 
-**Средний горизонт (3–6 недель)**
-- Ввести `STTProvider` и подключить хотя бы `faster-whisper` как backend STT (даже если клиент продолжает слать текст) для hybrid eval и тех‑терминов. citeturn21search5
-- Добавить «терминологический bias» как продуктовую фичу (wordlists из goal brief + interview tracks + vocabulary). fileciteturn35file0L1-L1 fileciteturn31file0L1-L1
-- Включить Azure Pronunciation Assessment как премиум‑функцию «после сессии» (не в realtime), потому что это даёт сильное дифференцирование для «подготовки к собесам». citeturn22search0turn22search5
+The product should sound less like:
 
-**Длинный горизонт (6–12 недель)**
-- Выбрать runtime для realtime voice: LiveKit Agents (если вы готовы под WebRTC‑мир) или Pipecat (если хотите pipeline‑first). citeturn20search0turn20search2turn23search8
-- Подключить IBM Granite 4.0 1B Speech как STT‑опцию для EN‑интервью с keyword biasing (ваш «killer feature» — точность IT‑терминов). citeturn19search0turn19search5
-- Усилить supply‑chain security (CVE patching, audit, sandbox), учитывая сообщения об уязвимостях в LangChain/LangGraph‑экосистеме. citeturn24news46
+- a generic interviewer
+- a smart explainer
+- a broad assistant
+
+and more like:
+
+- a focused speaking coach who knows what the user is trying to achieve next
+
+## Memory Architecture
+
+The correct memory architecture is hybrid and DB-first.
+
+### 1. Raw Session Memory
+
+This is the storage layer:
+
+- transcripts and conversation history
+- extracted memories
+- Qdrant semantic retrieval
+- learning plan state
+- evidence and interview history
+
+This layer is raw input, not the thing we should inject directly into every prompt.
+
+### 2. Learner Profile Summary
+
+This is the compact stable layer.
+
+It should contain only durable, prompt-worthy facts such as:
+
+- target role and market
+- current level and confidence
+- current stage
+- active mission family
+- current blockers
+- recurring error patterns
+- most relevant work/project context
+- latest evidence summary
+
+This is our analogue to compact memory, but it is server-owned and derived from product state plus memory, not stored as a root markdown file.
+
+### 3. Mission-Scoped Memory
+
+This is the session layer.
+
+Each voice session should receive:
+
+- explicit mission contract
+- learner profile summary
+- only a few relevant memories
+- only the evidence and context needed for that mission
+
+This keeps context bounded and reduces drift.
+
+### 4. Self-Healing
+
+The current minimum self-healing should do:
+
+- relative date normalization
+- duplicate dropping
+- surfacing memory conflicts before they pollute compact profile context
+
+The later, stronger version should add:
+
+- periodic consolidation job
+- contradiction resolution by recency and confirmation strength
+- profile refresh after important product events
+
+### What We Borrow From Claude-Code-Like Patterns
+
+Useful patterns:
+
+- compact memory entrypoint
+- bounded context per task
+- pruning and consolidation
+- strict distinction between durable memory and transient logs
+
+What we do not borrow:
+
+- filesystem memory as primary source of truth
+- user-facing agent console
+- open-ended tool-use identity as the product
+
+## Voice Architecture And Decision Tree
+
+### Current Voice Position
+
+Right now the correct approach is:
+
+- keep the modular runtime work
+- keep the shared session lifecycle
+- keep mission contract as the source of truth for primary sessions
+- stop treating a new voice framework as the immediate solution
+
+The next issue is not "which framework is coolest".  
+The next issue is "can we diagnose the live pipeline precisely enough to make the right replacement".
+
+### Decision Tree
+
+#### Step 1: Observability First
+
+Before changing the runtime, instrument the live path end to end:
+
+- transport
+- STT
+- turn detection
+- bootstrap
+- pedagogy/runtime
+- LLM
+- TTS
+- memory retrieval and persistence
+- session completion and evidence writes
+
+The goal is to make every live failure attributable to a layer.
+
+#### Step 2: Live Smoke Harness
+
+Keep a stable 3-session smoke set:
+
+1. first-run goal and baseline
+2. noisy foundation mission
+3. clean foundation mission
+
+Each run should capture:
+
+- transcript
+- frontend console
+- backend logs
+- metrics snapshot
+
+#### Step 3: STT Benchmark Before Runtime Rewrite
+
+Compare:
+
+- current browser Vosk
+- backend `faster-whisper`
+- backend `Parakeet-TDT`
+- browser-side `Whisper-small` / WebGPU via Transformers.js
+
+Evaluate them against product signals:
+
+- target-role capture
+- recent-project capture
+- fallback frequency
+- noisy-turn recovery
+- latency to final transcript
+- technical term accuracy
+- device stability and bundle/runtime impact for browser-side options
+
+#### Step 4: Pronunciation Upgrade
+
+After STT, the next practical upgrade is pronunciation:
+
+- replace or augment heuristic pronunciation with a stronger provider
+- keep it tightly connected to evidence and coaching, not as a separate toy metric
+- favor phoneme-level or alignment-based scoring over another transcript heuristic
+
+#### Step 5: Runtime Choice Only After Evidence
+
+Only after instrumented live data and STT results should we decide:
+
+- `Pipecat` if we want pipeline-first composition and modular voice orchestration
+- `LiveKit Agents` if we want a stronger WebRTC/runtime substrate and built-in room semantics
+
+The runtime decision should be justified by measured UX gain, not architectural aesthetics.
+
+## Near-Term Plan
+
+The near-term sequence should be explicit.
+
+### Critical Path
+
+#### 1. Observability Pass
+
+Add per-turn, per-layer visibility for live sessions.
+
+Success means:
+
+- every problematic live turn can be traced to a layer
+- logs, metrics, and traces agree on the same request and session identifiers
+
+#### 2. Live Retest
+
+Run the 3 live scenarios again on the current stack.
+
+Success means:
+
+- no mission drift
+- no empty assistant turns
+- correct setup handoff
+- stable bounded coaching under noisy speech
+
+#### 3. STT Benchmark And Replacement Track
+
+Prototype backend STT while keeping the product loop unchanged.
+
+Current recommendation:
+
+- first backend candidate: `faster-whisper`
+- second benchmark candidate: `Parakeet-TDT`
+- third benchmark candidate: browser-side `Whisper-small/WebGPU`
+
+This is still a benchmark, not a commitment to ship browser Whisper as the default fallback.
+
+### Parallel Sidecars
+
+#### 4. LLM Resilience Track
+
+Add a cloud fallback lane that improves reliability without changing the product loop.
+
+Current recommendation:
+
+- keep the mainline provider logic stable
+- explicitly evaluate `Cerebras` as a low-effort cloud fallback
+- converge toward `Groq -> Cerebras -> llama.cpp` instead of relying on only one cloud fast path plus CPU fallback
+
+#### 5. FSRS Layer Review
+
+Revisit the vocabulary scheduling layer deliberately instead of assuming the current Python path is already optimal.
+
+Current recommendation:
+
+- keep the existing FSRS flow unchanged until the review is done
+- compare the current `py-fsrs` line with a Rust-backed path such as `fsrs-rs-python`
+- decide from product needs: short-interval quality, per-user tuning cost, and operational simplicity
+
+### After STT Evidence
+
+#### 6. Pronunciation Track
+
+Upgrade pronunciation after the STT path is more reliable.
+
+Current recommendation:
+
+- move from transcript-only heuristic scoring toward an audio-backed phoneme/alignment family
+- inspect `ai-pronunciation-trainer` or an equivalent open phoneme scorer first
+- treat this as a candidate family, not yet as a locked dependency
+
+#### 7. Runtime PoC
+
+Do not start here.  
+Do this only if the earlier steps show that transport/runtime, not pedagogy or STT, is the next true bottleneck.
+
+## Cost Model
+
+The voice stack should be judged not only by quality but by maintenance shape.
+
+### Browser Compute
+
+- low server cost
+- good resilience when backend capacity is weak
+- higher device variability
+- bundle and runtime constraints matter
+
+### Server-Side Self-Hosted
+
+- predictable product control
+- lower marginal inference cost on owned hardware
+- higher operations and deployment burden
+- debugging and scaling are our problem
+
+### Cloud Inference
+
+- easiest resilience and fastest iteration
+- external latency and limits still matter
+- costs can spike if a fallback path becomes the main path
+
+Rule:
+
+- use the cheapest layer that still protects the learning loop
+- do not choose a stack only because it is architecturally elegant
+
+## Competitive Landscape
+
+EnglishFriend still has a differentiated wedge, but the surrounding landscape matters.
+
+### DeepTutor Teardown
+
+`DeepTutor` is a useful warning signal, not a product template for EnglishFriend.
+
+As of April 2026, DeepTutor presents a broad "AI-powered personalized learning assistant" with:
+
+- multi-agent problem solving
+- knowledge base and document Q&A
+- guided learning
+- exam-style practice generation
+- deep research
+- notebook and persistent learning artifacts
+
+This confirms that horizontal tutoring breadth is becoming easier to assemble.
+
+What that means for EnglishFriend:
+
+- if we stay vertical, DeepTutor is not the same product
+- if we copy that width, we lose our wedge and become easier to compare against broader platforms
+
+What we can borrow:
+
+- cleaner capability boundaries
+- stronger persistence and artifacts
+- better learning profile consolidation
+
+What we should not borrow:
+
+- all-in-one learning workspace identity
+- document/RAG-first product framing
+- broad research or notebook surface as the core product
+
+This is exactly why EnglishFriend should stay a vertical career-English coach.
+
+### Voice Infrastructure
+
+- `Pipecat` matters as a modular pipeline reference
+- `LiveKit Agents` matters as a WebRTC/runtime reference
+
+### Interview And Speaking Products
+
+- interview simulators matter as UX references for guided question flow
+- generic speaking apps matter mainly as latency and polish baselines, not as product identity models
+
+### Learning Architecture References
+
+- adaptive learning and multi-agent tutor systems are useful as internal architecture references
+- they are not a reason to turn EnglishFriend into a user-facing agent platform
+
+### External Signals That Matter
+
+- `DeepTutor` updates in April 2026 reinforce that horizontal tutoring stacks are commoditizing quickly.
+- OpenAI's Praktika case study from January 22, 2026 reinforces that measurable adaptation and progress-linked coaching matter more than raw agent breadth.
+- Hugging Face `Transformers.js v4` from February 9, 2026 reinforces that browser-side WebGPU speech tooling is now serious enough to benchmark, but still remains infrastructure rather than moat.
+
+## Technology Watchlist
+
+These are worth monitoring, but none of them should displace the near-term critical path.
+
+- browser-side ASR on WebGPU, especially `Whisper-small`
+- `Pipecat`
+- `LiveKit Agents`
+- `Sesame CSM` and related speech-native OSS
+- emotion-aware voice systems such as `Hume EVI`
+- Rust-backed FSRS optimization paths
+- stronger open pronunciation scorers based on phoneme alignment
+
+## Long-Term Direction
+
+The long-term goal is not "be the best assistant with voice".  
+The long-term goal is:
+
+- best voice-first career-English coach for Russian-speaking technical specialists
+
+That requires:
+
+- stronger mission design
+- stronger evidence loop
+- more accurate speech understanding
+- better memory consolidation
+- reliable near-realtime conversation when it measurably helps the learning loop
+
+The architecture should continue moving toward:
+
+- bounded coach runtime
+- replaceable voice infrastructure
+- code-owned pedagogy and state transitions
+- memory as a compact control plane
+- emotion-aware coaching as a later watchlist direction, only if it improves frustration handling or confidence-sensitive coaching in a measurable way
+
+## Decision Rules
+
+Use these rules when deciding what to build next.
+
+### Build It If
+
+It makes EnglishFriend better at:
+
+- sharpening a career goal
+- assessing readiness
+- routing a mission
+- coaching one high-value speaking task
+- producing useful evidence
+- adapting the next step
+- strengthening the vertical career-English loop for Russian-speaking IT/ML specialists
+
+### Do Not Prioritize It If
+
+It mostly improves:
+
+- generic assistant breadth
+- agent theater
+- plugin surface area
+- multimodal novelty without impact on the learning loop
+- realtime polish without evidence that it fixes a product bottleneck
+- general tutoring breadth without improving career-state, pedagogy, evidence, or adaptation
+
+## Related Documents
+
+- Short strategic manifesto: [../strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md](../strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md)
+- Operational continuity and latest status: [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md)
+- Technical history and older strategy comparisons: [../strategy/TECHNICAL_STRATEGY.md](../strategy/TECHNICAL_STRATEGY.md), [../STRATEGY.md](../STRATEGY.md)
+- External references:
+  - DeepTutor repo: https://github.com/HKUDS/DeepTutor
+  - Praktika case study: https://openai.com/index/praktika/
+  - Transformers.js v4: https://huggingface.co/blog/transformersjs-v4

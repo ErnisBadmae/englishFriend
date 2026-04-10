@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agent.state import AgentPhase, LearningModeEnum
+from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
 from app.services.voice_session import BootstrapContext, SessionCompletion
 from app.services.voice_runtime.controller import VoiceRuntimeDependencies, VoiceSessionController
 from app.services.voice_runtime.stt import PassthroughTextSTTProvider
@@ -21,12 +22,20 @@ def _mock_dependencies() -> VoiceRuntimeDependencies:
     memory_pipeline = MagicMock()
     memory_pipeline.process_conversation = AsyncMock()
     memory_pipeline.format_memory_for_prompt = AsyncMock(return_value="")
+    learner_profile_service = MagicMock()
+    learner_profile_service.build_summary = AsyncMock(
+        return_value=LearnerProfileSummary(goal_summary="ML Engineer abroad")
+    )
+    learner_profile_service.build_mission_context = AsyncMock(
+        return_value=MissionMemoryContext(relevant_memories=["Goal: ML Engineer abroad"])
+    )
 
     return VoiceRuntimeDependencies(
         user_service_factory=lambda db: user_service,
         learning_plan_service_factory=lambda db: learning_plan_service,
         vocabulary_service_factory=lambda db: vocabulary_service,
         memory_pipeline_factory=lambda db: memory_pipeline,
+        learner_profile_service_factory=lambda db, lps, mp: learner_profile_service,
     )
 
 
@@ -114,18 +123,32 @@ async def test_controller_processes_text_turn_with_phase_change_and_audio():
 
     assert outcome.should_close is False
     assert outcome.status is None
-    assert outcome.events[0] == {"type": "transcript", "role": "user", "text": "Hi"}
+    assert outcome.events[0]["type"] == "transcript"
+    assert outcome.events[0]["role"] == "user"
+    assert outcome.events[0]["text"] == "Hi"
+    assert outcome.events[0]["runtime"] == "realtime"
+    assert outcome.events[0]["turn_id"] == "t1"
+    assert outcome.events[0]["turn_index"] == 1
     assert any(
-        event.get("type") == "phase_changed" and event.get("phase") == "learning_session"
+        event.get("type") == "phase_changed"
+        and event.get("phase") == "learning_session"
+        and event.get("turn_id") == "t1"
         for event in outcome.events
     )
     assert any(
         event.get("type") == "transcript"
         and event.get("role") == "assistant"
         and "project you shipped" in event.get("text", "")
+        and event.get("runtime") == "realtime"
+        and event.get("turn_id") == "t1"
         for event in outcome.events
     )
-    assert any(event.get("type") == "audio" for event in outcome.events)
+    assert any(
+        event.get("type") == "audio"
+        and event.get("runtime") == "realtime"
+        and event.get("turn_id") == "t1"
+        for event in outcome.events
+    )
 
 
 @pytest.mark.asyncio
@@ -203,6 +226,7 @@ async def test_controller_initialize_passes_explicit_mission_contract_to_bootstr
         user_id=11,
         mode="free_conversation",
         interview_track=None,
+        stt_provider_name="browser_vosk",
         mission_task_type="foundation_speaking_drill",
         mission_title="Run a foundation speaking drill",
         mission_reason="Stabilize grammar before interviews.",
@@ -248,4 +272,55 @@ async def test_controller_initialize_passes_explicit_mission_contract_to_bootstr
         mission_reason="Stabilize grammar before interviews.",
         mission_success_signal="One cleaner career answer.",
         mission_linked_goal_context="foundation",
+        runtime="realtime",
+        stt_provider="browser_vosk",
     )
+
+
+@pytest.mark.asyncio
+async def test_controller_initialize_connected_payload_contains_runtime_metadata():
+    controller = VoiceSessionController(
+        db=AsyncMock(),
+        user_id=5,
+        mode=None,
+        interview_track=None,
+        stt_provider_name="browser_vosk",
+        transport=MagicMock(),
+        stt_provider=PassthroughTextSTTProvider(),
+        tts_provider=MagicMock(synthesize=AsyncMock(return_value=b"audio")),
+        turn_detector=ExplicitMessageTurnDetector(),
+        dependencies=_mock_dependencies(),
+        use_v2_agent=True,
+    )
+    controller._bootstrap_service.build = AsyncMock(
+        return_value=BootstrapContext(
+            session_id="session-init",
+            is_new_user=True,
+            due_vocabulary_count=2,
+        )
+    )
+    controller._bootstrap_service.initialize_agent_state = AsyncMock(
+        return_value={
+            "current_phase": AgentPhase.START,
+            "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        }
+    )
+
+    with patch(
+        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        new=AsyncMock(
+            return_value={
+                "pending_response": "Hello there",
+                "current_phase": AgentPhase.START,
+                "current_mode": LearningModeEnum.FREE_CONVERSATION,
+            }
+        ),
+    ):
+        outcome = await controller.initialize()
+
+    connected = outcome.events[0]
+    assert connected["type"] == "connected"
+    assert connected["session_id"] == "session-init"
+    assert connected["runtime"] == "realtime"
+    assert connected["agent_version"] == "v2"
+    assert connected["stt_provider"] == "browser_vosk"

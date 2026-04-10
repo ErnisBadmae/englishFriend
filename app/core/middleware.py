@@ -21,7 +21,14 @@ from app.core.metrics import (
     http_response_size_bytes,
     normalize_endpoint
 )
-from app.core.observability import set_request_context, clear_request_context, get_request_id
+from app.core.observability import (
+    set_request_context,
+    clear_request_context,
+    get_request_id,
+    get_session_id,
+    get_turn_id,
+    get_runtime,
+)
 
 
 # ============== Logging Filter ==============
@@ -88,10 +95,19 @@ class RequestIDFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         request_id = get_request_id()
-        if request_id:
-            record.request_id = f"[{request_id}]"
-        else:
-            record.request_id = "[-]"
+        session_id = get_session_id()
+        turn_id = get_turn_id()
+        runtime = get_runtime()
+
+        parts: list[str] = [request_id] if request_id else []
+        if session_id:
+            parts.append(f"s={session_id[:8]}")
+        if turn_id:
+            parts.append(f"t={turn_id}")
+        if runtime:
+            parts.append(f"rt={runtime}")
+
+        record.request_id = f"[{' '.join(parts)}]" if parts else "[-]"
         return super().format(record)
 
 

@@ -8,6 +8,8 @@ from app.services.voice_runtime.base import STTEvent, STTProvider
 class PassthroughTextSTTProvider(STTProvider):
     """Treat client-provided text as a normalized final transcript."""
 
+    provider_id = "passthrough_text"
+
     async def transcribe_text(
         self,
         text: str,

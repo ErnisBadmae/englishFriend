@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums_and_dimensions import MemoryKind
 from app.models.extended_tables import Memory
+from app.services.ai.memory_contracts import (
+    MemoryCandidate,
+    consolidate_memory_candidates,
+    normalize_temporal_references,
+)
 from app.services.ai.embedding_service import (
     EmbeddingService,
     EmbeddingUnavailableError,
@@ -71,7 +76,35 @@ class MemoryPipeline:
                 logger.debug("No new memories extracted for user %s", user_id)
                 return []
 
-            contents = [memory.content for memory in extracted]
+            consolidation = consolidate_memory_candidates(
+                candidates=[
+                    MemoryCandidate(
+                        kind=memory.kind,
+                        content=memory.content,
+                        salience=memory.salience,
+                        meta=memory.meta or {},
+                    )
+                    for memory in extracted
+                ],
+                existing_memories=existing,
+            )
+            if consolidation.dropped_duplicates:
+                logger.debug(
+                    "Dropped %s duplicate memory candidates for user %s",
+                    len(consolidation.dropped_duplicates),
+                    user_id,
+                )
+            if consolidation.conflicts:
+                logger.debug(
+                    "Detected %s memory conflicts for user %s during consolidation",
+                    len(consolidation.conflicts),
+                    user_id,
+                )
+            if not consolidation.accepted_candidates:
+                logger.debug("All extracted memories were dropped during consolidation for user %s", user_id)
+                return []
+
+            contents = [memory.content for memory in consolidation.accepted_candidates]
             embeddings: list[list[float]] | None = None
             if self._embedding.is_available():
                 embeddings = await self._embedding.embed_texts(contents)
@@ -79,7 +112,7 @@ class MemoryPipeline:
                 logger.info("Vector memory unavailable, saving extracted memories in DB-only mode")
 
             created_memories = []
-            for index, extracted_memory in enumerate(extracted):
+            for index, extracted_memory in enumerate(consolidation.accepted_candidates):
                 embedding = embeddings[index] if embeddings else None
                 memory = await self._save_memory(
                     user_id=user_id,
@@ -178,16 +211,17 @@ class MemoryPipeline:
         meta: Optional[dict] = None,
     ) -> Optional[Memory]:
         """Сохранить одно воспоминание напрямую."""
+        normalized_content = normalize_temporal_references(content)
         try:
             embedding = None
             if self._embedding.is_available():
-                embedding = await self._embedding.embed_text(content)
+                embedding = await self._embedding.embed_text(normalized_content)
             else:
                 logger.info("Skipping vector upsert for single memory because embeddings are unavailable")
 
             return await self._save_memory(
                 user_id=user_id,
-                content=content,
+                content=normalized_content,
                 kind=kind,
                 salience=salience,
                 embedding=embedding,
@@ -197,7 +231,7 @@ class MemoryPipeline:
             logger.warning("Embeddings unavailable while saving single memory: %s", exc)
             return await self._save_memory(
                 user_id=user_id,
-                content=content,
+                content=normalized_content,
                 kind=kind,
                 salience=salience,
                 embedding=None,

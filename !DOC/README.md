@@ -1,6 +1,6 @@
 # English Friend Documentation
 
-**Last Updated**: 2026-03-30
+**Last Updated**: 2026-04-10
 
 Welcome to the English Friend documentation. This guide will help you navigate the project documentation efficiently.
 
@@ -10,6 +10,8 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 
 - **New to the project?** Start with [QUICK_START.md](../QUICK_START.md) in the root directory
 - **Need the current product status and next step?** Read [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md)
+- **Need the current long-form product and architecture vision?** Read [research/deep-research-report.md](./research/deep-research-report.md)
+- **Need the moat, anti-roadmap, and strategic boundaries?** Read [research/deep-research-report.md](./research/deep-research-report.md)
 - **Need to understand the system?** Read [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md)
 - **Working on database?** Check [DB.md](./DB.md)
 - **Legacy session history?** See [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md)
@@ -27,6 +29,7 @@ Welcome to the English Friend documentation. This guide will help you navigate t
 | [STRATEGY.md](./STRATEGY.md) | Business strategy, market analysis, roadmap | Strategic planning |
 | [strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md](./strategy/PRODUCT_WEDGE_PIVOT_2026-03-30.md) | Current strategic pivot, research summary, rationale, next execution step | Product direction and prioritization |
 | [strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md](./strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md) | Why EnglishFriend should stay a vertical coach while adopting internal agent patterns | Current product/architecture strategy |
+| [research/deep-research-report.md](./research/deep-research-report.md) | Canonical long-form product and architecture vision, including moat and anti-roadmap | Current north star, moat, and architectural direction |
 | [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md) | Active source of truth for current wedge, current flow, known issues, and next step | Resuming active product work |
 | [CLAUDE_SESSION_LOG.md](./CLAUDE_SESSION_LOG.md) | Legacy detailed session history | Historical continuity only |
 | [TEMPLATE.md](./TEMPLATE.md) | Documentation system template for other projects | Reusing doc system |

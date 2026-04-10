@@ -30,4 +30,7 @@ class ExplicitMessageTurnDetector(TurnDetector):
             disposition="commit",
             text=text,
             reason="explicit_text",
+            metadata={
+                "source": str(message.get("source", "")).strip().lower() or "websocket_text",
+            },
         )

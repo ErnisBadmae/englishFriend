@@ -133,6 +133,25 @@ voice_errors_total = Counter(
     ['stage']  # stage: llm/tts/db/websocket
 )
 
+voice_stage_latency_seconds = Histogram(
+    'voice_stage_latency_seconds',
+    'Время отдельных стадий voice pipeline',
+    ['runtime', 'stage'],  # runtime: chat_v2/realtime, stage: bootstrap/stt/agent/tts/memory/persist
+    buckets=[0.005, 0.02, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0]
+)
+
+voice_turn_events_total = Counter(
+    'voice_turn_events_total',
+    'Количество structured voice events по слоям',
+    ['runtime', 'layer', 'event']
+)
+
+voice_persistence_total = Counter(
+    'voice_persistence_total',
+    'Результаты post-session persistence по runtime',
+    ['runtime', 'status']
+)
+
 
 # ============ AGENT V2 METRICS (LLM-driven architecture) ============
 
@@ -214,6 +233,19 @@ agent_guardrail_fallbacks = Counter(
     'agent_guardrail_fallbacks_total',
     'Times fallback response was applied',
     ['node']  # node: onboarding/learning/session_end
+)
+
+agent_intent_classifications_total = Counter(
+    'agent_intent_classifications_total',
+    'Bounded intent classifications by type and classifier source',
+    ['type', 'source']
+)
+
+agent_intent_classifier_latency_seconds = Histogram(
+    'agent_intent_classifier_latency_seconds',
+    'Latency of intent classifier stages',
+    ['source'],
+    buckets=[0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.3, 0.5, 1.0]
 )
 
 # ============ PERSONAPLEX METRICS ============
