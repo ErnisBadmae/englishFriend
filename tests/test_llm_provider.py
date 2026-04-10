@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.ai.llm_provider import (
+    DEFAULT_VLLM_MODEL,
     GroqProvider,
     LLMProvider,
     LLMEmptyContentError,
@@ -143,6 +144,24 @@ class TestProviderGenerate:
         ):
             result = await provider.generate("Hello", "You are helpful")
             assert result == "This is a test response."
+
+    async def test_vllm_generate_retries_with_canonical_model_when_alias_is_missing(self, mock_response):
+        provider = VLLMProvider()
+        provider._model = "qwen32b-32k"
+        create_mock = AsyncMock(
+            side_effect=[
+                Exception("Error code: 404 - error: message: The model qwen32b-32k does not exist."),
+                mock_response,
+            ]
+        )
+
+        with patch.object(provider._client.chat.completions, "create", create_mock):
+            result = await provider.generate("Hello", "You are helpful")
+
+        assert result == "This is a test response."
+        assert provider._model == DEFAULT_VLLM_MODEL
+        assert create_mock.await_count == 2
+        assert create_mock.await_args_list[1].kwargs["model"] == DEFAULT_VLLM_MODEL
 
     async def test_llama_cpp_generate_returns_response(self, mock_response):
         provider = LlamaCppProvider()

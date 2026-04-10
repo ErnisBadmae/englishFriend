@@ -148,6 +148,10 @@ async def award_session_gamification(
             logger.info("Comeback bonus: +20 XP")
 
     except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            logger.warning("Gamification rollback failed", exc_info=True)
         logger.warning(f"Gamification error: {e}")
 
 

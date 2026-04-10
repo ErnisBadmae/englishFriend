@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
 from app.services.voice_session import (
     SessionBootstrapService,
     SessionPersistRequest,
@@ -38,18 +39,38 @@ def _session_dependencies():
     memory_pipeline.format_memory_for_prompt = AsyncMock(return_value="memory")
     memory_pipeline.process_conversation = AsyncMock()
 
+    learner_profile_service = MagicMock()
+    learner_profile_service.build_summary = AsyncMock(
+        return_value=LearnerProfileSummary(
+            goal_summary="ML Engineer abroad",
+            current_level="B2",
+            current_stage="foundation",
+        )
+    )
+    learner_profile_service.build_mission_context = AsyncMock(
+        return_value=MissionMemoryContext(
+            learner_profile=LearnerProfileSummary(
+                goal_summary="ML Engineer abroad",
+                current_level="B2",
+                current_stage="foundation",
+            ),
+            relevant_memories=["Built recommendation systems"],
+        )
+    )
+
     deps = VoiceSessionDependencies(
         user_service_factory=lambda db: user_service,
         learning_plan_service_factory=lambda db: learning_plan_service,
         vocabulary_service_factory=lambda db: vocabulary_service,
         memory_pipeline_factory=lambda db: memory_pipeline,
+        learner_profile_service_factory=lambda db, lps, mp: learner_profile_service,
     )
-    return deps, learning_plan_service, memory_pipeline
+    return deps, learning_plan_service, memory_pipeline, learner_profile_service
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_service_loads_user_learning_vocab_and_memory():
-    deps, _, _ = _session_dependencies()
+    deps, _, _, _ = _session_dependencies()
     service = SessionBootstrapService(AsyncMock(), dependencies=deps)
 
     context = await service.build(user_id=42, session_id="session-42")
@@ -61,12 +82,15 @@ async def test_bootstrap_service_loads_user_learning_vocab_and_memory():
     assert context.confirmed_goal == "ML Engineer"
     assert context.due_vocabulary_count == 1
     assert context.due_vocabulary_words == ["pipeline"]
-    assert context.memory_section == "memory"
+    assert "Learner profile" in context.memory_section
+    assert "Built recommendation systems" in context.memory_section
+    assert context.learner_profile_summary is not None
+    assert context.mission_memory_context is not None
 
 
 @pytest.mark.asyncio
 async def test_persistence_service_is_idempotent_within_one_session():
-    deps, learning_plan_service, memory_pipeline = _session_dependencies()
+    deps, learning_plan_service, memory_pipeline, _ = _session_dependencies()
     service = SessionPersistenceService(
         AsyncMock(),
         dependencies=deps,
@@ -79,6 +103,7 @@ async def test_persistence_service_is_idempotent_within_one_session():
         user_id=7,
         session_id="session-7",
         final_mode="mock_interview",
+        runtime="chat_v2",
         existing_goal="ML Engineer",
         agent_state={"turn_count": 2},
         conversation_history=[{"role": "user", "content": "Answer"}],
@@ -104,3 +129,56 @@ async def test_persistence_service_is_idempotent_within_one_session():
     assert second.already_persisted is True
     learning_plan_service.increment_session_count.assert_awaited_once()
     memory_pipeline.process_conversation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_persistence_service_persists_evidence_before_gamification():
+    deps, learning_plan_service, memory_pipeline, _ = _session_dependencies()
+    service = SessionPersistenceService(
+        AsyncMock(),
+        dependencies=deps,
+        learning_plan_service=learning_plan_service,
+        memory_pipeline=memory_pipeline,
+    )
+
+    request = SessionPersistRequest(
+        status="completed",
+        user_id=9,
+        session_id="session-9",
+        final_mode="foundation",
+        runtime="chat_v2",
+        existing_goal="ML Engineer",
+        agent_state={"turn_count": 3},
+        conversation_history=[{"role": "user", "content": "Answer"}],
+        turn_count=3,
+        corrections_made=[],
+        vocabulary_reviewed=[],
+    )
+
+    call_order: list[str] = []
+
+    async def _persist_interview(*args, **kwargs):
+        call_order.append("interview")
+        return None
+
+    async def _persist_evidence(*args, **kwargs):
+        call_order.append("evidence")
+        return {"id": "evidence-1"}
+
+    async def _award_gamification(*args, **kwargs):
+        call_order.append("gamification")
+
+    with patch(
+        "app.services.voice_session.service.persist_interview_run_if_needed",
+        new=AsyncMock(side_effect=_persist_interview),
+    ), patch(
+        "app.services.voice_session.service.persist_session_evidence_if_needed",
+        new=AsyncMock(side_effect=_persist_evidence),
+    ), patch(
+        "app.services.voice_session.service.award_session_gamification",
+        new=AsyncMock(side_effect=_award_gamification),
+    ):
+        completion = await service.persist(request)
+
+    assert completion.error is None
+    assert call_order == ["interview", "evidence", "gamification"]

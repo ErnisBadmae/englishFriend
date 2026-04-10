@@ -24,7 +24,14 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from app.core.config import settings
 from app.core.metrics import llm_response_anomalies_total
-from app.core.observability import get_langfuse, get_request_id, get_user_id
+from app.core.observability import (
+    get_langfuse,
+    get_request_id,
+    get_runtime,
+    get_session_id,
+    get_turn_id,
+    get_user_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +81,8 @@ FINAL_ONLY_RETRY_SUFFIX = (
     "Do not output reasoning or thinking. "
     "If JSON is requested, return only valid JSON."
 )
+
+DEFAULT_VLLM_MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
 
 
 class LLMEmptyContentError(RuntimeError):
@@ -207,6 +216,11 @@ def _parse_extra_body_json(raw_json: str, *, provider_name: str) -> Optional[dic
     return parsed
 
 
+def _is_missing_model_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "does not exist" in message or "notfounderror" in message or "unknown model" in message
+
+
 def trace_llm_generation(
     model: str,
     messages: list[dict],
@@ -224,13 +238,22 @@ def trace_llm_generation(
 
     request_id = get_request_id()
     user_id = get_user_id()
+    session_id = get_session_id()
+    turn_id = get_turn_id()
+    runtime = get_runtime()
 
     try:
         trace = langfuse.trace(
             name=trace_name,
             id=f"{request_id}-llm" if request_id else None,
             user_id=str(user_id) if user_id else None,
-            metadata={"request_id": request_id},
+            session_id=session_id,
+            metadata={
+                "request_id": request_id,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "runtime": runtime,
+            },
         )
 
         usage = {}
@@ -242,6 +265,10 @@ def trace_llm_generation(
         trace_metadata = {"latency_ms": round(latency_ms, 2)}
         if metadata:
             trace_metadata.update(metadata)
+        if turn_id:
+            trace_metadata["turn_id"] = turn_id
+        if runtime:
+            trace_metadata["runtime"] = runtime
 
         trace.generation(
             name="completion",
@@ -338,9 +365,10 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[dict],
         max_tokens: int,
         stream: bool,
+        model: Optional[str] = None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
-            "model": self._model,
+            "model": model or self._model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": settings.llm_temperature,
@@ -361,8 +389,31 @@ class OpenAICompatibleProvider(LLMProvider):
             return await self._client.chat.completions.create(
                 **self._build_create_kwargs(messages=messages, max_tokens=max_tokens, stream=False)
             )
-
-        return await _call()
+        try:
+            return await _call()
+        except Exception as exc:
+            if (
+                self._provider_name == "vllm"
+                and self._model != DEFAULT_VLLM_MODEL
+                and _is_missing_model_error(exc)
+            ):
+                logger.warning(
+                    "[%s] Model %s is unavailable, retrying with canonical fallback %s",
+                    self._provider_name,
+                    self._model,
+                    DEFAULT_VLLM_MODEL,
+                )
+                raw_response = await self._client.chat.completions.create(
+                    **self._build_create_kwargs(
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        stream=False,
+                        model=DEFAULT_VLLM_MODEL,
+                    )
+                )
+                self._model = DEFAULT_VLLM_MODEL
+                return raw_response
+            raise
 
     def _trace_generation(
         self,

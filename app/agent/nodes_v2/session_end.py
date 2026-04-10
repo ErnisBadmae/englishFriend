@@ -69,6 +69,7 @@ async def session_end_node(state: AgentState) -> AgentState:
 
     # Call LLM for personalized farewell
     start_time = time.time()
+    fallback_reason: Optional[str] = None
     try:
         response = await llm.generate(
             user_message="",
@@ -80,9 +81,11 @@ async def session_end_node(state: AgentState) -> AgentState:
     except LLMEmptyContentError as exc:
         logger.warning("[SessionEnd] Empty final content: %s", exc)
         response = None
+        fallback_reason = "empty_final_content"
     except Exception as e:
         logger.error(f"[SessionEnd] LLM error: {e}")
         response = None
+        fallback_reason = "llm_error"
 
     # Parse response or use fallback
     if response:
@@ -101,8 +104,12 @@ async def session_end_node(state: AgentState) -> AgentState:
             agent_guardrail_fallbacks.labels(node="session_end").inc()
 
         farewell = action.get("response_text", "")
+        state["session_end_fallback_used"] = False
+        state["session_end_fallback_reason"] = None
     else:
         farewell = _generate_simple_farewell(state)
+        state["session_end_fallback_used"] = True
+        state["session_end_fallback_reason"] = fallback_reason or "simple_farewell"
 
     # Log usage
     await prompt_service.log_usage(

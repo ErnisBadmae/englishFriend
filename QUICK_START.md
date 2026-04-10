@@ -198,7 +198,7 @@ cd ..
 LLM_PROVIDER=vllm
 VLLM_BASE_URL=http://192.168.0.27:8000/v1
 VLLM_API_KEY=token-abc123
-VLLM_MODEL=qwen32b-32k
+VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
 ```
 
 #### CPU llama.cpp (Qwen 3.5 35B, большой контекст)
@@ -207,7 +207,12 @@ VLLM_MODEL=qwen32b-32k
 LLM_PROVIDER=llama_cpp
 LLAMA_CPP_BASE_URL=http://192.168.0.18:8001/v1
 LLAMA_CPP_MODEL=qwen3.5-35b
+LLAMA_CPP_RESPONSE_MODE=final_only
+LLAMA_CPP_EXTRA_BODY_JSON=
 ```
+
+- `LLAMA_CPP_RESPONSE_MODE=final_only` включает product-safe режим: backend требует только финальный ответ и не пропускает reasoning в пользовательский transcript.
+- `LLAMA_CPP_EXTRA_BODY_JSON` нужен для provider-specific request overrides llama.cpp / llama-server, если на кластере понадобится дополнительный JSON body.
 
 #### OpenAI fallback
 

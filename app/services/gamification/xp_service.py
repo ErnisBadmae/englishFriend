@@ -136,8 +136,12 @@ class XPService:
         if user:
             user.total_xp = (user.total_xp or 0) + points
 
-        await self.db.commit()
-        await self.db.refresh(event)
+        try:
+            await self.db.commit()
+            await self.db.refresh(event)
+        except Exception:
+            await self.db.rollback()
+            raise
 
         return event
 

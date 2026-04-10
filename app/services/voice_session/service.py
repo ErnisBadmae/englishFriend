@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -19,10 +20,22 @@ from app.api.voice_helpers import (
 )
 from app.core.metrics import voice_errors_total
 from app.schemas.user import UserCreate
+from app.services.ai.learner_profile_service import (
+    LearnerProfileService,
+    create_learner_profile_service,
+)
+from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
 from app.services.ai.memory_pipeline import MemoryPipeline, create_memory_pipeline
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.database import UserService
 from app.services.learning_plan_service import LearningPlanService
+from app.services.voice_observability import (
+    VoiceSessionScope,
+    log_voice_event,
+    make_turn_envelope,
+    observe_voice_stage,
+    record_voice_persistence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +54,8 @@ class BootstrapContext:
     due_vocabulary_count: int = 0
     due_vocabulary_words: list[str] = field(default_factory=list)
     memory_section: str = ""
+    learner_profile_summary: Optional[LearnerProfileSummary] = None
+    mission_memory_context: Optional[MissionMemoryContext] = None
 
 
 @dataclass
@@ -53,6 +68,7 @@ class SessionPersistRequest:
     final_mode: str
     existing_goal: Optional[str]
     agent_state: dict[str, Any]
+    runtime: str = "unknown"
     conversation_history: list[dict[str, Any]] = field(default_factory=list)
     turn_count: int = 0
     assessed_level: Optional[str] = None
@@ -71,6 +87,7 @@ class SessionPersistRequest:
         user_id: int,
         session_id: str,
         final_mode: str,
+        runtime: str,
         existing_goal: Optional[str],
         agent_state: dict[str, Any],
     ) -> "SessionPersistRequest":
@@ -80,6 +97,7 @@ class SessionPersistRequest:
             user_id=user_id,
             session_id=session_id,
             final_mode=final_mode,
+            runtime=runtime,
             existing_goal=existing_goal,
             agent_state=agent_state,
             conversation_history=list(agent_state.get("conversation_history", []) or []),
@@ -114,6 +132,10 @@ class VoiceSessionDependencies:
     learning_plan_service_factory: Callable[[AsyncSession], LearningPlanService] = LearningPlanService
     vocabulary_service_factory: Callable[[AsyncSession], VocabularyService] = VocabularyService
     memory_pipeline_factory: Callable[[AsyncSession], MemoryPipeline] = create_memory_pipeline
+    learner_profile_service_factory: Callable[
+        [AsyncSession, LearningPlanService, MemoryPipeline],
+        LearnerProfileService,
+    ] = create_learner_profile_service
 
 
 class SessionBootstrapService:
@@ -131,6 +153,11 @@ class SessionBootstrapService:
         self._learning_plan_service = self._deps.learning_plan_service_factory(db)
         self._vocabulary_service = self._deps.vocabulary_service_factory(db)
         self._memory_pipeline = self._deps.memory_pipeline_factory(db)
+        self._learner_profile_service = self._deps.learner_profile_service_factory(
+            db,
+            self._learning_plan_service,
+            self._memory_pipeline,
+        )
 
     @property
     def learning_plan_service(self) -> LearningPlanService:
@@ -145,9 +172,24 @@ class SessionBootstrapService:
         *,
         user_id: int,
         session_id: Optional[str] = None,
+        runtime: str = "unknown",
+        stt_provider: Optional[str] = None,
     ) -> BootstrapContext:
         """Build the shared user/session context used by voice runtimes."""
         context = BootstrapContext(session_id=session_id or str(uuid.uuid4()))
+        scope = VoiceSessionScope(
+            runtime=runtime,
+            session_id=context.session_id,
+            user_id=user_id,
+            stt_provider=stt_provider,
+        )
+        build_start = time.perf_counter()
+        log_voice_event(
+            logger,
+            envelope=make_turn_envelope(scope),
+            layer="bootstrap",
+            event="session_bootstrap_started",
+        )
 
         try:
             user = await self._user_service.get_user(user_id)
@@ -183,10 +225,35 @@ class SessionBootstrapService:
             due_vocabulary = await self._vocabulary_service.get_due_cards(user_id, limit=10)
             context.due_vocabulary_count = len(due_vocabulary)
             context.due_vocabulary_words = [card.word for card in due_vocabulary]
-            context.memory_section = await self._memory_pipeline.format_memory_for_prompt(user_id)
+            context.learner_profile_summary = await self._learner_profile_service.build_summary(
+                user_id=user_id,
+                plan=learning_plan,
+            )
+            context.mission_memory_context = await self._learner_profile_service.build_mission_context(
+                user_id=user_id,
+                profile_summary=context.learner_profile_summary,
+                plan=learning_plan,
+            )
+            context.memory_section = context.mission_memory_context.to_prompt_section()
         except Exception as exc:
             logger.warning("[VoiceSession] Could not load learning context for %s: %s", user_id, exc)
             voice_errors_total.labels(stage="db").inc()
+
+        observe_voice_stage(
+            runtime=runtime,
+            stage="bootstrap",
+            duration_seconds=time.perf_counter() - build_start,
+        )
+        log_voice_event(
+            logger,
+            envelope=make_turn_envelope(scope),
+            layer="bootstrap",
+            event="session_bootstrap_ready",
+            is_new_user=context.is_new_user,
+            goal_present=bool(context.confirmed_goal),
+            due_vocabulary_count=context.due_vocabulary_count,
+            learner_profile_present=bool(context.learner_profile_summary),
+        )
 
         return context
 
@@ -203,8 +270,44 @@ class SessionBootstrapService:
         mission_reason: Optional[str] = None,
         mission_success_signal: Optional[str] = None,
         mission_linked_goal_context: Optional[str] = None,
+        runtime: str = "unknown",
+        stt_provider: Optional[str] = None,
     ) -> dict[str, Any]:
         """Initialize the agent state from the shared bootstrap context."""
+        context.mission_memory_context = await self._learner_profile_service.build_mission_context(
+            user_id=user_id,
+            mission_task_type=mission_task_type,
+            mission_title=mission_title,
+            mission_reason=mission_reason,
+            mission_success_signal=mission_success_signal,
+            mission_linked_goal_context=mission_linked_goal_context,
+            profile_summary=context.learner_profile_summary,
+        )
+        context.memory_section = context.mission_memory_context.to_prompt_section()
+        scope = VoiceSessionScope(
+            runtime=runtime,
+            session_id=context.session_id,
+            user_id=user_id,
+            mission_task_type=mission_task_type,
+            stt_provider=stt_provider,
+        )
+        log_voice_event(
+            logger,
+            envelope=make_turn_envelope(scope),
+            layer="memory",
+            event="memory_context_loaded",
+            learner_profile_present=bool(context.learner_profile_summary),
+            learner_profile_updated_at=(
+                context.learner_profile_summary.last_updated
+                if context.learner_profile_summary
+                else None
+            ),
+            mission_memory_count=len(context.mission_memory_context.relevant_memories)
+            if context.mission_memory_context
+            else 0,
+            due_vocabulary_count=context.due_vocabulary_count,
+        )
+
         if use_v2_agent:
             return await initialize_session_v2(
                 user_id=user_id,
@@ -218,6 +321,16 @@ class SessionBootstrapService:
                 due_vocabulary_count=context.due_vocabulary_count,
                 due_vocabulary_words=context.due_vocabulary_words,
                 memory_section=context.memory_section,
+                learner_profile_summary=(
+                    context.learner_profile_summary.to_dict()
+                    if context.learner_profile_summary
+                    else None
+                ),
+                mission_memory_context=(
+                    context.mission_memory_context.to_dict()
+                    if context.mission_memory_context
+                    else None
+                ),
                 explicit_mode=explicit_mode,
                 interview_track_id=interview_track_id,
                 mission_task_type=mission_task_type,
@@ -263,8 +376,36 @@ class SessionPersistenceService:
 
     async def persist(self, request: SessionPersistRequest) -> SessionCompletion:
         """Run the shared post-session pipeline once."""
+        scope = VoiceSessionScope(
+            runtime=request.runtime,
+            session_id=request.session_id,
+            user_id=request.user_id,
+            mission_task_type=request.agent_state.get("mission_task_type"),
+        )
+        envelope = make_turn_envelope(
+            scope,
+            phase=str(request.agent_state.get("current_phase") or ""),
+            mode=request.final_mode,
+        )
         if self._persistence_done:
+            log_voice_event(
+                logger,
+                envelope=envelope,
+                layer="persistence",
+                event="persistence_skipped_already_done",
+                status=request.status,
+            )
             return SessionCompletion(status=request.status, already_persisted=True)
+
+        persist_start = time.perf_counter()
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="persistence",
+            event="persistence_started",
+            status=request.status,
+            turn_count=request.turn_count,
+        )
 
         try:
             persisted_goal = await persist_goal_state_if_needed(
@@ -289,19 +430,27 @@ class SessionPersistenceService:
                 duration_minutes=request.turn_count * 2,
             )
 
+            saved_memories: list[Any] = []
+            memory_start = time.perf_counter()
             if request.conversation_history:
-                await self._memory_pipeline.process_conversation(
+                saved_memories = await self._memory_pipeline.process_conversation(
                     user_id=request.user_id,
                     messages=request.conversation_history,
                     session_id=request.session_id,
                 )
-
-            if request.turn_count > 0:
-                await award_session_gamification(
-                    self._db,
-                    request.user_id,
-                    request.session_id,
-                )
+            observe_voice_stage(
+                runtime=request.runtime,
+                stage="memory",
+                duration_seconds=time.perf_counter() - memory_start,
+            )
+            log_voice_event(
+                logger,
+                envelope=envelope,
+                layer="memory",
+                event="memory_saved",
+                saved_memory_count=len(saved_memories),
+                conversation_messages=len(request.conversation_history),
+            )
 
             interview_run = await persist_interview_run_if_needed(
                 db=self._db,
@@ -326,11 +475,48 @@ class SessionPersistenceService:
                 assessment_scores=request.assessment_scores or {},
                 interview_run=interview_run,
             )
+            if request.turn_count > 0:
+                await award_session_gamification(
+                    self._db,
+                    request.user_id,
+                    request.session_id,
+                )
         except Exception as exc:
             logger.warning("[VoiceSession] Persist failed (%s): %s", request.status, exc)
+            observe_voice_stage(
+                runtime=request.runtime,
+                stage="persist",
+                duration_seconds=time.perf_counter() - persist_start,
+            )
+            record_voice_persistence(runtime=request.runtime, status="error")
+            log_voice_event(
+                logger,
+                envelope=envelope,
+                layer="persistence",
+                event="persistence_failed",
+                level=logging.WARNING,
+                status=request.status,
+                error=str(exc),
+            )
             return SessionCompletion(status=request.status, error=str(exc))
 
         self._persistence_done = True
+        observe_voice_stage(
+            runtime=request.runtime,
+            stage="persist",
+            duration_seconds=time.perf_counter() - persist_start,
+        )
+        record_voice_persistence(runtime=request.runtime, status=request.status)
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="persistence",
+            event="persistence_completed",
+            status=request.status,
+            goal_persisted=bool(persisted_goal),
+            interview_run_persisted=bool(interview_run),
+            session_evidence_persisted=bool(session_evidence),
+        )
         return SessionCompletion(
             status=request.status,
             persisted_goal=persisted_goal,

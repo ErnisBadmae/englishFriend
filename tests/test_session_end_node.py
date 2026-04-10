@@ -46,4 +46,6 @@ async def test_session_end_empty_final_content_uses_simple_farewell():
 
     assert "Nice practice, Student!" in updated["pending_response"]
     assert updated["current_phase"] == AgentPhase.SESSION_END
+    assert updated["session_end_fallback_used"] is True
+    assert updated["session_end_fallback_reason"] == "empty_final_content"
     prompt_service.log_usage.assert_awaited_once()

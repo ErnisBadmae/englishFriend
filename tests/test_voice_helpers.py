@@ -149,6 +149,7 @@ async def test_award_session_gamification_handles_errors():
         await award_session_gamification(db, user_id, session_id)
         # If we get here, error was handled correctly
         assert True
+        db.rollback.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
