@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import math
+import inspect
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, text
 
 from app.models.core_tables import User
 from app.models.extended_tables import XPEvent
@@ -84,6 +85,32 @@ class XPService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _ensure_partition_for_timestamp(self, happened_at: datetime) -> None:
+        """Create the required monthly xp_events partition before insert."""
+        if not hasattr(self.db, "execute"):
+            return
+        month_start = happened_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if month_start.month == 12:
+            next_month = month_start.replace(year=month_start.year + 1, month=1)
+        else:
+            next_month = month_start.replace(month=month_start.month + 1)
+
+        partition_name = f"xp_events_{month_start.strftime('%Y_%m')}"
+        user_index_name = f"{partition_name}_user_idx"
+        start_date = month_start.date().isoformat()
+        end_date = next_month.date().isoformat()
+
+        await self.db.execute(text(
+            f"""
+            CREATE TABLE IF NOT EXISTS {partition_name}
+            PARTITION OF xp_events
+            FOR VALUES FROM ('{start_date}') TO ('{end_date}')
+            """
+        ))
+        await self.db.execute(text(
+            f"CREATE INDEX IF NOT EXISTS {user_index_name} ON {partition_name} (user_id, happened_at DESC)"
+        ))
+
     async def award_xp(
         self,
         user_id: int,
@@ -121,15 +148,19 @@ class XPService:
 
         # Создаём событие
         # Use naive datetime for TIMESTAMP WITHOUT TIME ZONE column
+        happened_at = datetime.utcnow()
+        await self._ensure_partition_for_timestamp(happened_at)
         event = XPEvent(
             user_id=user_id,
             session_id=session_id,
             kind=kind_str,
             points=points,
-            happened_at=datetime.utcnow(),
+            happened_at=happened_at,
         )
 
-        self.db.add(event)
+        add_result = self.db.add(event)
+        if inspect.isawaitable(add_result):
+            await add_result
 
         # Обновляем total_xp в users (денормализация для быстрых чтений)
         user = await self.db.get(User, user_id)
