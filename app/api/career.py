@@ -32,6 +32,20 @@ class PaidIntentInput(BaseModel):
     note: Optional[str] = None
 
 
+class ProjectNotesInput(BaseModel):
+    project_notes: str = Field(..., min_length=20)
+
+
+class ProjectNotesResponse(BaseModel):
+    accepted: bool
+    target_role: Optional[str] = None
+    problem_statement: Optional[str] = None
+    approach_summary: Optional[str] = None
+    metrics_and_impact: Optional[str] = None
+    english_example_answer: Optional[str] = None
+    weak_spots: list[str] = []
+
+
 class PaidIntentResponse(BaseModel):
     accepted: bool
     submitted_at: str
@@ -64,6 +78,26 @@ async def submit_vacancy(
         recommended_track=interview_pack.get("recommended_track"),
         key_terms=list(interview_pack.get("key_terms") or []),
         top_blockers=list(interview_pack.get("top_blockers") or []),
+    )
+
+
+@router.post("/{user_id}/project-notes", response_model=ProjectNotesResponse)
+async def submit_project_notes(
+    user_id: int,
+    payload: ProjectNotesInput,
+    db: AsyncSession = Depends(get_db),
+) -> ProjectNotesResponse:
+    service = LearningPlanService(db)
+    plan = await service.set_project_notes(user_id, payload.project_notes)
+    project_story_pack = service.get_project_story_pack(plan) or {}
+    return ProjectNotesResponse(
+        accepted=True,
+        target_role=project_story_pack.get("target_role"),
+        problem_statement=project_story_pack.get("problem_statement"),
+        approach_summary=project_story_pack.get("approach_summary"),
+        metrics_and_impact=project_story_pack.get("metrics_and_impact"),
+        english_example_answer=project_story_pack.get("english_example_answer"),
+        weak_spots=list(project_story_pack.get("weak_spots") or []),
     )
 
 

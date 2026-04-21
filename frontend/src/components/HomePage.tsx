@@ -8,6 +8,7 @@ interface HomePageProps {
   onOpenProgress: () => void;
   onRefresh: () => void;
   onSubmitVacancy: (vacancyText: string) => Promise<void>;
+  onSubmitProjectNotes: (projectNotes: string) => Promise<void>;
   onSubmitPaidIntent: () => Promise<void>;
 }
 
@@ -17,10 +18,13 @@ export function HomePage({
   onOpenProgress,
   onRefresh,
   onSubmitVacancy,
+  onSubmitProjectNotes,
   onSubmitPaidIntent,
 }: HomePageProps) {
   const [vacancyText, setVacancyText] = useState('');
+  const [projectNotes, setProjectNotes] = useState('');
   const [isSubmittingVacancy, setIsSubmittingVacancy] = useState(false);
+  const [isSubmittingProjectNotes, setIsSubmittingProjectNotes] = useState(false);
   const [isSubmittingPaidIntent, setIsSubmittingPaidIntent] = useState(false);
   const goalBrief = snapshot.goal.brief;
   const goalStatus = goalBrief?.status || null;
@@ -58,6 +62,8 @@ export function HomePage({
   const showVacancyCard = readyForProgram;
   const careerContext = snapshot.career_context;
   const interviewPack = snapshot.interview_pack;
+  const projectStoryPack = snapshot.project_story_pack;
+  const showProjectStoryCard = readyForProgram && Boolean(interviewPack);
   const showPaidCta = snapshot.monetization.show_paid_cta || snapshot.monetization.paid_intent_submitted;
 
   async function handleVacancySubmit() {
@@ -80,6 +86,20 @@ export function HomePage({
       await onSubmitPaidIntent();
     } finally {
       setIsSubmittingPaidIntent(false);
+    }
+  }
+
+  async function handleProjectNotesSubmit() {
+    const trimmed = projectNotes.trim();
+    if (!trimmed) {
+      return;
+    }
+    setIsSubmittingProjectNotes(true);
+    try {
+      await onSubmitProjectNotes(trimmed);
+      setProjectNotes('');
+    } finally {
+      setIsSubmittingProjectNotes(false);
     }
   }
 
@@ -182,6 +202,9 @@ export function HomePage({
       <section className="mission-card">
         <div className="section-label">{missionLabel}</div>
         <h2>{snapshot.mission.title}</h2>
+        {snapshot.mission.adaptation_reason && (
+          <p className="muted-line">{snapshot.mission.adaptation_reason}</p>
+        )}
         <p>{snapshot.mission.reason}</p>
         {snapshot.mission.why_now && <p className="muted-line">{snapshot.mission.why_now}</p>}
         <div className="pill-row">
@@ -192,6 +215,9 @@ export function HomePage({
             <span className="pill">{snapshot.mission.linked_goal_context.replace(/_/g, ' ')}</span>
           )}
           {snapshot.mission.from_interview && <span className="pill interview-source-pill">from last interview</span>}
+          {snapshot.mission.repeat_vs_advance && snapshot.mission.repeat_vs_advance !== 'new' && (
+            <span className="pill interview-source-pill">{snapshot.mission.repeat_vs_advance}</span>
+          )}
         </div>
         <div className="list-stack mission-detail-stack">
           <div className="list-item">
@@ -265,6 +291,63 @@ export function HomePage({
               </div>
             </div>
           </div>
+        </section>
+      )}
+
+      {showProjectStoryCard && (
+        <section className="content-card">
+          <div className="section-label">Project story pack</div>
+          <h2>{projectStoryPack ? 'Project story pack updated' : 'Add one project story'}</h2>
+          <p>
+            {projectStoryPack?.problem_statement
+              || 'Paste rough notes about one project. The coach will turn them into an interview-ready story with problem, decision, metric, and weak spots.'}
+          </p>
+          <textarea
+            className="text-area-input"
+            rows={5}
+            placeholder="Describe one project: problem, your contribution, technical choices, metrics, trade-offs, impact."
+            value={projectNotes}
+            onChange={(event) => setProjectNotes(event.target.value)}
+          />
+          <div className="hero-actions">
+            <button
+              className="primary-action"
+              onClick={() => void handleProjectNotesSubmit()}
+              disabled={isSubmittingProjectNotes || !projectNotes.trim()}
+            >
+              {isSubmittingProjectNotes ? 'Saving project story...' : 'Build project story pack'}
+            </button>
+          </div>
+          {projectStoryPack && (
+            <div className="list-stack mission-detail-stack" style={{ marginTop: 14 }}>
+              <div className="list-item">
+                <strong>Problem</strong>
+                <p className="muted-line">{projectStoryPack.problem_statement}</p>
+              </div>
+              <div className="list-item">
+                <strong>Approach</strong>
+                <p className="muted-line">{projectStoryPack.approach_summary}</p>
+              </div>
+              <div className="list-item">
+                <strong>Impact</strong>
+                <p className="muted-line">{projectStoryPack.metrics_and_impact}</p>
+              </div>
+              <div className="list-item">
+                <strong>Example answer</strong>
+                <p className="muted-line">{projectStoryPack.english_example_answer}</p>
+              </div>
+              {projectStoryPack.weak_spots.length > 0 && (
+                <div className="list-item">
+                  <strong>Weak spots</strong>
+                  <div className="pill-row" style={{ marginTop: 10 }}>
+                    {projectStoryPack.weak_spots.map((item) => (
+                      <span key={item} className="pill">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
 

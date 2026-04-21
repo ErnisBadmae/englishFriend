@@ -12,6 +12,7 @@ import {
   getProgramSnapshot,
   resolveOrCreateUser,
   submitPaidIntent,
+  submitProjectNotes,
   submitVacancy,
   type InterviewRun,
   type InterviewTrack,
@@ -34,12 +35,15 @@ interface SessionConfig {
   wsUrl: string;
   mode?: string;
   interviewTrackId?: string;
+  sttProvider?: string;
   title?: string;
   subtitle?: string;
   reviewBeforeSend?: boolean;
   mission?: MissionSummary;
   returnScreen: Screen;
 }
+
+const DEFAULT_STT_PROVIDER = import.meta.env.VITE_STT_PROVIDER || 'browser_vosk';
 
 function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
   if (!mission) {
@@ -65,6 +69,7 @@ function buildMissionSessionConfig(
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
     mode,
     interviewTrackId: mission.interview_track_id ?? undefined,
+    sttProvider: DEFAULT_STT_PROVIDER,
     title: mission.title,
     subtitle: mission.reason,
     reviewBeforeSend: shouldForceGuidedReview(mission),
@@ -97,6 +102,7 @@ function App() {
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>({
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
+    sttProvider: DEFAULT_STT_PROVIDER,
     reviewBeforeSend: false,
     returnScreen: 'progress'
   });
@@ -288,6 +294,7 @@ function App() {
       wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
       mode: 'mock_interview',
       interviewTrackId: track.id,
+      sttProvider: DEFAULT_STT_PROVIDER,
       title: track.title,
       subtitle: track.subtitle,
       reviewBeforeSend: false,
@@ -402,6 +409,20 @@ function App() {
                     );
                   }
                 }}
+                onSubmitProjectNotes={async (projectNotes) => {
+                  if (!userId) return;
+                  try {
+                    setError(null);
+                    await submitProjectNotes(userId, { project_notes: projectNotes });
+                    await refreshSnapshot();
+                  } catch (err) {
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Failed to save project notes'
+                    );
+                  }
+                }}
                 onSubmitPaidIntent={async () => {
                   if (!userId) return;
                   try {
@@ -424,6 +445,7 @@ function App() {
                 wsUrl={sessionConfig.wsUrl}
                 mode={sessionConfig.mode}
                 interviewTrackId={sessionConfig.interviewTrackId}
+                sttProvider={sessionConfig.sttProvider}
                 mission={sessionConfig.mission}
                 title={sessionConfig.title}
                 subtitle={sessionConfig.subtitle}
