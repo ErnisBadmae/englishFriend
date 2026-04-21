@@ -23,6 +23,7 @@ from app.services.ai.embedding_service import (
 )
 from app.services.ai.memory_extraction_service import (
     MemoryExtractionService,
+    MemoryExtractionSoftFailure,
     get_memory_extraction_service,
 )
 from app.services.ai.qdrant_service import QdrantService, get_qdrant_service
@@ -39,6 +40,15 @@ class MemoryContext:
     goals: list[str]
     error_patterns: list[str]
     relevant_memories: list[str]
+
+
+@dataclass
+class MemoryProcessingOutcome:
+    saved_memories: list[Memory]
+    status: str
+    reason: Optional[str] = None
+    error_type: Optional[str] = None
+    error: Optional[str] = None
 
 
 class MemoryPipeline:
@@ -63,8 +73,30 @@ class MemoryPipeline:
         session_id: Optional[str] = None,
     ) -> list[Memory]:
         """Обработать диалог и сохранить извлечённые воспоминания."""
+        outcome = await self.process_conversation_with_outcome(
+            user_id=user_id,
+            messages=messages,
+            session_id=session_id,
+        )
+        if outcome.status == "soft_failed":
+            logger.info(
+                "Skipped memory extraction for user %s due to transient provider failure: %s",
+                user_id,
+                outcome.reason,
+            )
+        elif outcome.status == "failed":
+            logger.error("Failed to process conversation for user %s: %s", user_id, outcome.error)
+        return outcome.saved_memories
+
+    async def process_conversation_with_outcome(
+        self,
+        user_id: int,
+        messages: list[dict],
+        session_id: Optional[str] = None,
+    ) -> MemoryProcessingOutcome:
+        """Process conversation and report whether extraction saved, no-oped, soft-failed, or failed."""
         if not messages:
-            return []
+            return MemoryProcessingOutcome(saved_memories=[], status="noop", reason="no_messages")
 
         try:
             existing = await self._get_existing_memories(user_id)
@@ -74,7 +106,7 @@ class MemoryPipeline:
             )
             if not extracted:
                 logger.debug("No new memories extracted for user %s", user_id)
-                return []
+                return MemoryProcessingOutcome(saved_memories=[], status="noop", reason="no_new_memories")
 
             consolidation = consolidate_memory_candidates(
                 candidates=[
@@ -102,7 +134,7 @@ class MemoryPipeline:
                 )
             if not consolidation.accepted_candidates:
                 logger.debug("All extracted memories were dropped during consolidation for user %s", user_id)
-                return []
+                return MemoryProcessingOutcome(saved_memories=[], status="noop", reason="all_candidates_dropped")
 
             contents = [memory.content for memory in consolidation.accepted_candidates]
             embeddings: list[list[float]] | None = None
@@ -129,10 +161,27 @@ class MemoryPipeline:
                     created_memories.append(memory)
 
             logger.info("Saved %s new memories for user %s", len(created_memories), user_id)
-            return created_memories
+            return MemoryProcessingOutcome(
+                saved_memories=created_memories,
+                status="saved" if created_memories else "noop",
+                reason=None if created_memories else "memory_save_noop",
+            )
+        except MemoryExtractionSoftFailure as exc:
+            return MemoryProcessingOutcome(
+                saved_memories=[],
+                status="soft_failed",
+                reason=exc.reason,
+                error_type=type(exc.original_exception).__name__,
+                error=str(exc.original_exception),
+            )
         except Exception as exc:
-            logger.error("Failed to process conversation for user %s: %s", user_id, exc)
-            return []
+            return MemoryProcessingOutcome(
+                saved_memories=[],
+                status="failed",
+                reason="unexpected_exception",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     async def get_relevant_context(
         self,

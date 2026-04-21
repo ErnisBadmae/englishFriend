@@ -15,10 +15,23 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
+from app.services.ai.llm_provider import (
+    LLMEmptyContentError,
+    RETRYABLE_EXCEPTIONS,
+    get_llm_provider,
+)
 from app.models.enums_and_dimensions import MemoryKind
 
 logger = logging.getLogger(__name__)
+
+
+class MemoryExtractionSoftFailure(RuntimeError):
+    """Transient, expected extraction failure that should not look fatal."""
+
+    def __init__(self, *, reason: str, original_exception: Exception):
+        self.reason = reason
+        self.original_exception = original_exception
+        super().__init__(f"{reason}: {original_exception}")
 
 
 @dataclass
@@ -100,6 +113,26 @@ class MemoryExtractionService:
         self._llm = get_llm_provider(llm_provider)
         logger.info(f"MemoryExtractionService initialized")
 
+    def _classify_transient_failure(self, exc: Exception) -> Optional[str]:
+        if isinstance(exc, (MemoryExtractionSoftFailure, *RETRYABLE_EXCEPTIONS, ConnectionError, TimeoutError, OSError)):
+            return "provider_connection_error"
+
+        message = f"{type(exc).__name__}: {exc}".lower()
+        needles = (
+            "connection error",
+            "connect error",
+            "connection aborted",
+            "connection reset",
+            "server disconnected",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "remote protocol error",
+        )
+        if any(needle in message for needle in needles):
+            return "provider_connection_error"
+        return None
+
     async def extract_from_conversation(
         self,
         messages: list[dict],
@@ -144,8 +177,10 @@ class MemoryExtractionService:
             logger.warning(f"Memory extraction returned no final content: {e}")
             return []
         except Exception as e:
-            logger.error(f"Failed to extract memories: {e}")
-            return []
+            reason = self._classify_transient_failure(e)
+            if reason:
+                raise MemoryExtractionSoftFailure(reason=reason, original_exception=e) from e
+            raise
 
     async def extract_error_patterns(
         self,
@@ -201,8 +236,10 @@ Return only significant patterns, not one-time typos. Return empty [] if no patt
             logger.warning(f"Error pattern extraction returned no final content: {e}")
             return []
         except Exception as e:
-            logger.error(f"Failed to extract error patterns: {e}")
-            return []
+            reason = self._classify_transient_failure(e)
+            if reason:
+                raise MemoryExtractionSoftFailure(reason=reason, original_exception=e) from e
+            raise
 
     def _format_conversation(self, messages: list[dict]) -> str:
         """Форматировать диалог для промпта."""
