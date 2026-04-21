@@ -251,6 +251,60 @@ _FUTURE_ROLE_PATTERNS = (
 _ASSESSMENT_AFFIRMATION_PREFIX_RE = re.compile(r"^(yes|yeah|yep|ok|okay|sure)\b[\s,:.-]*")
 
 
+def _is_transient_llm_connection_error(exc: Exception) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    message = f"{type(exc).__name__}: {exc}".lower()
+    needles = (
+        "connection error",
+        "connect error",
+        "connection aborted",
+        "connection reset",
+        "server disconnected",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "remote protocol error",
+    )
+    return any(needle in message for needle in needles)
+
+
+def _should_retry_first_turn_llm(state: AgentState) -> bool:
+    return (
+        int(state.get("turn_count", 0) or 0) == 1
+        and state.get("last_question_type") == "goal_setup"
+        and not state.get("goal_setup_complete")
+    )
+
+
+async def _generate_onboarding_llm_response(
+    *,
+    llm,
+    user_message: str,
+    system_prompt: str,
+    state: AgentState,
+    max_tokens: int,
+) -> str:
+    retry_allowed = _should_retry_first_turn_llm(state)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return await llm.generate(
+                user_message=user_message,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            if retry_allowed and attempt == 1 and _is_transient_llm_connection_error(exc):
+                logger.warning(
+                    "[Onboarding] First-turn LLM connection glitch, retrying once: %s",
+                    exc,
+                )
+                continue
+            raise
+
+
 async def onboarding_node(state: AgentState) -> AgentState:
     """Unified onboarding: goal discovery + interests + assessment."""
     pedagogy = get_pedagogy_logger(state["user_id"])
@@ -291,7 +345,9 @@ async def onboarding_node(state: AgentState) -> AgentState:
 
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
     goal_became_routing_ready_this_turn = False
-    inferred_goal_brief = _infer_goal_brief_from_message(user_message, state.get("goal_brief") or {})
+    inferred_goal_brief = _filter_goal_brief_update_for_turn(
+        state, _infer_goal_brief_from_message(user_message, state.get("goal_brief") or {})
+    )
     if inferred_goal_brief:
         normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
         state["goal_brief"] = normalized_goal_brief
@@ -332,9 +388,11 @@ async def onboarding_node(state: AgentState) -> AgentState:
 
     start_time = time.time()
     try:
-        response = await llm.generate(
+        response = await _generate_onboarding_llm_response(
+            llm=llm,
             user_message=user_message,
             system_prompt=rendered_prompt,
+            state=state,
             max_tokens=500,
         )
         latency_ms = int((time.time() - start_time) * 1000)
@@ -349,7 +407,22 @@ async def onboarding_node(state: AgentState) -> AgentState:
         return state
     except Exception as exc:
         logger.error("[Onboarding] LLM error: %s", exc)
-        state["pending_response"] = "I'm having trouble right now. Could you repeat that?"
+        if inferred_goal_brief or (
+            _should_retry_first_turn_llm(state) and _is_transient_llm_connection_error(exc)
+        ):
+            normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+            state["goal_brief"] = normalized_goal_brief
+            state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
+            if state["goal_setup_complete"] and not state.get("assessed_level") and not state.get("_skip_assessment", False):
+                _enter_assessment_phase(state)
+                state["pending_response"] = _build_assessment_followup_question(state)
+            else:
+                state["pending_response"] = _build_goal_followup_question(
+                    normalized_goal_brief,
+                    normalized_goal_brief.get("primary_goal") or state.get("last_user_message"),
+                )
+        else:
+            state["pending_response"] = "I'm having trouble right now. Could you repeat that?"
         state["needs_user_input"] = True
         return state
 
@@ -417,9 +490,12 @@ async def _apply_onboarding_action(
     response_text = action.get("response_text", "")
     goal_brief = extract_goal_brief_from_action(action)
     goal_value = extract_goal_from_action(action)
-    inferred_goal_brief = _infer_goal_brief_from_message(
-        state.get("last_user_message", ""),
-        state.get("goal_brief") or {},
+    inferred_goal_brief = _filter_goal_brief_update_for_turn(
+        state,
+        _infer_goal_brief_from_message(
+            state.get("last_user_message", ""),
+            state.get("goal_brief") or {},
+        ),
     )
     merged_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, goal_brief, inferred_goal_brief)
     if not goal_value:
@@ -613,6 +689,12 @@ def _build_goal_followup_question(goal_brief: dict[str, Any], goal_text: Optiona
 
     first_missing = missing[0]
     if first_missing == "goal":
+        contexts = ", ".join(item.replace("_", " ") for item in (normalized.get("main_contexts") or [])[:2])
+        if contexts:
+            return (
+                f"I already heard a direction around {contexts}. "
+                "Which role is closest right now: ML engineer, data scientist, or applied scientist?"
+            )
         return (
             "What is closest right now: getting an ML job abroad, speaking better in an international team, "
             "or passing interviews in English?"
@@ -767,9 +849,48 @@ def _enter_assessment_phase(state: AgentState) -> None:
     state["current_phase"] = AgentPhase.ASSESSMENT
 
 
+def _get_active_assessment_key(state: AgentState) -> Optional[str]:
+    if not state.get("goal_setup_complete"):
+        return None
+    if state.get("assessed_level") or state.get("_skip_assessment", False):
+        return None
+    current_phase = state.get("current_phase")
+    current_mode = state.get("current_mode")
+    if current_phase not in {None, AgentPhase.ASSESSMENT, AgentPhase.ONBOARDING}:
+        return None
+    if current_mode not in {None, LearningModeEnum.ASSESSMENT}:
+        return None
+    return _get_current_baseline_prompt(state)[0]
+
+
 def _get_current_baseline_prompt(state: AgentState) -> tuple[str, str]:
     index = min(state.get("assessment_step_index", 0), len(_BASELINE_PROMPTS) - 1)
     return _BASELINE_PROMPTS[index]
+
+
+def _filter_goal_brief_update_for_turn(
+    state: AgentState,
+    inferred_goal_brief: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    if not inferred_goal_brief:
+        return None
+
+    assessment_key = _get_active_assessment_key(state)
+    if not assessment_key:
+        return inferred_goal_brief
+
+    if assessment_key != "target_role":
+        return None
+
+    target_role = str(inferred_goal_brief.get("target_role") or "").strip()
+    if not target_role:
+        return None
+
+    existing_target_role = str((state.get("goal_brief") or {}).get("target_role") or "").strip()
+    if existing_target_role and existing_target_role.lower() == target_role.lower():
+        return None
+
+    return {"target_role": target_role}
 
 
 def _is_meta_progress_message(message: str) -> bool:
@@ -1070,6 +1191,43 @@ def _has_any_signal(message: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in message for pattern in patterns)
 
 
+def _count_signal_hits(message: str, patterns: tuple[str, ...]) -> int:
+    return sum(1 for pattern in patterns if pattern in message)
+
+
+def _order_main_contexts(
+    contexts: list[str],
+    *,
+    normalized_message: str,
+) -> list[str]:
+    unique_contexts = _dedupe_text(contexts)
+    if not unique_contexts:
+        return []
+
+    existing_order = {value: index for index, value in enumerate(unique_contexts)}
+    signal_scores = {
+        "interviews": _count_signal_hits(normalized_message, _INTERVIEW_SIGNAL_PATTERNS),
+        "project_walkthrough": _count_signal_hits(normalized_message, _PROJECT_SIGNAL_PATTERNS),
+        "workplace_communication": _count_signal_hits(normalized_message, _WORKPLACE_SIGNAL_PATTERNS),
+    }
+    if signal_scores["workplace_communication"] > 0:
+        signal_scores["workplace_communication"] += 3
+    prior_scores = {
+        value: max(0, len(unique_contexts) - index)
+        for value, index in existing_order.items()
+    }
+
+    return sorted(
+        unique_contexts,
+        key=lambda value: (
+            signal_scores.get(value, 0),
+            prior_scores.get(value, 0),
+            -existing_order.get(value, 999),
+        ),
+        reverse=True,
+    )
+
+
 def _dedupe_text(items: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -1129,7 +1287,10 @@ def _infer_goal_brief_from_message(
         return None
 
     if contexts:
-        inferred["main_contexts"] = _dedupe_text(contexts)
+        inferred["main_contexts"] = _order_main_contexts(
+            contexts,
+            normalized_message=normalized_message,
+        )
     elif inferred.get("domain") == "machine_learning":
         inferred["main_contexts"] = ["interviews", "project_walkthrough", "workplace_communication"]
 
