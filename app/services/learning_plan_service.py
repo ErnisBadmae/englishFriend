@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.data.interview_tracks import recommend_interview_track
 from app.models.enums_and_dimensions import CEFRLevel
 from app.models.extended_tables import LearningPlan
 
@@ -920,11 +921,11 @@ class LearningPlanService:
         vacancy_analysis = vacancy_analysis or {}
         contexts = goal_brief.get("main_contexts") or []
         target_role = goal_brief.get("target_role") or (career_context or {}).get("target_role") or "your target role"
-        recommended_track = "hr_intro"
-        if "project_walkthrough" in contexts or goal_brief.get("domain") == "machine_learning":
-            recommended_track = "project_walkthrough"
-        elif "workplace_communication" in contexts:
-            recommended_track = "workplace_communication"
+        recommended_track = recommend_interview_track(
+            goal_brief.get("primary_goal"),
+            interview_runs,
+            main_contexts=contexts,
+        )["id"]
 
         profile_gaps = list((proficiency_profile or {}).get("critical_gaps") or [])
         latest_run = interview_runs[-1] if interview_runs else None

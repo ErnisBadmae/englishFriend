@@ -93,6 +93,105 @@ _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+_TECHNICAL_FOCUS_MISSIONS: tuple[dict[str, Any], ...] = (
+    {
+        "patterns": ("trade-off", "tradeoffs", "tradeoffs", "trade off", "trade offs"),
+        "mission": {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Defend one trade-off decision",
+            "reason": "You need a cleaner way to justify technical trade-offs under pressure.",
+            "why_now": "Trade-off explanations are one of the fastest ways to sound more senior in ML interviews.",
+            "linked_goal_context": "project_walkthrough",
+            "linked_skill_gap": "tradeoff_explanation",
+            "task_type": "tradeoff_explanation_drill",
+            "expected_outcome": "One stronger explanation of why you chose one approach over another.",
+            "estimated_minutes": 9,
+            "success_signal": "You can compare two options and defend the choice with one clear reason.",
+        },
+    },
+    {
+        "patterns": ("metric", "metrics", "roc", "auc", "precision", "recall", "f1"),
+        "mission": {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Explain one metric clearly",
+            "reason": "You need to explain why a metric matters, not just name it.",
+            "why_now": "Metric explanations are a common weak point in ML interviews and project walkthroughs.",
+            "linked_goal_context": "project_walkthrough",
+            "linked_skill_gap": "metrics_explanation",
+            "task_type": "metrics_explainer",
+            "expected_outcome": "One clearer metric explanation in simple interview English.",
+            "estimated_minutes": 8,
+            "success_signal": "You can explain what the metric measures and why you chose it.",
+        },
+    },
+    {
+        "patterns": ("model choice", "choose the model", "model selection", "models", "production decision"),
+        "mission": {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Explain one model choice",
+            "reason": "You need to explain why you chose one model instead of another.",
+            "why_now": "Model-choice explanations connect technical judgment to business impact in interviews.",
+            "linked_goal_context": "project_walkthrough",
+            "linked_skill_gap": "model_choice",
+            "task_type": "model_choice_drill",
+            "expected_outcome": "One cleaner explanation of a model decision in interview English.",
+            "estimated_minutes": 9,
+            "success_signal": "You can explain the baseline, the chosen model, and one reason it fit the task better.",
+        },
+    },
+    {
+        "patterns": ("stakeholder", "non-technical", "business impact", "business", "explain to"),
+        "mission": {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Explain the project to a stakeholder",
+            "reason": "You need a version of your project story that a non-technical stakeholder can follow.",
+            "why_now": "This strengthens both interview communication and real workplace clarity.",
+            "linked_goal_context": "workplace_communication",
+            "linked_skill_gap": "stakeholder_clarity",
+            "task_type": "stakeholder_explanation_drill",
+            "expected_outcome": "One simpler explanation of a technical project for a non-technical listener.",
+            "estimated_minutes": 8,
+            "success_signal": "You can explain the problem, outcome, and business value without drifting into jargon.",
+        },
+    },
+    {
+        "patterns": ("failure", "didn't perform", "did not perform", "debug", "debugging", "issue", "incident"),
+        "mission": {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Explain one failure and recovery",
+            "reason": "You need a stronger answer for when a model or system did not work as expected.",
+            "why_now": "Failure analysis is a high-signal interview skill for ML and production roles.",
+            "linked_goal_context": "interviews",
+            "linked_skill_gap": "failure_debugging",
+            "task_type": "failure_debugging_drill",
+            "expected_outcome": "One clearer explanation of the failure, diagnosis, and recovery.",
+            "estimated_minutes": 9,
+            "success_signal": "You can explain what broke, how you found it, and what changed after the fix.",
+        },
+    },
+    {
+        "patterns": ("project", "architecture", "impact", "walkthrough"),
+        "mission": {
+            "mode": "free_conversation",
+            "launch_mode": "free_conversation",
+            "title": "Walk through one technical project",
+            "reason": "You need one project explanation that is structured, concrete, and easy to follow.",
+            "why_now": "Project walkthroughs are reusable across interviews, recruiters, and workplace conversations.",
+            "linked_goal_context": "project_walkthrough",
+            "linked_skill_gap": "technical_clarity",
+            "task_type": "technical_project_walkthrough",
+            "expected_outcome": "One clearer project walkthrough with problem, approach, metric, and impact.",
+            "estimated_minutes": 10,
+            "success_signal": "You can explain one project in one clean flow without losing the listener.",
+        },
+    },
+)
+
 
 def _mission_payload(
     *,
@@ -125,6 +224,41 @@ def _mission_payload(
         "estimated_minutes": estimated_minutes,
         "success_signal": success_signal,
     }
+
+
+def _pick_technical_focus_mission(
+    goal_brief: Optional[dict[str, Any]],
+    program_plan: Optional[dict[str, Any]],
+    interview_pack: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    if not goal_brief or goal_brief.get("domain") != "machine_learning":
+        return None
+
+    current_stage = (program_plan or {}).get("current_stage")
+    if current_stage not in {"foundation", "career_scenarios"}:
+        return None
+    if current_stage == "career_scenarios" and interview_pack and interview_pack.get("recommended_track"):
+        return None
+    primary_context = str(((goal_brief or {}).get("main_contexts") or [None])[0] or "").strip().lower()
+
+    weekly_focus = (program_plan or {}).get("weekly_focus") or []
+    text_parts = [str(item) for item in weekly_focus]
+    if interview_pack:
+        text_parts.append(str(interview_pack.get("summary") or ""))
+        text_parts.extend(str(item) for item in (interview_pack.get("top_blockers") or []))
+        text_parts.extend(str(item) for item in (interview_pack.get("must_answer_questions") or []))
+        text_parts.extend(str(item) for item in (interview_pack.get("project_story_prompts") or []))
+    focus_text = " ".join(text_parts).lower()
+
+    if primary_context == "workplace_communication":
+        if any(pattern in focus_text for pattern in ("failure", "didn't perform", "did not perform", "debug", "issue", "incident")):
+            return dict(next(item["mission"] for item in _TECHNICAL_FOCUS_MISSIONS if item["mission"]["task_type"] == "failure_debugging_drill"))
+        return dict(next(item["mission"] for item in _TECHNICAL_FOCUS_MISSIONS if item["mission"]["task_type"] == "stakeholder_explanation_drill"))
+
+    for candidate in _TECHNICAL_FOCUS_MISSIONS:
+        if any(pattern in focus_text for pattern in candidate["patterns"]):
+            return dict(candidate["mission"])
+    return None
 
 
 def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -264,6 +398,115 @@ def build_improvement_signals(
     return signals[:4]
 
 
+def _track_goal_context(track_id: str) -> str:
+    return {
+        "hr_intro": "interviews",
+        "project_walkthrough": "project_walkthrough",
+        "workplace_communication": "workplace_communication",
+    }.get(track_id, "interviews")
+
+
+def _track_task_type(track_id: str) -> str:
+    return {
+        "hr_intro": "hr_intro_drill",
+        "project_walkthrough": "project_walkthrough_drill",
+        "workplace_communication": "stakeholder_explanation_drill",
+    }.get(track_id, "career_mission")
+
+
+def _track_success_signal(track_id: str) -> str:
+    if track_id == "project_walkthrough":
+        return "You can explain one project with problem, trade-offs, metric, and impact."
+    if track_id == "workplace_communication":
+        return "You can explain the project in simple business language for a stakeholder."
+    return "You finish with one answer strong enough to reuse in a real interview."
+
+
+def _apply_track_to_mission(mission: dict[str, Any], track_id: str, track_title: str, reason: str) -> dict[str, Any]:
+    updated = dict(mission)
+    updated["title"] = f"Run {track_title}"
+    updated["reason"] = reason
+    updated["interview_track_id"] = track_id
+    updated["task_type"] = _track_task_type(track_id)
+    updated["linked_goal_context"] = _track_goal_context(track_id)
+    updated["success_signal"] = _track_success_signal(track_id)
+    return updated
+
+
+def _is_entry_main_loop_mission(
+    *,
+    current_stage: Optional[str],
+    interview_runs_count: int,
+    session_evidence: list[dict[str, Any]] | None,
+) -> bool:
+    if current_stage not in {"foundation", "career_scenarios", "target_role_simulation"}:
+        return False
+    if interview_runs_count > 0:
+        return False
+
+    evidence_items = [
+        item for item in (session_evidence or [])
+        if isinstance(item, dict)
+    ]
+    return not any(
+        str(item.get("mission_type") or "").strip() not in {"assessment", "guided_setup"}
+        for item in evidence_items
+    )
+
+
+def _build_entry_main_loop_mission(
+    goal_brief: dict[str, Any],
+    program_plan: Optional[dict[str, Any]],
+    error_patterns: list[dict[str, Any]],
+) -> dict[str, Any]:
+    weekly_focus = (program_plan or {}).get("weekly_focus") or []
+    primary_context = str(((goal_brief.get("main_contexts") or [None])[0] or "")).strip().lower()
+
+    if primary_context == "workplace_communication":
+        return _mission_payload(
+            mode="free_conversation",
+            launch_mode="free_conversation",
+            title="Explain the project to a stakeholder",
+            reason=weekly_focus[0] if weekly_focus else "Start with the workplace scenario that matters most right now.",
+            why_now="Your first main-loop mission should match the workplace context you prioritized in onboarding.",
+            linked_goal_context="workplace_communication",
+            linked_skill_gap="stakeholder_clarity",
+            task_type="stakeholder_explanation_drill",
+            expected_outcome="One clear stakeholder-friendly explanation of your work.",
+            estimated_minutes=8,
+            success_signal="You can explain the project in simple business language for a stakeholder.",
+        )
+
+    if primary_context == "project_walkthrough":
+        return _mission_payload(
+            mode="free_conversation",
+            launch_mode="free_conversation",
+            title="Walk through one technical project",
+            reason=weekly_focus[0] if weekly_focus else "Start with the project story that best proves your technical value.",
+            why_now="Your first main-loop mission should match the project walkthrough context you prioritized in onboarding.",
+            linked_goal_context="project_walkthrough",
+            linked_skill_gap="technical_clarity",
+            task_type="technical_project_walkthrough",
+            expected_outcome="One clear project walkthrough with problem, approach, metric, and impact.",
+            estimated_minutes=10,
+            success_signal="You can explain one project in one clean flow without losing the listener.",
+        )
+
+    return _mission_payload(
+        mode="free_conversation",
+        launch_mode="free_conversation",
+        title="Run an interview-aligned foundation speaking drill",
+        reason=weekly_focus[0] if weekly_focus else "Start with a lower-pressure answer about your background and fit.",
+        why_now="Your first main-loop mission should stay low-pressure while building toward interview speaking.",
+        linked_goal_context="interviews",
+        linked_skill_gap="grammar_accuracy" if error_patterns else "fluency",
+        task_type="foundation_speaking_drill",
+        expected_outcome="One cleaner interview-aligned answer about your background, fit, or motivation.",
+        estimated_minutes=9,
+        success_signal="You can answer a simple interview question in English with fewer corrections and clearer delivery.",
+    )
+
+
 def recommend_next_mission(
     goal_brief: Optional[dict[str, Any]],
     program_plan: Optional[dict[str, Any]],
@@ -272,6 +515,8 @@ def recommend_next_mission(
     has_assessment: bool,
     weakest_interview_area: Optional[str] = None,
     interview_pack: Optional[dict[str, Any]] = None,
+    session_evidence: list[dict[str, Any]] | None = None,
+    interview_runs_count: int = 0,
 ) -> dict[str, Any]:
     if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
         missing = []
@@ -322,6 +567,25 @@ def recommend_next_mission(
         return dict(_WEAKEST_AREA_MISSIONS[weakest_interview_area])
 
     current_stage = (program_plan or {}).get("current_stage")
+    if _is_entry_main_loop_mission(
+        current_stage=current_stage,
+        interview_runs_count=interview_runs_count,
+        session_evidence=session_evidence,
+    ):
+        return _build_entry_main_loop_mission(
+            goal_brief=goal_brief,
+            program_plan=program_plan,
+            error_patterns=error_patterns,
+        )
+
+    technical_focus_mission = _pick_technical_focus_mission(
+        goal_brief=goal_brief,
+        program_plan=program_plan,
+        interview_pack=interview_pack,
+    )
+    if technical_focus_mission:
+        return _mission_payload(**technical_focus_mission)
+
     weekly_focus = (program_plan or {}).get("weekly_focus") or []
     if (
         interview_pack
@@ -337,36 +601,22 @@ def recommend_next_mission(
             or (weekly_focus[0] if weekly_focus else "Practice the most likely interview theme for your target role.")
         )
         why_now = "This is the most interview-relevant speaking drill for your current target role and vacancy context."
-        linked_goal_context = {
-            "hr_intro": "interviews",
-            "project_walkthrough": "project_walkthrough",
-            "workplace_communication": "workplace_communication",
-        }.get(track_id, "interviews")
-        success_signal = "You finish with one answer strong enough to reuse in a real interview."
         if blockers:
             why_now = f"Main blocker right now: {blockers[0]}"
-        if track_id == "project_walkthrough":
-            success_signal = "You can explain one project with problem, trade-offs, metric, and impact."
-        elif track_id == "workplace_communication":
-            success_signal = "You can deliver a clear done / next / blocked update without drifting."
-        return _mission_payload(
+        return _apply_track_to_mission(_mission_payload(
             mode="mock_interview",
             launch_mode="mock_interview",
             title=mission_title,
             reason=reason,
             why_now=why_now,
-            linked_goal_context=linked_goal_context,
+            linked_goal_context=_track_goal_context(track_id),
             linked_skill_gap=None,
-            task_type={
-                "hr_intro": "hr_intro_drill",
-                "project_walkthrough": "project_walkthrough_drill",
-                "workplace_communication": "workplace_update_drill",
-            }.get(track_id, "career_mission"),
+            task_type=_track_task_type(track_id),
             expected_outcome="One stronger answer for the most likely interview scenario.",
             estimated_minutes=10,
-            success_signal=success_signal,
+            success_signal=_track_success_signal(track_id),
             interview_track_id=track_id,
-        )
+        ), track_id, track_title, reason)
 
     if due_count >= 5:
         return _mission_payload(
@@ -476,7 +726,11 @@ class ProgramSnapshotService:
         latest_assessment = build_latest_assessment(roadmap)
         goal = self.learning_plan_service.get_goal(plan)
         weakest_interview_area = roadmap.get("weakest_interview_area")
-        interview_summary = build_interview_summary(interview_runs, goal=goal)
+        interview_summary = build_interview_summary(
+            interview_runs,
+            goal=goal,
+            main_contexts=(goal_brief or {}).get("main_contexts") or [],
+        )
         interview_summary["weakest_area"] = weakest_interview_area
         interview_summary["interview_focus"] = roadmap.get("interview_focus") or []
         interview_summary["last_track"] = roadmap.get("last_interview_track")
@@ -490,17 +744,17 @@ class ProgramSnapshotService:
             has_assessment=latest_assessment is not None,
             weakest_interview_area=weakest_interview_area,
             interview_pack=interview_pack,
+            session_evidence=session_evidence,
+            interview_runs_count=len(interview_runs),
         )
         if mission["mode"] == "mock_interview" and not mission.get("from_interview"):
             recommended_track = interview_summary["recommended_track"]
-            mission["title"] = f"Run {recommended_track['title']}"
-            mission["reason"] = recommended_track["subtitle"]
-            mission["interview_track_id"] = recommended_track["id"]
-            mission["task_type"] = {
-                "hr_intro": "hr_intro_drill",
-                "project_walkthrough": "project_walkthrough_drill",
-                "workplace_communication": "workplace_update_drill",
-            }.get(recommended_track["id"], "career_mission")
+            mission = _apply_track_to_mission(
+                mission,
+                recommended_track["id"],
+                recommended_track["title"],
+                recommended_track["subtitle"],
+            )
 
         goal_status = (goal_brief or {}).get("status")
         goal_complete = self.learning_plan_service.is_goal_setup_complete(plan)

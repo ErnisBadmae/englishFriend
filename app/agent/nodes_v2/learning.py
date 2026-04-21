@@ -34,7 +34,60 @@ from app.agent.guardrails import (
 
 logger = logging.getLogger(__name__)
 
-MISSION_ANCHORED_TASK_TYPES = {"foundation_speaking_drill", "grammar_rescue"}
+MISSION_ANCHORED_TASK_TYPES = {
+    "foundation_speaking_drill",
+    "grammar_rescue",
+    "technical_project_walkthrough",
+    "model_choice_drill",
+    "metrics_explainer",
+    "tradeoff_explanation_drill",
+    "stakeholder_explanation_drill",
+    "failure_debugging_drill",
+}
+TECHNICAL_MISSION_SPECS = {
+    "technical_project_walkthrough": {
+        "label": "one technical project",
+        "question": "Explain one recent ML or technical project: problem, approach, metric, and impact.",
+        "example": "I worked on a churn model. The goal was to predict which users might leave.",
+        "russian_hint": "Коротко объясни по-русски структуру ответа: проблема, решение, метрика, результат. Затем сразу верни ученика к английскому ответу.",
+        "english_target": "After any Russian clarification, ask the learner to answer again in English as in a technical interview.",
+    },
+    "model_choice_drill": {
+        "label": "one model choice",
+        "question": "Explain why you chose one model instead of another in one project.",
+        "example": "We started with logistic regression as a baseline, then moved to gradient boosting for better recall.",
+        "russian_hint": "Если ученик застрял, кратко объясни по-русски как сравнить baseline, chosen model и причину выбора. Потом вернись к английскому.",
+        "english_target": "Push for a compact interview answer in English with baseline, chosen model, and one clear reason.",
+    },
+    "metrics_explainer": {
+        "label": "one metric explanation",
+        "question": "Explain one metric you used and why it mattered for the task.",
+        "example": "We focused on recall because missing positive cases was more expensive than extra false alarms.",
+        "russian_hint": "Если ученик путается, кратко объясни по-русски: что измеряет метрика и почему именно она важна для задачи. Потом верни его к английскому.",
+        "english_target": "Push for simple English: what the metric measures, why it mattered, and what trade-off it implied.",
+    },
+    "tradeoff_explanation_drill": {
+        "label": "one trade-off decision",
+        "question": "Explain one trade-off you made between two technical options.",
+        "example": "We chose the simpler pipeline because it was easier to maintain and fast enough for the latency target.",
+        "russian_hint": "Если ученик не может начать, кратко объясни по-русски схему: option A, option B, criterion, final choice. Затем снова попроси английский ответ.",
+        "english_target": "Push for one clear trade-off answer in English with two options and one decisive reason.",
+    },
+    "stakeholder_explanation_drill": {
+        "label": "one stakeholder-friendly explanation",
+        "question": "Explain your project to a non-technical stakeholder in simple English.",
+        "example": "The model helped the team find risky cases earlier, so the business could react faster.",
+        "russian_hint": "Если ученик уходит в jargon, коротко объясни по-русски: бизнес-проблема, что изменилось, почему это важно. Потом снова переведи его на английский.",
+        "english_target": "Keep the answer in simple English and reduce jargon after any Russian rescue.",
+    },
+    "failure_debugging_drill": {
+        "label": "one failure and recovery story",
+        "question": "Explain one time a model or system did not work as expected. What happened, and what changed after that?",
+        "example": "Our first model overfit badly, so we changed the feature set and added stronger validation.",
+        "russian_hint": "Если ученик теряет структуру, коротко объясни по-русски: проблема, как заметили, что поменяли, итог. Потом верни к английскому answer.",
+        "english_target": "Push for a calm interview answer in English with failure, diagnosis, fix, and outcome.",
+    },
+}
 TOKEN_RE = re.compile(r"[a-zA-Z']+|\d+")
 NUMBER_WORDS = {
     "zero",
@@ -561,7 +614,7 @@ def _get_fallback_prompt(state: AgentState) -> str:
         current_mode = current_mode.value
 
     if _is_mission_anchored(state):
-        return _get_foundation_prompt(state)
+        return _get_mission_anchored_prompt(state)
 
     if current_mode == "mock_interview":
         track = get_interview_track(state.get("interview_track_id")) or {
@@ -638,6 +691,13 @@ Respond with JSON:
 {{"action": "continue", "response_text": "your response", "corrections": [{{"original": "...", "corrected": "...", "type": "grammar"}}], "should_end": false}}"""
 
 
+def _get_mission_anchored_prompt(state: AgentState) -> str:
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        return _get_technical_drill_prompt(state)
+    return _get_foundation_prompt(state)
+
+
 def _get_foundation_prompt(state: AgentState) -> str:
     anchor = _get_anchor(state)
     next_anchor = _get_anchor(state, offset=1)
@@ -682,6 +742,47 @@ Rules:
 8. If active anchor stage is follow_up and another anchor exists, ask the next anchor question.
 9. Do not turn this into generic free conversation, vocabulary chat, or a new topic.
 10. If the user has not answered yet, ask the active primary anchor question directly.
+
+Respond with JSON:
+{{"action": "continue", "response_text": "your response", "corrections": [{{"original": "...", "corrected": "...", "type": "grammar"}}], "vocabulary_emphasized": ["word"], "should_end": false}}"""
+
+
+def _get_technical_drill_prompt(state: AgentState) -> str:
+    mission_task_type = state.get("mission_task_type") or ""
+    spec = TECHNICAL_MISSION_SPECS[mission_task_type]
+    mission_title = state.get("mission_title") or "Technical explanation drill"
+    mission_reason = state.get("mission_reason") or "Practice one interview-relevant technical explanation."
+    mission_success_signal = state.get("mission_success_signal") or "The learner gives one clearer technical answer."
+    linked_context = state.get("mission_linked_goal_context") or "project_walkthrough"
+    goal = state.get("confirmed_goal") or "Career English"
+    level = state.get("language_level", "B1")
+    username = state.get("username", "Student")
+
+    return f"""You are English Friend running a bounded technical mentoring drill for a Russian-speaking learner.
+
+Student: {username}
+Level: {level}
+Goal: {goal}
+Mission title: {mission_title}
+Mission reason: {mission_reason}
+Mission success signal: {mission_success_signal}
+Linked goal context: {linked_context}
+Active drill label: {spec['label']}
+Primary drill question: {spec['question']}
+Suggested example: {spec['example']}
+
+Rules:
+1. Stay on this one technical concept or explanation task.
+2. Your job is not to teach a full ML course. Keep it interview-relevant and practical.
+3. First try to get the learner to answer in English.
+4. If the learner is confused, blocked, or asks for help, you may give a very short clarification in Russian.
+5. Russian clarification must be brief and only unblock understanding. {spec['russian_hint']}
+6. {spec['english_target']}
+7. After any Russian clarification, immediately ask the learner to try again in English.
+8. Keep answers short and voice-friendly. Prefer 2-4 sentences, then one question.
+9. Use at most one gentle recast for grammar.
+10. Emphasize strong interview phrasing and reusable vocabulary.
+11. If there is no user answer yet, ask the primary drill question directly.
 
 Respond with JSON:
 {{"action": "continue", "response_text": "your response", "corrections": [{{"original": "...", "corrected": "...", "type": "grammar"}}], "vocabulary_emphasized": ["word"], "should_end": false}}"""
@@ -752,8 +853,19 @@ def _get_anchor(state: AgentState, offset: int = 0) -> dict:
 
 
 def _build_mission_opener_action(state: AgentState) -> dict:
-    anchor = _get_anchor(state)
     mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        spec = TECHNICAL_MISSION_SPECS[mission_task_type]
+        return {
+            "action": "continue",
+            "response_text": (
+                f"Let's do one technical explanation drill. {spec['question']} "
+                "Use simple English. If you get stuck, I can briefly help in Russian."
+            ),
+            "should_end": False,
+        }
+
+    anchor = _get_anchor(state)
     if mission_task_type == "foundation_speaking_drill":
         intro = "Let's keep this foundation speaking drill focused."
     elif mission_task_type == "grammar_rescue":
@@ -769,6 +881,34 @@ def _build_mission_opener_action(state: AgentState) -> dict:
 
 
 def _build_low_signal_action(state: AgentState) -> dict:
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        streak = int(state.get("low_signal_turn_streak", 0) or 0)
+        spec = TECHNICAL_MISSION_SPECS[mission_task_type]
+        if streak <= 1:
+            response_text = (
+                f"Let's keep it simple and stay with {spec['label']}. "
+                f"{spec['question']}"
+            )
+            should_end = False
+        elif streak == 2:
+            response_text = (
+                f"Type one short answer in the composer if speaking is hard. Example: "
+                f"\"{spec['example']}\""
+            )
+            should_end = False
+        else:
+            response_text = (
+                "The audio is too noisy for this drill. Let's stop this run here. "
+                "Restart the mission and answer with one short sentence."
+            )
+            should_end = True
+        return {
+            "action": "continue",
+            "response_text": response_text,
+            "should_end": should_end,
+        }
+
     streak = int(state.get("low_signal_turn_streak", 0) or 0)
     anchor = _get_anchor(state)
     if streak <= 1:
@@ -798,6 +938,31 @@ def _build_low_signal_action(state: AgentState) -> dict:
 
 
 def _build_supportive_anchor_action(state: AgentState) -> dict:
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        streak = int(state.get("low_signal_turn_streak", 0) or 0)
+        spec = TECHNICAL_MISSION_SPECS[mission_task_type]
+        if streak <= 1:
+            response_text = (
+                f"Все нормально. Very simple English is fine. Example: \"{spec['example']}\" "
+                f"{spec['question']}"
+            )
+        elif streak == 2:
+            response_text = (
+                f"Все нормально. Type one short answer in the composer if speaking is hard. "
+                f"Example: \"{spec['example']}\""
+            )
+        else:
+            response_text = (
+                f"Все нормально. Say or type one short interview-style sentence only. "
+                f"Example: \"{spec['example']}\""
+            )
+        return {
+            "action": "continue",
+            "response_text": response_text,
+            "should_end": False,
+        }
+
     streak = int(state.get("low_signal_turn_streak", 0) or 0)
     anchor = _get_anchor(state)
     example = anchor["example"]
@@ -826,6 +991,24 @@ def _build_supportive_anchor_action(state: AgentState) -> dict:
 
 
 def _build_mission_error_action(state: AgentState, reason: str) -> dict:
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        spec = TECHNICAL_MISSION_SPECS[mission_task_type]
+        logger.warning(
+            "[Learning] Technical mission fallback for user=%s reason=%s task=%s",
+            state.get("user_id"),
+            reason,
+            mission_task_type,
+        )
+        return {
+            "action": "continue",
+            "response_text": (
+                f"Let's keep it focused on {spec['label']}. {spec['question']} "
+                "Use simple English."
+            ),
+            "should_end": False,
+        }
+
     anchor = _get_anchor(state)
     logger.warning(
         "[Learning] Mission-anchored fallback for user=%s reason=%s anchor=%s",

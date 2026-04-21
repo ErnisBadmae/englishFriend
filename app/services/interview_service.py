@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from inspect import isawaitable
 from statistics import mean
 from typing import Any, Optional
 from uuid import uuid4
@@ -285,13 +286,14 @@ def score_interview_run(
 def build_interview_summary(
     runs: list[dict[str, Any]],
     goal: Optional[str] = None,
+    main_contexts: list[str] | None = None,
 ) -> dict[str, Any]:
     ordered_runs = sorted(
         runs,
         key=lambda item: item.get("recorded_at") or "",
         reverse=True,
     )
-    recommended_track = recommend_interview_track(goal, ordered_runs)
+    recommended_track = recommend_interview_track(goal, ordered_runs, main_contexts=main_contexts)
     latest_run = ordered_runs[0] if ordered_runs else None
     readiness_score = round(mean(run["scores"]["overall"] for run in ordered_runs[:3]), 1) if ordered_runs else None
 
@@ -330,12 +332,26 @@ class InterviewService:
         self.db = db
         self.learning_plan_service = LearningPlanService(db)
 
+    async def _get_plan_main_contexts(self, plan: Any) -> list[str]:
+        goal_brief = self.learning_plan_service.get_goal_brief(plan)
+        if isawaitable(goal_brief):
+            goal_brief = await goal_brief
+        if not isinstance(goal_brief, dict):
+            return []
+
+        main_contexts = goal_brief.get("main_contexts") or []
+        if not isinstance(main_contexts, list):
+            return []
+
+        return [str(item).strip() for item in main_contexts if str(item).strip()]
+
     async def get_tracks(self, user_id: int) -> dict[str, Any]:
         plan = await self.learning_plan_service.get_or_create_plan(user_id)
         roadmap = plan.roadmap or {}
         runs = self._normalize_runs(roadmap.get("interview_runs"))
         goal = self.learning_plan_service.get_goal(plan)
-        summary = build_interview_summary(runs, goal=goal)
+        main_contexts = await self._get_plan_main_contexts(plan)
+        summary = build_interview_summary(runs, goal=goal, main_contexts=main_contexts)
         recommended_id = summary["recommended_track"]["id"]
 
         tracks = []
@@ -379,8 +395,13 @@ class InterviewService:
                 return existing_run
 
         goal = self.learning_plan_service.get_goal(plan)
+        main_contexts = await self._get_plan_main_contexts(plan)
 
-        track = get_interview_track(track_id) or recommend_interview_track(goal, existing_runs)
+        track = get_interview_track(track_id) or recommend_interview_track(
+            goal,
+            existing_runs,
+            main_contexts=main_contexts,
+        )
         scored = score_interview_run(
             track=track,
             conversation_history=conversation_history,
@@ -432,7 +453,7 @@ class InterviewService:
         self.learning_plan_service._update_milestone(roadmap, "mock_interview", increment=1)
 
         runs = [run, *existing_runs][:20]
-        summary = build_interview_summary(runs, goal=goal)
+        summary = build_interview_summary(runs, goal=goal, main_contexts=main_contexts)
 
         roadmap["interview_runs"] = runs
         roadmap["interview_summary"] = summary

@@ -61,7 +61,22 @@ def get_interview_track(track_id: str | None) -> dict[str, Any] | None:
     return None
 
 
-def recommend_interview_track(goal: str | None, recent_runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def recommend_interview_track(
+    goal: str | None,
+    recent_runs: list[dict[str, Any]] | None = None,
+    main_contexts: list[str] | None = None,
+) -> dict[str, Any]:
+    primary_context = str((main_contexts or [None])[0] or "").strip().lower()
+    if primary_context == "workplace_communication":
+        recommended_id = "workplace_communication"
+        return get_interview_track(recommended_id) or dict(INTERVIEW_TRACKS[0])
+    if primary_context == "project_walkthrough":
+        recommended_id = "project_walkthrough"
+        return get_interview_track(recommended_id) or dict(INTERVIEW_TRACKS[0])
+    if primary_context == "interviews":
+        recommended_id = "hr_intro"
+        return get_interview_track(recommended_id) or dict(INTERVIEW_TRACKS[0])
+
     goal_lower = (goal or "").lower()
 
     if any(keyword in goal_lower for keyword in ("ml", "machine learning", "data", "software", "engineer", "developer")):
