@@ -89,7 +89,7 @@ function readScreenFromHash(): Screen {
 }
 
 function App() {
-  const [telegramId, setTelegramId] = useState<number>(4);
+  const [telegramId, setTelegramId] = useState<number>(17);
   const [telegramUsername, setTelegramUsername] =
     useState<string>('Local User');
   const [userId, setUserId] = useState<number | null>(null);
@@ -304,13 +304,13 @@ function App() {
   }) {
     const fresh = await refreshSnapshot();
     const requestedReturnScreen =
-      _payload.returnScreen === 'home'
-      || _payload.returnScreen === 'session'
-      || _payload.returnScreen === 'interview'
-      || _payload.returnScreen === 'review'
-      || _payload.returnScreen === 'progress'
-      || _payload.returnScreen === 'interview_results'
-      || _payload.returnScreen === 'session_results'
+      _payload.returnScreen === 'home' ||
+      _payload.returnScreen === 'session' ||
+      _payload.returnScreen === 'interview' ||
+      _payload.returnScreen === 'review' ||
+      _payload.returnScreen === 'progress' ||
+      _payload.returnScreen === 'interview_results' ||
+      _payload.returnScreen === 'session_results'
         ? _payload.returnScreen
         : undefined;
     if (_payload.completionReason === 'baseline_complete') {

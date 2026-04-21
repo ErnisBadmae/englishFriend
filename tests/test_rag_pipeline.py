@@ -7,6 +7,7 @@ import pytest
 
 from app.models.enums_and_dimensions import MemoryKind
 from app.services.ai.llm_provider import LLMEmptyContentError
+from app.services.ai.memory_extraction_service import MemoryExtractionSoftFailure
 
 
 class TestEmbeddingService:
@@ -120,6 +121,24 @@ class TestMemoryExtractionService:
             )
 
             assert result == []
+
+    @pytest.mark.asyncio
+    async def test_extract_from_conversation_raises_soft_failure_on_connection_error(self):
+        with patch("app.services.ai.memory_extraction_service.get_llm_provider") as mock_provider:
+            mock_llm = MagicMock()
+            mock_llm.generate = AsyncMock(side_effect=RuntimeError("Connection error."))
+            mock_provider.return_value = mock_llm
+
+            from app.services.ai.memory_extraction_service import MemoryExtractionService
+
+            service = MemoryExtractionService()
+
+            with pytest.raises(MemoryExtractionSoftFailure) as exc_info:
+                await service.extract_from_conversation(
+                    [{"role": "user", "content": "Hi, I'm Aaron from Russia"}]
+                )
+
+            assert exc_info.value.reason == "provider_connection_error"
 
 
 class TestQdrantService:
@@ -263,6 +282,70 @@ class TestMemoryPipeline:
 
             assert result is not None
             mock_qdrant.return_value.upsert_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_conversation_with_outcome_soft_fails_without_error_log(self, caplog):
+        caplog.set_level("INFO")
+        with patch("app.services.ai.memory_pipeline.get_embedding_service") as mock_embed, \
+             patch("app.services.ai.memory_pipeline.get_memory_extraction_service") as mock_extract, \
+             patch("app.services.ai.memory_pipeline.get_qdrant_service") as mock_qdrant:
+
+            mock_embed.return_value.is_available.return_value = False
+            mock_qdrant.return_value.health_check = AsyncMock(return_value=False)
+            mock_extract.return_value.extract_from_conversation = AsyncMock(
+                side_effect=MemoryExtractionSoftFailure(
+                    reason="provider_connection_error",
+                    original_exception=RuntimeError("Connection error."),
+                )
+            )
+
+            mock_db = MagicMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_db.execute = AsyncMock(return_value=mock_result)
+
+            from app.services.ai.memory_pipeline import MemoryPipeline
+
+            pipeline = MemoryPipeline(db=mock_db)
+            outcome = await pipeline.process_conversation_with_outcome(
+                user_id=1,
+                messages=[{"role": "user", "content": "Hello"}],
+                session_id="test-session",
+            )
+
+            assert outcome.status == "soft_failed"
+            assert outcome.reason == "provider_connection_error"
+            assert all(record.levelname != "ERROR" for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_process_conversation_logs_unexpected_bug_as_error(self, caplog):
+        caplog.set_level("INFO")
+        with patch("app.services.ai.memory_pipeline.get_embedding_service") as mock_embed, \
+             patch("app.services.ai.memory_pipeline.get_memory_extraction_service") as mock_extract, \
+             patch("app.services.ai.memory_pipeline.get_qdrant_service") as mock_qdrant:
+
+            mock_embed.return_value.is_available.return_value = False
+            mock_qdrant.return_value.health_check = AsyncMock(return_value=False)
+            mock_extract.return_value.extract_from_conversation = AsyncMock(
+                side_effect=ValueError("boom")
+            )
+
+            mock_db = MagicMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_db.execute = AsyncMock(return_value=mock_result)
+
+            from app.services.ai.memory_pipeline import MemoryPipeline
+
+            pipeline = MemoryPipeline(db=mock_db)
+            result = await pipeline.process_conversation(
+                user_id=1,
+                messages=[{"role": "user", "content": "Hello"}],
+                session_id="test-session",
+            )
+
+            assert result == []
+            assert any(record.levelname == "ERROR" for record in caplog.records)
 
 
 class TestRAGIntegration:

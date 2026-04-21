@@ -316,9 +316,50 @@ async def test_set_vacancy_context_builds_career_context_and_interview_pack():
 
     assert plan.roadmap["career_context"]["vacancy_present"] is True
     assert plan.roadmap["career_context"]["target_role"] == "ML Engineer"
-    assert plan.roadmap["interview_pack"]["recommended_track"] == "project_walkthrough"
+    assert plan.roadmap["interview_pack"]["recommended_track"] == "hr_intro"
     assert "deployment" in plan.roadmap["interview_pack"]["key_terms"]
     assert plan.roadmap["preferred_mode"] == "mock_interview"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("main_contexts", "expected_track"),
+    [
+        (["workplace_communication", "project_walkthrough"], "workplace_communication"),
+        (["interviews", "project_walkthrough"], "hr_intro"),
+        (["project_walkthrough", "interviews"], "project_walkthrough"),
+    ],
+)
+async def test_interview_pack_recommended_track_respects_primary_context(main_contexts, expected_track):
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {
+        "goal": "Prepare for an ML role abroad",
+        "goal_brief": {
+            "primary_goal": "Prepare for an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "open_ended",
+            "main_contexts": main_contexts,
+            "status": "confirmed",
+        },
+        "recommended_vocabulary": ["deployment"],
+    }
+
+    service = LearningPlanService(db)
+
+    pack = service._build_interview_pack(
+        goal_brief=plan.roadmap["goal_brief"],
+        proficiency_profile={"critical_gaps": []},
+        interview_runs=[],
+        career_context={"target_role": "ML Engineer", "vacancy_summary": "ML role"},
+        recommended_vocabulary=plan.roadmap["recommended_vocabulary"],
+        vacancy_analysis={"key_terms": ["stakeholder", "metric"]},
+    )
+
+    assert pack is not None
+    assert pack["recommended_track"] == expected_track
 
 
 @pytest.mark.asyncio

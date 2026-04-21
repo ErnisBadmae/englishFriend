@@ -1,317 +1,637 @@
-"""E2E Test for LangGraph Agent.
+"""CLI smoke runner for the real /chat/v2 flow.
 
-Tests the full conversation flow through the new /chat/v2 endpoint:
-1. New user onboarding (goal discovery + confirmation)
-2. Interest probing
-3. Assessment
-4. Program building
-5. Learning session
+This script intentionally targets the live backend and the currently configured
+LLM path. The first scenario is a narrow regression smoke for workplace-first
+onboarding and mission routing.
 """
 
+from __future__ import annotations
+
+import argparse
 import asyncio
 import json
-import sys
-from pathlib import Path
+import time
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlencode, urlparse, urlunparse
+from uuid import uuid4
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
+import httpx
 import websockets
 
 
-async def test_agent_new_user_flow():
-    """Test complete onboarding flow for a new user."""
-    print("\n=== Testing LangGraph Agent (New User Flow) ===\n")
+DEFAULT_BASE_URL = "http://localhost:8000"
 
-    uri = "ws://localhost:8000/api/v1/voice/chat/v2?user_id=999999"
 
+class SmokeFailure(RuntimeError):
+    """Raised when the live smoke violates an explicit contract."""
+
+
+class SmokeRuntimeFailure(SmokeFailure):
+    """Raised when the live smoke fails before snapshot contract validation."""
+
+
+class SmokeSnapshotMismatch(SmokeFailure):
+    """Raised when the live snapshot violates the expected routing contract."""
+
+
+class SmokeForbiddenTaskType(SmokeSnapshotMismatch):
+    """Raised when the live snapshot returns an explicitly forbidden task type."""
+
+
+@dataclass(frozen=True)
+class SmokeScenario:
+    slug: str
+    description: str
+    user_messages: tuple[str, ...]
+    expected_primary_context: str
+    expected_track_id: str
+    allowed_task_types: tuple[str, ...]
+    forbidden_task_types: tuple[str, ...] = ()
+    forbidden_assistant_substrings: tuple[str, ...] = ()
+
+
+SCENARIOS: dict[str, SmokeScenario] = {
+    "workplace_priority_regression": SmokeScenario(
+        slug="workplace_priority_regression",
+        description="Workplace-first onboarding should route to workplace track and stakeholder mission.",
+        user_messages=(
+            "speaking better in an international team",
+            "ML engineer job abroad",
+            "now i am just learning ml theory and try to learn some math theorems and building pet project",
+            "ML engineer job abroad",
+            "building ai agent and created RAG pipeline",
+        ),
+        expected_primary_context="workplace_communication",
+        expected_track_id="workplace_communication",
+        allowed_task_types=("stakeholder_explanation_drill",),
+        forbidden_task_types=("tradeoff_explanation_drill",),
+        forbidden_assistant_substrings=(
+            "i'm having trouble right now",
+            "server error. please refresh the page.",
+        ),
+    ),
+    "interview_priority_regression": SmokeScenario(
+        slug="interview_priority_regression",
+        description="Interview-first onboarding should keep interviews primary and recommend hr_intro.",
+        user_messages=(
+            "I want machine learning interview practice for a job abroad",
+            "I work as a data analyst now",
+            "ML engineer",
+            "My recent project was churn prediction for e-commerce",
+        ),
+        expected_primary_context="interviews",
+        expected_track_id="hr_intro",
+        allowed_task_types=("foundation_speaking_drill",),
+        forbidden_assistant_substrings=(
+            "i'm having trouble right now",
+            "server error. please refresh the page.",
+        ),
+    ),
+    "project_priority_regression": SmokeScenario(
+        slug="project_priority_regression",
+        description="Project-first onboarding should keep project walkthrough primary and recommend project track.",
+        user_messages=(
+            "I want to explain my machine learning projects more clearly for an ML engineer job abroad",
+            "I work as a data analyst now",
+            "ML engineer",
+            "I built a RAG pipeline and explained tradeoff between latency and answer quality",
+        ),
+        expected_primary_context="project_walkthrough",
+        expected_track_id="project_walkthrough",
+        allowed_task_types=("technical_project_walkthrough",),
+        forbidden_assistant_substrings=(
+            "i'm having trouble right now",
+            "server error. please refresh the page.",
+        ),
+    ),
+}
+
+ROUTING_SCENARIO_SET = (
+    "workplace_priority_regression",
+    "interview_priority_regression",
+    "project_priority_regression",
+)
+
+
+def build_ws_url(base_url: str, *, user_id: int, stt_provider: str = "composer") -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    path = f"{parsed.path.rstrip('/')}/api/v1/voice/chat/v2"
+    query = urlencode({"user_id": user_id, "stt_provider": stt_provider})
+    return urlunparse((scheme, parsed.netloc, path, "", query, ""))
+
+
+def build_snapshot_url(base_url: str, *, user_id: int) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    path = f"{parsed.path.rstrip('/')}/api/v1/programs/{user_id}/snapshot"
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def build_user_lookup_url(base_url: str, *, telegram_id: int) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    path = f"{parsed.path.rstrip('/')}/api/v1/users/telegram/{telegram_id}"
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def build_user_create_url(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    path = f"{parsed.path.rstrip('/')}/api/v1/users/"
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def generate_telegram_id() -> int:
+    return 900_000_000 + (uuid4().int % 99_000_000)
+
+
+async def resolve_or_create_user(base_url: str, *, telegram_id: int, timeout_s: float = 10.0) -> dict[str, Any]:
+    lookup_url = build_user_lookup_url(base_url, telegram_id=telegram_id)
+    create_url = build_user_create_url(base_url)
+
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        try:
+            response = await client.get(lookup_url)
+            if response.status_code == 200:
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise SmokeRuntimeFailure("Resolved user payload must be a JSON object")
+                return payload
+            if response.status_code != 404:
+                raise SmokeRuntimeFailure(
+                    f"User lookup failed for telegram_id={telegram_id}: HTTP {response.status_code} {response.text[:200]}"
+                )
+        except httpx.HTTPError as exc:
+            raise SmokeRuntimeFailure(f"User lookup request failed: {exc}") from exc
+
+        try:
+            response = await client.post(
+                create_url,
+                json={
+                    "telegram_id": telegram_id,
+                    "username": f"smoke_{telegram_id}",
+                    "language_level": "B1",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise SmokeRuntimeFailure(f"User create request failed: {exc}") from exc
+
+        if response.status_code not in {200, 201}:
+            raise SmokeRuntimeFailure(
+                f"User create failed for telegram_id={telegram_id}: HTTP {response.status_code} {response.text[:200]}"
+            )
+
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise SmokeRuntimeFailure("Created user payload must be a JSON object")
+        return payload
+
+
+def event_summary(event: dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "unknown")
+    role = str(event.get("role") or "")
+    phase = str(event.get("phase") or "")
+    mode = str(event.get("mode") or "")
+    text = str(event.get("text") or event.get("message") or "").strip().replace("\n", " ")
+    text = text[:120]
+    parts = [event_type]
+    if role:
+        parts.append(f"role={role}")
+    if phase:
+        parts.append(f"phase={phase}")
+    if mode:
+        parts.append(f"mode={mode}")
+    if text:
+        parts.append(f"text={text}")
+    return " | ".join(parts)
+
+
+def assert_event_contract(event: dict[str, Any], scenario: SmokeScenario) -> None:
+    event_type = str(event.get("type") or "")
+    if event_type == "error":
+        message = str(event.get("message") or "").strip()
+        raise SmokeRuntimeFailure(f"Received websocket error: {message or 'unknown error'}")
+
+    if event_type != "transcript" or str(event.get("role") or "") != "assistant":
+        return
+
+    assistant_text = str(event.get("text") or "").strip()
+    normalized = assistant_text.lower()
+    for needle in scenario.forbidden_assistant_substrings:
+        if needle in normalized:
+            raise SmokeRuntimeFailure(
+                f"Assistant response matched forbidden substring '{needle}': {assistant_text}"
+            )
+
+
+def assert_snapshot_contract(snapshot: dict[str, Any], scenario: SmokeScenario) -> None:
+    goal = snapshot.get("goal") or {}
+    goal_brief = goal.get("brief") or {}
+    mission = snapshot.get("mission") or {}
+    interview = snapshot.get("interview") or {}
+    recommended_track = interview.get("recommended_track") or {}
+
+    main_contexts = goal_brief.get("main_contexts") or []
+    primary_context = str(main_contexts[0] if main_contexts else "").strip()
+    if primary_context != scenario.expected_primary_context:
+        raise SmokeSnapshotMismatch(
+            f"Expected primary context '{scenario.expected_primary_context}', got '{primary_context or 'missing'}'"
+        )
+
+    recommended_track_id = str(recommended_track.get("id") or "").strip()
+    if recommended_track_id != scenario.expected_track_id:
+        raise SmokeSnapshotMismatch(
+            f"Expected recommended track '{scenario.expected_track_id}', got '{recommended_track_id or 'missing'}'"
+        )
+
+    task_type = str(mission.get("task_type") or "").strip()
+    if task_type in scenario.forbidden_task_types:
+        raise SmokeForbiddenTaskType(
+            f"Mission task_type '{task_type}' is explicitly forbidden for this scenario"
+        )
+
+    if task_type not in scenario.allowed_task_types:
+        allowed = ", ".join(scenario.allowed_task_types)
+        raise SmokeSnapshotMismatch(
+            f"Expected mission.task_type in ({allowed}), got '{task_type or 'missing'}'"
+        )
+
+
+async def receive_event(websocket: Any, timeout_s: float) -> dict[str, Any]:
+    raw = await asyncio.wait_for(websocket.recv(), timeout=timeout_s)
+    if not isinstance(raw, str):
+        raise SmokeRuntimeFailure(f"Expected text websocket frame, got {type(raw).__name__}")
     try:
-        async with websockets.connect(uri) as websocket:
-            print("✓ Connected to /chat/v2")
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SmokeRuntimeFailure(f"Invalid JSON from websocket: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SmokeRuntimeFailure("Expected websocket event to be a JSON object")
+    return payload
 
-            # Receive connection message
-            msg = await websocket.recv()
-            data = json.loads(msg)
-            print(f"✓ Connected: phase={data.get('phase')}, is_new={data.get('is_new_user')}")
 
-            # Should receive initial greeting/question
-            msg = await websocket.recv()
-            data = json.loads(msg)
-            if data.get("type") == "transcript":
-                print(f"✓ Initial question: {data.get('text')[:80]}...")
+async def wait_for_connected(
+    websocket: Any,
+    *,
+    events: list[dict[str, Any]],
+    timeout_s: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SmokeRuntimeFailure("Timed out waiting for connected event")
+        event = await receive_event(websocket, remaining)
+        events.append(event)
+        if str(event.get("type") or "") == "connected":
+            return event
 
-            # Simulate user responding about their goal
-            print("\n--- Step 1: Goal Discovery ---")
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "I want to prepare for machine learning interviews"
-            }))
 
-            # Wait for responses
-            responses = []
-            for _ in range(3):  # Expect: user transcript, assistant transcript, (maybe audio)
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Agent response: {data.get('text')[:80]}...")
-                except asyncio.TimeoutError:
-                    break
+async def wait_for_assistant_turn(
+    websocket: Any,
+    *,
+    scenario: SmokeScenario,
+    events: list[dict[str, Any]],
+    timeout_s: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SmokeRuntimeFailure("Timed out waiting for assistant transcript")
+        event = await receive_event(websocket, remaining)
+        events.append(event)
+        assert_event_contract(event, scenario)
+        if (
+            str(event.get("type") or "") == "transcript"
+            and str(event.get("role") or "") == "assistant"
+            and str(event.get("text") or "").strip()
+        ):
+            return event
 
-            # Check if agent is asking for confirmation
-            last_response = next((r for r in reversed(responses) if r.get("type") == "transcript" and r.get("role") == "assistant"), None)
-            if last_response and ("right" in last_response.get("text", "").lower() or "correct" in last_response.get("text", "").lower()):
-                print("✓ Agent asking for goal confirmation")
 
-                # Confirm the goal
-                print("\n--- Step 2: Goal Confirmation ---")
-                await websocket.send(json.dumps({
-                    "type": "text",
-                    "text": "Yes, that's right"
-                }))
+async def wait_for_session_complete(
+    websocket: Any,
+    *,
+    scenario: SmokeScenario,
+    events: list[dict[str, Any]],
+    timeout_s: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SmokeRuntimeFailure("Timed out waiting for session_complete")
+        event = await receive_event(websocket, remaining)
+        events.append(event)
+        assert_event_contract(event, scenario)
+        if str(event.get("type") or "") == "session_complete":
+            return event
 
-                # Wait for confirmation response
-                responses = []
-                for _ in range(3):
-                    try:
-                        msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                        data = json.loads(msg)
-                        responses.append(data)
-                        if data.get("type") == "transcript" and data.get("role") == "assistant":
-                            print(f"✓ Agent response: {data.get('text')[:80]}...")
-                    except asyncio.TimeoutError:
-                        break
 
-                # Check for phase change to interest_probe
-                phase_change = next((r for r in responses if r.get("type") == "phase_changed"), None)
-                if phase_change:
-                    print(f"✓ Phase changed to: {phase_change.get('phase')}")
+async def drain_events(
+    websocket: Any,
+    *,
+    scenario: SmokeScenario,
+    events: list[dict[str, Any]],
+    idle_timeout_s: float = 0.2,
+) -> None:
+    while True:
+        try:
+            event = await receive_event(websocket, idle_timeout_s)
+        except (asyncio.TimeoutError, TimeoutError):
+            return
+        events.append(event)
+        assert_event_contract(event, scenario)
 
-            # Interests
-            print("\n--- Step 3: Interest Probe ---")
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "I like technology, machine learning, and data science"
-            }))
 
-            responses = []
-            for _ in range(3):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Agent response: {data.get('text')[:80]}...")
-                except asyncio.TimeoutError:
-                    break
-
-            # Assessment
-            print("\n--- Step 4: Assessment ---")
-            # Answer first assessment question
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "My name is Test User and I'm from Russia"
-            }))
-
-            responses = []
-            for _ in range(3):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Assessment Q1 response: {data.get('text')[:80]}...")
-                except asyncio.TimeoutError:
-                    break
-
-            # Answer second assessment question
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "I like to read books, watch movies, and work on machine learning projects"
-            }))
-
-            responses = []
-            for _ in range(3):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Assessment Q2 response: {data.get('text')[:80]}...")
-                except asyncio.TimeoutError:
-                    break
-
-            # Answer third assessment question
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "I would invest some money, travel around the world, and donate to charity"
-            }))
-
-            responses = []
-            for _ in range(3):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Assessment Q3 response: {data.get('text')[:80]}...")
-                        # Check if assessment summary
-                        if "level" in data.get("text", "").lower():
-                            print("✓ Assessment completed with level feedback")
-                except asyncio.TimeoutError:
-                    break
-
-            # Program building phase
-            print("\n--- Step 5: Program Building ---")
-            # Should receive roadmap automatically
-            responses = []
-            for _ in range(2):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Roadmap: {data.get('text')[:80]}...")
-                        if "plan" in data.get("text", "").lower() or "focus" in data.get("text", "").lower():
-                            print("✓ Program building completed")
-                except asyncio.TimeoutError:
-                    break
-
-            # Learning session
-            print("\n--- Step 6: Learning Session ---")
-            # One turn of conversation
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "I have experience with Python and scikit-learn"
-            }))
-
-            responses = []
-            for _ in range(3):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Learning session response: {data.get('text')[:80]}...")
-                        mode = data.get("mode", "unknown")
-                        print(f"✓ Mode: {mode}")
-                except asyncio.TimeoutError:
-                    break
-
-            # End session
-            print("\n--- Step 7: Session End ---")
-            await websocket.send(json.dumps({"type": "end"}))
-
-            # Wait for farewell
+async def fetch_snapshot(
+    base_url: str,
+    *,
+    user_id: int,
+    attempts: int = 6,
+    delay_s: float = 0.5,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    url = build_snapshot_url(base_url, user_id=user_id)
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        last_error: str | None = None
+        for attempt in range(1, attempts + 1):
             try:
-                msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                data = json.loads(msg)
-                if data.get("type") == "transcript" and data.get("role") == "assistant":
-                    print(f"✓ Farewell: {data.get('text')[:80]}...")
-            except asyncio.TimeoutError:
-                print("⚠ No farewell received (timeout)")
-
-            print("\n=== Test Completed Successfully ===")
-            return True
-
-    except websockets.exceptions.WebSocketException as e:
-        print(f"✗ WebSocket error: {e}")
-        print("\nMake sure the FastAPI server is running:")
-        print("  python main.py")
-        return False
-    except Exception as e:
-        print(f"✗ Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+                response = await client.get(url)
+                if response.status_code == 200:
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise SmokeRuntimeFailure("Snapshot response must be a JSON object")
+                    return payload
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+            if attempt < attempts:
+                await asyncio.sleep(delay_s)
+        raise SmokeRuntimeFailure(f"Failed to fetch snapshot after {attempts} attempts: {last_error or 'unknown error'}")
 
 
-async def test_agent_returning_user():
-    """Test returning user with existing goal."""
-    print("\n=== Testing LangGraph Agent (Returning User) ===\n")
+def print_tail(events: list[dict[str, Any]], *, limit: int = 14) -> None:
+    print("\nEvent tail:")
+    for index, event in enumerate(events[-limit:], start=max(1, len(events) - limit + 1)):
+        print(f"  [{index}] {event_summary(event)}")
 
-    # Use a user ID that has a goal
-    uri = "ws://localhost:8000/api/v1/voice/chat/v2?user_id=1"
+
+def format_event_tail(events: list[dict[str, Any]], *, limit: int = 8) -> str:
+    if not events:
+        return "no events captured"
+    return " || ".join(event_summary(event) for event in events[-limit:])
+
+
+def has_session_complete(events: list[dict[str, Any]]) -> bool:
+    return any(str(event.get("type") or "") == "session_complete" for event in events)
+
+
+def print_snapshot_summary(snapshot: dict[str, Any]) -> None:
+    goal_brief = ((snapshot.get("goal") or {}).get("brief") or {})
+    interview = snapshot.get("interview") or {}
+    recommended_track = interview.get("recommended_track") or {}
+    mission = snapshot.get("mission") or {}
+    print("\nSnapshot summary:")
+    print(f"  primary_context: {(goal_brief.get('main_contexts') or [''])[0] if goal_brief.get('main_contexts') else ''}")
+    print(f"  recommended_track: {recommended_track.get('id') or ''}")
+    print(f"  mission_task_type: {mission.get('task_type') or ''}")
+    print(f"  mission_title: {mission.get('title') or ''}")
+
+
+def classify_failure(exc: SmokeFailure) -> str:
+    if isinstance(exc, SmokeForbiddenTaskType):
+        return "forbidden_task_type"
+    if isinstance(exc, SmokeSnapshotMismatch):
+        return "snapshot_mismatch"
+    return "runtime"
+
+
+async def run_scenario(
+    *,
+    base_url: str,
+    scenario: SmokeScenario,
+    telegram_id: int,
+    turn_timeout_s: float,
+    session_timeout_s: float,
+) -> dict[str, Any]:
+    user = await resolve_or_create_user(base_url, telegram_id=telegram_id)
+    resolved_user_id = int(user.get("id") or 0)
+    if resolved_user_id <= 0:
+        raise SmokeRuntimeFailure(f"Resolved user payload has invalid id: {user}")
+
+    ws_url = build_ws_url(base_url, user_id=resolved_user_id, stt_provider="composer")
+    snapshot_user_id = resolved_user_id
+    events: list[dict[str, Any]] = []
+    completion_seen = False
 
     try:
-        async with websockets.connect(uri) as websocket:
-            print("✓ Connected to /chat/v2")
+        async with websockets.connect(ws_url, max_size=2_000_000) as websocket:
+            connected = await wait_for_connected(websocket, events=events, timeout_s=turn_timeout_s)
+            if not bool(connected.get("is_new_user")):
+                raise SmokeRuntimeFailure("Smoke scenario requires a fresh user, but connected payload was not marked as new")
 
-            # Receive connection message
-            msg = await websocket.recv()
-            data = json.loads(msg)
-            print(f"✓ Connected: phase={data.get('phase')}, goal={data.get('goal')}")
+            initial_assistant = await wait_for_assistant_turn(
+                websocket,
+                scenario=scenario,
+                events=events,
+                timeout_s=turn_timeout_s,
+            )
+            print(f"Initial assistant: {str(initial_assistant.get('text') or '').strip()[:140]}")
+            await drain_events(websocket, scenario=scenario, events=events)
 
-            # Should go directly to learning session
-            if data.get("phase") == "learning_session" or data.get("mode"):
-                print("✓ Skipped onboarding, went directly to learning session")
-            else:
-                print(f"⚠ Unexpected phase: {data.get('phase')}")
-
-            # Receive initial greeting
-            msg = await websocket.recv()
-            data = json.loads(msg)
-            if data.get("type") == "transcript":
-                print(f"✓ Greeting: {data.get('text')[:80]}...")
-
-            # One turn of conversation
-            await websocket.send(json.dumps({
-                "type": "text",
-                "text": "Let's practice!"
-            }))
-
-            responses = []
-            for _ in range(3):
-                try:
-                    msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    data = json.loads(msg)
-                    responses.append(data)
-                    if data.get("type") == "transcript" and data.get("role") == "assistant":
-                        print(f"✓ Response: {data.get('text')[:80]}...")
-                except asyncio.TimeoutError:
+            for index, message in enumerate(scenario.user_messages, start=1):
+                if has_session_complete(events):
+                    completion_seen = True
                     break
+                payload = {"type": "text", "text": message, "source": "composer"}
+                await websocket.send(json.dumps(payload))
+                assistant = await wait_for_assistant_turn(
+                    websocket,
+                    scenario=scenario,
+                    events=events,
+                    timeout_s=turn_timeout_s,
+                )
+                assistant_text = str(assistant.get("text") or "").strip()
+                print(f"Turn {index} assistant: {assistant_text[:140]}")
+                await drain_events(websocket, scenario=scenario, events=events)
 
-            # End session
-            await websocket.send(json.dumps({"type": "end"}))
+            completion_seen = completion_seen or has_session_complete(events)
+            if not completion_seen:
+                completion_event = await wait_for_session_complete(
+                    websocket,
+                    scenario=scenario,
+                    events=events,
+                    timeout_s=session_timeout_s,
+                )
+                completion_seen = True
+                print(f"Session complete: reason={completion_event.get('reason')}, return_screen={completion_event.get('return_screen')}")
 
-            print("\n=== Returning User Test Completed ===")
-            return True
+            if not completion_seen:
+                raise SmokeRuntimeFailure("Scenario finished without session_complete")
 
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        return False
+    except websockets.exceptions.WebSocketException as exc:
+        raise SmokeRuntimeFailure(
+            f"Websocket flow failed after {len(events)} events: {exc}. "
+            f"Tail: {format_event_tail(events)}"
+        ) from exc
+    except OSError as exc:
+        raise SmokeRuntimeFailure(
+            f"Could not connect to {ws_url}. Make sure the backend is running and reachable. Details: {exc}"
+        ) from exc
+
+    snapshot = await fetch_snapshot(base_url, user_id=snapshot_user_id)
+    assert_snapshot_contract(snapshot, scenario)
+    return {
+        "events": events,
+        "snapshot": snapshot,
+        "user_id": snapshot_user_id,
+        "telegram_id": telegram_id,
+        "ws_url": ws_url,
+        "user": user,
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a real websocket smoke against /api/v1/voice/chat/v2.")
+    parser.add_argument(
+        "--scenario",
+        default=None,
+        choices=sorted(SCENARIOS),
+        help="Smoke scenario to execute.",
+    )
+    parser.add_argument(
+        "--scenario-set",
+        default=None,
+        choices=("routing",),
+        help="Named scenario set to execute sequentially.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=DEFAULT_BASE_URL,
+        help="Backend base URL. Default: http://localhost:8000",
+    )
+    parser.add_argument(
+        "--telegram-id",
+        type=int,
+        default=None,
+        help="Optional Telegram/dev identity used for resolve-or-create before websocket startup.",
+    )
+    parser.add_argument(
+        "--turn-timeout",
+        type=float,
+        default=8.0,
+        help="Timeout in seconds for connected and assistant-turn waits.",
+    )
+    parser.add_argument(
+        "--session-timeout",
+        type=float,
+        default=15.0,
+        help="Timeout in seconds for waiting on session_complete.",
+    )
+    args = parser.parse_args()
+    if not args.scenario and not args.scenario_set:
+        args.scenario = "workplace_priority_regression"
+    return args
+
+
+def resolve_scenario_slugs(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.scenario_set == "routing":
+        return ROUTING_SCENARIO_SET
+    return (args.scenario,)
+
+
+def print_run_header(*, scenario: SmokeScenario, base_url: str, telegram_id: int) -> None:
+    print("=" * 72)
+    print("chat_v2 live smoke")
+    print("=" * 72)
+    print(f"scenario: {scenario.slug}")
+    print(f"description: {scenario.description}")
+    print(f"base_url: {base_url}")
+    print(f"telegram_id: {telegram_id}")
+
+
+async def run_cli_scenario(
+    *,
+    base_url: str,
+    scenario: SmokeScenario,
+    telegram_id: int,
+    turn_timeout_s: float,
+    session_timeout_s: float,
+) -> tuple[bool, str]:
+    print_run_header(scenario=scenario, base_url=base_url, telegram_id=telegram_id)
+
+    try:
+        result = await run_scenario(
+            base_url=base_url,
+            scenario=scenario,
+            telegram_id=telegram_id,
+            turn_timeout_s=turn_timeout_s,
+            session_timeout_s=session_timeout_s,
+        )
+    except SmokeFailure as exc:
+        failure_kind = classify_failure(exc)
+        print(f"\nFAIL [{failure_kind}]: {exc}")
+        return False, failure_kind
+    except Exception as exc:  # pragma: no cover - defensive CLI guard
+        print(f"\nUNEXPECTED ERROR: {exc}")
+        return False, "unexpected"
+
+    print(f"resolved_user_id: {result['user_id']}")
+    print_snapshot_summary(result["snapshot"])
+    print_tail(result["events"])
+    print("\nPASS: live smoke contracts satisfied")
+    return True, "pass"
+
+
+async def async_main() -> int:
+    args = parse_args()
+    scenario_slugs = resolve_scenario_slugs(args)
+
+    if len(scenario_slugs) == 1:
+        scenario = SCENARIOS[scenario_slugs[0]]
+        telegram_id = args.telegram_id or generate_telegram_id()
+        ok, _ = await run_cli_scenario(
+            base_url=args.base_url,
+            scenario=scenario,
+            telegram_id=telegram_id,
+            turn_timeout_s=args.turn_timeout,
+            session_timeout_s=args.session_timeout,
+        )
+        return 0 if ok else 1
+
+    print("=" * 72)
+    print("chat_v2 live routing smoke")
+    print("=" * 72)
+    print(f"scenario_set: {args.scenario_set}")
+    print(f"base_url: {args.base_url}")
+    print(f"scenario_count: {len(scenario_slugs)}")
+
+    results: list[tuple[str, bool, str]] = []
+    for slug in scenario_slugs:
+        print()
+        scenario = SCENARIOS[slug]
+        telegram_id = generate_telegram_id()
+        ok, status = await run_cli_scenario(
+            base_url=args.base_url,
+            scenario=scenario,
+            telegram_id=telegram_id,
+            turn_timeout_s=args.turn_timeout,
+            session_timeout_s=args.session_timeout,
+        )
+        results.append((slug, ok, status))
+
+    print("\nRouting suite summary:")
+    for slug, ok, status in results:
+        verdict = "PASS" if ok else "FAIL"
+        print(f"  {verdict} {slug} ({status})")
+
+    return 0 if all(ok for _, ok, _ in results) else 1
+
+
+def main() -> int:
+    return asyncio.run(async_main())
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  LangGraph Agent E2E Test")
-    print("=" * 60)
-    print("\nPrerequisites:")
-    print("  1. FastAPI server running: python main.py")
-    print("  2. PostgreSQL running: docker compose up -d postgres")
-    print("  3. LangGraph dependencies installed: pip install langgraph langchain-core")
-    print()
-
-    try:
-        # Test new user flow
-        success1 = asyncio.run(test_agent_new_user_flow())
-
-        # Test returning user
-        success2 = asyncio.run(test_agent_returning_user())
-
-        if success1 and success2:
-            print("\n" + "=" * 60)
-            print("  ✓ All tests passed!")
-            print("=" * 60)
-            sys.exit(0)
-        else:
-            print("\n" + "=" * 60)
-            print("  ✗ Some tests failed")
-            print("=" * 60)
-            sys.exit(1)
-
-    except KeyboardInterrupt:
-        print("\n\nTest interrupted by user")
-        sys.exit(1)
+    raise SystemExit(main())

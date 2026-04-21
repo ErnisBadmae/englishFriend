@@ -125,6 +125,37 @@
         ]]></sql>
 
         <sql><![CDATA[
+            do $$
+            declare
+                start_month date := date_trunc('month', current_date)::date;
+                start_date date;
+                end_date date;
+                partition_name text;
+                i int;
+            begin
+                for i in 0..3 loop
+                    start_date := (start_month + (i || ' months')::interval)::date;
+                    end_date := (start_month + ((i + 1) || ' months')::interval)::date;
+                    partition_name := 'xp_events_' || to_char(start_date, 'YYYY_MM');
+
+                    execute format(
+                        'create table if not exists %I partition of xp_events for values from (%L) to (%L)',
+                        partition_name,
+                        start_date,
+                        end_date
+                    );
+
+                    execute format(
+                        'create index if not exists %I on %I (user_id, happened_at desc)',
+                        partition_name || '_user_idx',
+                        partition_name
+                    );
+                end loop;
+            end
+            $$;
+        ]]></sql>
+
+        <sql><![CDATA[
             alter table xp_events enable row level security;
             create policy if not exists xp_events_isolation on xp_events
               using (user_id = coalesce(nullif(current_setting('app.user_id', true), '')::bigint, -1));

@@ -57,6 +57,23 @@ def test_infer_goal_brief_accepts_doesnt_matter_as_company_context():
     assert brief["status"] == "draft"
 
 
+def test_infer_goal_brief_keeps_explicit_workplace_context_first():
+    brief = _infer_goal_brief_from_message(
+        "I want to speak better in an international team and later explain ML projects more clearly",
+        {
+            "primary_goal": "Get an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "main_contexts": ["project_walkthrough"],
+        },
+    )
+
+    assert brief is not None
+    assert brief["main_contexts"][0] == "workplace_communication"
+    assert "project_walkthrough" in brief["main_contexts"]
+
+
 @pytest.mark.asyncio
 async def test_transition_to_learning_moves_routing_ready_goal_to_assessment():
     state = create_initial_state(user_id=1, session_id="session-1")
@@ -301,6 +318,29 @@ async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_baselin
 
 
 @pytest.mark.asyncio
+async def test_onboarding_llm_error_preserves_inferred_goal_signal():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_user_message"] = "I want to speak better in an international team."
+    state["last_question_type"] = "goal_setup"
+
+    with patch(
+        "app.agent.nodes_v2.onboarding.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock(side_effect=RuntimeError("boom"))),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await onboarding_node(state)
+
+    assert "having trouble" not in updated["pending_response"].lower()
+    assert "workplace communication" in updated["pending_response"].lower()
+    assert updated["goal_brief"]["main_contexts"][0] == "workplace_communication"
+
+
+@pytest.mark.asyncio
 async def test_run_agent_turn_v2_first_goal_answer_transitions_to_baseline():
     state = await initialize_session_v2(
         user_id=1,
@@ -337,6 +377,59 @@ async def test_onboarding_assessment_only_route_consumes_current_role_answer():
     assert updated["assessment_step_index"] == 1
     assert updated["last_question_type"] == "target_role"
     assert "what role do you want next" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_current_role_assessment_does_not_reorder_explicit_workplace_context():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Speak better in an international ML team",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["workplace_communication", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_phase"] = AgentPhase.ASSESSMENT
+    state["current_mode"] = LearningModeEnum.ASSESSMENT
+    state["assessment_step_index"] = 0
+    state["last_question_type"] = "current_role"
+    state["last_user_message"] = (
+        "now i am just learning ml theory and try to learn some math theorems and building pet project"
+    )
+
+    updated = await onboarding_node(state)
+
+    assert updated["assessment_answers"]["current_role"] == state["last_user_message"]
+    assert updated["goal_brief"]["main_contexts"][0] == "workplace_communication"
+    assert "project_walkthrough" in updated["goal_brief"]["main_contexts"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_turn_v2_workplace_goal_survives_project_signal_during_baseline():
+    state = await initialize_session_v2(
+        user_id=1,
+        session_id="session-1",
+        username="Student",
+        is_new_user=True,
+    )
+
+    state = await run_agent_turn_v2(state)
+    state = await run_agent_turn_v2(state, user_message="speaking better in an international team")
+    state = await run_agent_turn_v2(state, user_message="ML engineer job abroad")
+    state = await run_agent_turn_v2(
+        state,
+        user_message="now i am just learning ml theory and try to learn some math theorems and building pet project",
+    )
+    state = await run_agent_turn_v2(state, user_message="ML engineer job abroad")
+    updated = await run_agent_turn_v2(state, user_message="building ai agent and created RAG pipeline")
+
+    assert updated["goal_brief"]["main_contexts"][0] == "workplace_communication"
+    assert updated["assessment_answers"]["current_role"].startswith("now i am just learning ml theory")
+    assert updated["assessment_answers"]["project_task"] == "building ai agent and created RAG pipeline"
+    assert updated["session_complete_reason"] == "baseline_complete"
 
 
 @pytest.mark.asyncio

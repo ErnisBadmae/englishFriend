@@ -23,6 +23,21 @@ def _foundation_state() -> dict:
     return state
 
 
+def _technical_state(task_type: str = "metrics_explainer") -> dict:
+    state = create_initial_state(user_id=1, session_id="technical-session")
+    state["current_phase"] = AgentPhase.LEARNING_SESSION
+    state["current_mode"] = LearningModeEnum.FREE_CONVERSATION
+    state["confirmed_goal"] = "Get an ML role abroad"
+    state["goal_setup_complete"] = True
+    state["assessed_level"] = "B1"
+    state["mission_task_type"] = task_type
+    state["mission_title"] = "Explain one metric clearly"
+    state["mission_reason"] = "You need to explain why a metric matters, not just name it."
+    state["mission_success_signal"] = "You can explain what the metric measures and why you chose it."
+    state["mission_linked_goal_context"] = "project_walkthrough"
+    return state
+
+
 @pytest.mark.asyncio
 async def test_initialize_session_v2_infers_foundation_mission_context():
     state = await initialize_session_v2(
@@ -299,3 +314,83 @@ async def test_learning_node_accepts_shift_to_next_step_anchor():
     assert updated["anchor_question_id"] == 2
     assert updated["anchor_follow_up_pending"] is True
     assert "short plan" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_uses_technical_mission_opener_without_llm():
+    state = _technical_state()
+
+    llm = MagicMock()
+    llm.generate = AsyncMock()
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert "technical explanation drill" in updated["pending_response"].lower()
+    assert "metric" in updated["pending_response"].lower()
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_technical_supportive_recovery_mentions_russian_help():
+    state = _technical_state()
+    state["last_user_message"] = "sorry my english is very bad could you teach me"
+
+    with patch(
+        "app.agent.nodes_v2.learning.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert updated["low_signal_turn_streak"] == 1
+    assert "все нормально" in updated["pending_response"].lower()
+    assert "example" in updated["pending_response"].lower()
+    assert "metric" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_technical_empty_final_content_uses_technical_fallback():
+    state = _technical_state("tradeoff_explanation_drill")
+    state["mission_title"] = "Defend one trade-off decision"
+    state["mission_reason"] = "You need a cleaner way to justify technical trade-offs under pressure."
+    state["mission_success_signal"] = "You can compare two options and defend the choice."
+    state["last_user_message"] = "The trade-off favored gradient boosting over logistic regression because recall mattered more."
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        side_effect=LLMEmptyContentError(
+            provider_name="llama_cpp",
+            model="CPU Qwen 3.5 256k node3",
+            finish_reason="length",
+            has_reasoning=True,
+            used_compat_retry=True,
+        )
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert "trade off" in updated["pending_response"].lower() or "trade-off" in updated["pending_response"].lower()
+    assert "use simple english" in updated["pending_response"].lower()

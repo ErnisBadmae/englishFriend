@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agent.graph_v2 import initialize_session_v2, run_agent_turn_v2
 from app.agent.state import AgentPhase, LearningModeEnum
 from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
 from app.services.voice_session import BootstrapContext, SessionCompletion
@@ -324,3 +325,148 @@ async def test_controller_initialize_connected_payload_contains_runtime_metadata
     assert connected["runtime"] == "realtime"
     assert connected["agent_version"] == "v2"
     assert connected["stt_provider"] == "browser_vosk"
+
+
+@pytest.mark.asyncio
+async def test_controller_initialize_uses_resolved_user_id_from_bootstrap_context():
+    controller = VoiceSessionController(
+        db=AsyncMock(),
+        user_id=900123,
+        mode=None,
+        interview_track=None,
+        stt_provider_name="browser_vosk",
+        transport=MagicMock(),
+        stt_provider=PassthroughTextSTTProvider(),
+        tts_provider=MagicMock(synthesize=AsyncMock(return_value=b"audio")),
+        turn_detector=ExplicitMessageTurnDetector(),
+        dependencies=_mock_dependencies(),
+        use_v2_agent=True,
+    )
+    controller._bootstrap_service.build = AsyncMock(
+        return_value=BootstrapContext(session_id="resolved-init", user_id=77, telegram_id=900123)
+    )
+    controller._bootstrap_service.initialize_agent_state = AsyncMock(
+        return_value={
+            "current_phase": AgentPhase.START,
+            "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        }
+    )
+
+    with patch(
+        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        new=AsyncMock(
+            return_value={
+                "pending_response": "Hello there",
+                "current_phase": AgentPhase.START,
+                "current_mode": LearningModeEnum.FREE_CONVERSATION,
+            }
+        ),
+    ):
+        await controller.initialize()
+
+    controller._bootstrap_service.initialize_agent_state.assert_awaited_once_with(
+        user_id=77,
+        context=controller._context,
+        use_v2_agent=True,
+        explicit_mode=None,
+        interview_track_id=None,
+        mission_task_type=None,
+        mission_title=None,
+        mission_reason=None,
+        mission_success_signal=None,
+        mission_linked_goal_context=None,
+        runtime="realtime",
+        stt_provider="browser_vosk",
+    )
+
+
+@pytest.mark.asyncio
+async def test_controller_survives_tts_failure_without_error_event():
+    tts_provider = MagicMock()
+    tts_provider.synthesize = AsyncMock(side_effect=RuntimeError("tts offline"))
+
+    controller = VoiceSessionController(
+        db=AsyncMock(),
+        user_id=1,
+        mode=None,
+        interview_track=None,
+        transport=MagicMock(),
+        stt_provider=PassthroughTextSTTProvider(),
+        tts_provider=tts_provider,
+        turn_detector=ExplicitMessageTurnDetector(),
+        dependencies=_mock_dependencies(),
+        use_v2_agent=True,
+    )
+    controller._context.confirmed_goal = "ML interviews"
+    controller._context.session_id = "session-tts"
+    controller._agent_state = {
+        "current_phase": AgentPhase.ONBOARDING,
+        "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        "turn_count": 0,
+        "conversation_history": [],
+        "corrections_made": [],
+        "vocabulary_reviewed": [],
+        "should_end_session": False,
+    }
+
+    next_state = {
+        "pending_response": "Tell me about your current role.",
+        "current_phase": AgentPhase.ONBOARDING,
+        "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        "turn_count": 1,
+        "conversation_history": [{"role": "user", "content": "Hi"}],
+        "corrections_made": [],
+        "vocabulary_reviewed": [],
+        "should_end_session": False,
+    }
+
+    with patch(
+        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        new=AsyncMock(return_value=next_state),
+    ):
+        outcome = await controller.handle_message({"type": "text", "text": "Hi"})
+
+    assert any(
+        event.get("type") == "transcript"
+        and event.get("role") == "assistant"
+        and "current role" in event.get("text", "")
+        for event in outcome.events
+    )
+    assert not any(event.get("type") == "error" for event in outcome.events)
+    assert not any(event.get("type") == "audio" for event in outcome.events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_facing_first_turn_onboarding_connection_glitch_degrades_cleanly():
+    state = await initialize_session_v2(
+        user_id=1,
+        session_id="session-first-turn",
+        username="Student",
+        is_new_user=True,
+    )
+    state = await run_agent_turn_v2(state)
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        side_effect=[
+            RuntimeError("Connection error."),
+            RuntimeError("Connection error."),
+        ]
+    )
+
+    with patch("app.agent.nodes_v2.onboarding.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await run_agent_turn_v2(
+            state,
+            user_message="speaking better in an international team",
+        )
+
+    assert updated["needs_user_input"] is True
+    assert "i'm having trouble right now" not in updated["pending_response"].lower()
+    assert "workplace communication" in updated["pending_response"].lower()
+    assert llm.generate.await_count == 2

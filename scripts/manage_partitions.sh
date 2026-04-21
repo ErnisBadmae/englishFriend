@@ -1,7 +1,7 @@
 #!/bin/bash
 # manage_partitions.sh
 # Automatic partition management for English Friend database
-# Usage: ./manage_partitions.sh [create|cleanup] [months_ahead] [retention_months]
+# Usage: ./manage_partitions.sh [create|cleanup|show|verify|both] [months_ahead] [retention_months]
 
 set -euo pipefail
 
@@ -209,6 +209,34 @@ show_partitions() {
         "Listing current xp_events partitions"
 }
 
+# Function to verify current-month partitions
+verify_partitions() {
+    log "Verifying current-month partitions"
+
+    local verify_result
+    verify_result=$(execute_sql \
+        "WITH expected AS (
+            SELECT
+                'sessions_' || to_char(date_trunc('month', current_date), 'YYYY_MM') AS sessions_partition,
+                'xp_events_' || to_char(date_trunc('month', current_date), 'YYYY_MM') AS xp_partition
+        )
+        SELECT
+            CASE
+                WHEN to_regclass('public.' || sessions_partition) IS NULL THEN 'MISSING ' || sessions_partition
+                WHEN to_regclass('public.' || xp_partition) IS NULL THEN 'MISSING ' || xp_partition
+                ELSE 'OK sessions=' || sessions_partition || ' xp_events=' || xp_partition
+            END
+        FROM expected;" \
+        "Verifying current-month sessions/xp_events partitions")
+
+    if echo "$verify_result" | grep -q '^OK '; then
+        log "$verify_result"
+    else
+        error "$verify_result"
+        return 1
+    fi
+}
+
 # Function to check if database is accessible
 check_database() {
     log "Checking database connectivity..."
@@ -248,13 +276,17 @@ main() {
         "show")
             show_partitions
             ;;
+        "verify")
+            verify_partitions
+            ;;
         "both")
             create_partitions "$months_ahead"
             cleanup_partitions "$retention_months"
+            verify_partitions
             ;;
         *)
             error "Unknown action: $action"
-            echo "Usage: $0 [create|cleanup|show|both] [months_ahead] [retention_months]"
+            echo "Usage: $0 [create|cleanup|show|verify|both] [months_ahead] [retention_months]"
             exit 1
             ;;
     esac

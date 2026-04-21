@@ -1,3 +1,5 @@
+import pytest
+
 from app.data.interview_tracks import get_interview_track
 from app.services.interview_service import build_interview_summary, score_interview_run
 
@@ -103,6 +105,34 @@ def test_build_interview_summary_marks_rising_trend():
     assert summary["trend"] == "rising"
     assert summary["recommended_track"]["id"] == "project_walkthrough"
     assert summary["readiness_score"] == 7.5
+
+
+def test_build_interview_summary_prefers_main_contexts_over_goal_keywords():
+    summary = build_interview_summary(
+        runs=[],
+        goal="ML engineer job abroad",
+        main_contexts=["workplace_communication", "project_walkthrough"],
+    )
+
+    assert summary["recommended_track"]["id"] == "workplace_communication"
+
+
+@pytest.mark.parametrize(
+    ("main_contexts", "expected_track"),
+    [
+        (["workplace_communication", "project_walkthrough"], "workplace_communication"),
+        (["interviews", "project_walkthrough"], "hr_intro"),
+        (["project_walkthrough", "interviews"], "project_walkthrough"),
+    ],
+)
+def test_build_interview_summary_uses_primary_context_for_track(main_contexts, expected_track):
+    summary = build_interview_summary(
+        runs=[],
+        goal="ML engineer job abroad",
+        main_contexts=main_contexts,
+    )
+
+    assert summary["recommended_track"]["id"] == expected_track
 
 
 def _make_run(run_id: str, session_id: str, track_id: str, overall: float) -> dict:
@@ -240,8 +270,6 @@ def test_score_interview_run_workplace_verbose_penalty_lowers_clarity():
     result_concise = score_interview_run(track=track, conversation_history=history_concise, corrections_count=0)
     assert result_concise["scores"]["clarity"] >= result_verbose["scores"]["clarity"]
 
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 

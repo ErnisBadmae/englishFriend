@@ -118,7 +118,15 @@
       "Bash(chmod:*)",
       "mcp__filesystem__directory_tree",
       "mcp__filesystem__read_text_file",
-      "mcp__filesystem__list_directory"
+      "mcp__filesystem__list_directory",
+      "Bash(npm.cmd run:*)",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\")",
+      "Bash(netstat -ano)",
+      "Bash(taskkill:*)",
+      "Bash(venv/Scripts/python.exe main.py)",
+      "Bash(echo \"Started with PID $!\")",
+      "Bash(awk '{print $5}')",
+      "Bash(git rm *)"
     ]
   },
   "enableAllProjectMcpServers": true

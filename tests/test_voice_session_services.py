@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
+from app.services.ai.memory_pipeline import MemoryProcessingOutcome
 from app.services.voice_session import (
+    BootstrapContext,
     SessionBootstrapService,
     SessionPersistRequest,
     SessionPersistenceService,
@@ -16,8 +18,9 @@ from app.services.voice_session import (
 def _session_dependencies():
     user_service = MagicMock()
     user_service.get_user = AsyncMock(
-        return_value=MagicMock(username="alice", language_level="B2")
+        return_value=MagicMock(id=42, telegram_id=4242, username="alice", language_level="B2")
     )
+    user_service.get_user_by_telegram_id = AsyncMock(return_value=None)
     user_service.create_user = AsyncMock()
 
     learning_plan = MagicMock()
@@ -38,6 +41,9 @@ def _session_dependencies():
     memory_pipeline = MagicMock()
     memory_pipeline.format_memory_for_prompt = AsyncMock(return_value="memory")
     memory_pipeline.process_conversation = AsyncMock()
+    memory_pipeline.process_conversation_with_outcome = AsyncMock(
+        return_value=MemoryProcessingOutcome(saved_memories=[], status="noop", reason="no_messages")
+    )
 
     learner_profile_service = MagicMock()
     learner_profile_service.build_summary = AsyncMock(
@@ -76,6 +82,8 @@ async def test_bootstrap_service_loads_user_learning_vocab_and_memory():
     context = await service.build(user_id=42, session_id="session-42")
 
     assert context.session_id == "session-42"
+    assert context.user_id == 42
+    assert context.telegram_id == 4242
     assert context.username == "alice"
     assert context.language_level == "B2"
     assert context.is_new_user is False
@@ -86,6 +94,72 @@ async def test_bootstrap_service_loads_user_learning_vocab_and_memory():
     assert "Built recommendation systems" in context.memory_section
     assert context.learner_profile_summary is not None
     assert context.mission_memory_context is not None
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_service_resolves_telegram_id_to_internal_user_id():
+    deps, learning_plan_service, _, learner_profile_service = _session_dependencies()
+    user_service = deps.user_service_factory(None)
+    user_service.get_user = AsyncMock(return_value=None)
+    user_service.get_user_by_telegram_id = AsyncMock(
+        return_value=MagicMock(id=123, telegram_id=900123, username="tg-user", language_level="B1")
+    )
+    service = SessionBootstrapService(AsyncMock(), dependencies=deps)
+
+    context = await service.build(user_id=900123, session_id="session-tg")
+
+    assert context.user_id == 123
+    assert context.telegram_id == 900123
+    learning_plan_service.get_or_create_plan.assert_awaited_once_with(123)
+    learner_profile_service.build_summary.assert_awaited_once()
+    assert learner_profile_service.build_summary.await_args.kwargs["user_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_service_rolls_back_after_learning_context_error():
+    deps, learning_plan_service, _, _ = _session_dependencies()
+    db = AsyncMock()
+    learning_plan_service.get_or_create_plan = AsyncMock(side_effect=RuntimeError("db failed"))
+    service = SessionBootstrapService(db, dependencies=deps)
+
+    context = await service.build(user_id=42, session_id="session-error")
+
+    assert context.session_id == "session-error"
+    db.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_initialize_agent_state_prefers_resolved_context_user_id():
+    deps, _, _, learner_profile_service = _session_dependencies()
+    service = SessionBootstrapService(AsyncMock(), dependencies=deps)
+
+    bootstrap_context = BootstrapContext(
+        session_id="resolved-session",
+        user_id=123,
+        username="alice",
+        language_level="B2",
+        is_new_user=True,
+        confirmed_goal="ML Engineer",
+        confirmed_interests=[],
+        roadmap={"goal_brief": None},
+        due_vocabulary_count=0,
+        due_vocabulary_words=[],
+        memory_section="",
+        learner_profile_summary=LearnerProfileSummary(goal_summary="ML Engineer abroad"),
+        mission_memory_context=MissionMemoryContext(relevant_memories=["Built recommendation systems"]),
+    )
+
+    with patch("app.services.voice_session.service.initialize_session_v2", new=AsyncMock(return_value={"user_id": 123})) as init_v2:
+        await service.initialize_agent_state(
+            user_id=900123,
+            context=bootstrap_context,
+            use_v2_agent=True,
+            runtime="chat_v2",
+            stt_provider="composer",
+        )
+
+    assert learner_profile_service.build_mission_context.await_args.kwargs["user_id"] == 123
+    assert init_v2.await_args.kwargs["user_id"] == 123
 
 
 @pytest.mark.asyncio
@@ -128,7 +202,7 @@ async def test_persistence_service_is_idempotent_within_one_session():
     assert first.already_persisted is False
     assert second.already_persisted is True
     learning_plan_service.increment_session_count.assert_awaited_once()
-    memory_pipeline.process_conversation.assert_awaited_once()
+    memory_pipeline.process_conversation_with_outcome.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -182,3 +256,110 @@ async def test_persistence_service_persists_evidence_before_gamification():
 
     assert completion.error is None
     assert call_order == ["interview", "evidence", "gamification"]
+
+
+@pytest.mark.asyncio
+async def test_persistence_service_soft_fails_memory_extraction_without_top_level_error(caplog):
+    caplog.set_level("INFO")
+    deps, learning_plan_service, memory_pipeline, _ = _session_dependencies()
+    memory_pipeline.process_conversation_with_outcome = AsyncMock(
+        return_value=MemoryProcessingOutcome(
+            saved_memories=[],
+            status="soft_failed",
+            reason="provider_connection_error",
+            error_type="ConnectError",
+            error="Connection error.",
+        )
+    )
+    service = SessionPersistenceService(
+        AsyncMock(),
+        dependencies=deps,
+        learning_plan_service=learning_plan_service,
+        memory_pipeline=memory_pipeline,
+    )
+
+    request = SessionPersistRequest(
+        status="completed",
+        user_id=11,
+        session_id="session-soft-fail",
+        final_mode="foundation",
+        runtime="chat_v2",
+        existing_goal="ML Engineer",
+        agent_state={"turn_count": 2},
+        conversation_history=[{"role": "user", "content": "Answer"}],
+        turn_count=2,
+        corrections_made=[],
+        vocabulary_reviewed=[],
+    )
+
+    with patch(
+        "app.services.voice_session.service.persist_interview_run_if_needed",
+        new=AsyncMock(return_value={"id": "interview-1"}),
+    ), patch(
+        "app.services.voice_session.service.persist_session_evidence_if_needed",
+        new=AsyncMock(return_value={"id": "evidence-1"}),
+    ), patch(
+        "app.services.voice_session.service.award_session_gamification",
+        new=AsyncMock(),
+    ):
+        completion = await service.persist(request)
+
+    assert completion.error is None
+    learning_plan_service.increment_session_count.assert_awaited_once()
+    memory_pipeline.process_conversation_with_outcome.assert_awaited_once()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("memory_extraction_skipped" in message for message in messages)
+    assert any("persistence_completed" in message for message in messages)
+    assert all("persistence_failed" not in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_persistence_service_keeps_unexpected_memory_bug_diagnosable(caplog):
+    caplog.set_level("INFO")
+    deps, learning_plan_service, memory_pipeline, _ = _session_dependencies()
+    memory_pipeline.process_conversation_with_outcome = AsyncMock(
+        return_value=MemoryProcessingOutcome(
+            saved_memories=[],
+            status="failed",
+            reason="unexpected_exception",
+            error_type="ValueError",
+            error="boom",
+        )
+    )
+    service = SessionPersistenceService(
+        AsyncMock(),
+        dependencies=deps,
+        learning_plan_service=learning_plan_service,
+        memory_pipeline=memory_pipeline,
+    )
+
+    request = SessionPersistRequest(
+        status="completed",
+        user_id=12,
+        session_id="session-memory-bug",
+        final_mode="foundation",
+        runtime="chat_v2",
+        existing_goal="ML Engineer",
+        agent_state={"turn_count": 2},
+        conversation_history=[{"role": "user", "content": "Answer"}],
+        turn_count=2,
+        corrections_made=[],
+        vocabulary_reviewed=[],
+    )
+
+    with patch(
+        "app.services.voice_session.service.persist_interview_run_if_needed",
+        new=AsyncMock(return_value={"id": "interview-1"}),
+    ), patch(
+        "app.services.voice_session.service.persist_session_evidence_if_needed",
+        new=AsyncMock(return_value={"id": "evidence-1"}),
+    ), patch(
+        "app.services.voice_session.service.award_session_gamification",
+        new=AsyncMock(),
+    ):
+        completion = await service.persist(request)
+
+    assert completion.error is None
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("memory_extraction_failed" in message for message in messages)
+    assert any("persistence_completed" in message for message in messages)

@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-04-10
+Last updated: 2026-04-14
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
@@ -71,10 +71,15 @@ Do not create a new session log if this file is enough.
 - `/chat/v2` and `/realtime` now enrich websocket payloads with optional runtime metadata, so both paths can be compared through the same smoke harness.
 - Mainline voice paths now carry an explicit `stt_provider` label through session init, websocket payloads, and observability, so smoke runs and benchmark reports can be grouped by STT lane instead of only by transport source.
 - A product-oriented STT benchmark layer now exists: frontend debug exports keep full sent transcripts in dev mode, and `scripts/run_stt_benchmark.py` can score live smoke artifacts or multi-provider case files against role/project/technical-term expectations.
+- Voice session start/end handoff is now hardened for the main frontend path: the first session starts after explicit user gesture/audio unlock, and setup completion now waits for the final farewell before redirecting Home.
+- Session end is now resilient to stale vLLM aliases: missing `qwen32b-32k` falls back to the canonical vLLM model, and `session_end` still returns a deterministic farewell if LLM generation fails.
+- Post-session persistence is safer: gamification failures now rollback locally instead of poisoning the whole shared DB session, and session evidence is persisted before XP side effects.
+- Ops partition management now covers `xp_events` as well as `sessions`, so the local/dev environment has a documented path to stop `xp_events` partition failures from recurring.
+- The first main-loop mission for fresh users now follows `main_contexts[0]` deterministically: workplace-first -> `stakeholder_explanation_drill`, interview-first -> `foundation_speaking_drill`, project-first -> `technical_project_walkthrough`.
+- Live `/chat/v2` routing smoke now passes for all 3 canonical product scenarios (`workplace`, `interview`, `project`), and composer sessions now soft-degrade cleanly when TTS is unavailable instead of behaving like failed sessions.
+- Runtime, pedagogy, and data-flow logging is now ASCII-safe for Windows consoles, so the live smoke path no longer crashes on Unicode log markers.
 
 ## Known Issues
-- Full-stack observability is now wired for the mainline voice paths, but it still needs live validation to prove that each failure mode is diagnosable in one pass.
-- Live onboarding and foundation voice still need manual smoke testing after the latest explicit mission-contract wiring.
 - Old users with stale data can surface edge cases; snapshot fallback has been hardened, but more live verification is needed.
 - Frontend bundle is still too large and warns on build.
 - Langfuse is configured in code but disabled locally unless credentials are set.
@@ -89,14 +94,18 @@ Do not create a new session log if this file is enough.
 - The dev debug panel is local-only; frontend debug events are not yet persisted or queryable from the backend.
 - The benchmark layer is artifact-first for now; it can score browser/live exports and structured case files, but first-class server adapters for `faster-whisper` and `Parakeet-TDT` are not wired yet.
 - Strategic risk: product breadth can still drift toward a generic tutor / learning workspace if new features are not filtered through the career-loop moat.
+- Browser-level audio verification is still needed for the main frontend path: first greeting audio, farewell audio before redirect, and clean post-session logs from a real browser session.
+- Local composer sessions now survive TTS failure, but live TTS still degrades in local runs because the Bing endpoint is unavailable.
+- Post-session gamification still hits local `xp_events` partition errors even though session evidence survives and persistence completes.
+- Post-session memory extraction still shows cloud `Connection error` failures in local live runs.
+- There are still local uncommitted tails outside the saved commits: `frontend/src/App.tsx`, deleted `!DOC/REORGANIZATION_SUMMARY.md`, and stray local path `nul`.
 
 ## Next Step
-- Run the instrumented 3-session live smoke set on the current stack using `VOICE_OBSERVABILITY_RUNBOOK.md`.
-- For each run, collect:
-  - frontend debug JSON export
-  - backend logs by `session_id`
-  - `/metrics` snapshot before and after
-- Use the new shared `runtime/session_id/turn_id` contract to identify whether the next real bottleneck is STT, pedagogy, LLM fallback, memory, or persistence.
+- Fix the remaining local ops blockers first:
+  - `xp_events` partition failure during post-session gamification
+  - memory extraction `Connection error` in the post-session path
+- Then run one browser-level mainline smoke to validate greeting audio, farewell audio, and redirect timing on the real frontend path.
+- Keep the new 3-scenario routing smoke as the product-routing regression gate for `/chat/v2`.
 - Keep the roadmap filtered by moat:
   - prioritize features that improve goal precision, pedagogy, evidence, or next-mission adaptation
   - deprioritize features that only add generic tutor breadth
@@ -110,6 +119,29 @@ Do not create a new session log if this file is enough.
 - Keep `deep-research-report.md` as the broader architecture map, but treat this file as the current execution source of truth.
 
 ## Last Update
+### 2026-04-14
+- Locked the first main-loop mission contract around `main_contexts[0]` for fresh users: workplace-first now routes to `stakeholder_explanation_drill`, interview-first to `foundation_speaking_drill`, and project-first to `technical_project_walkthrough`.
+- Expanded the live `/chat/v2` smoke harness into a 3-scenario routing suite and verified all 3 scenarios against a fresh backend: workplace, interview, and project.
+- Validated runtime hardening live on the composer lane: Windows-safe logging no longer throws `UnicodeEncodeError`, first-turn onboarding survives transient LLM connection glitches, and TTS now soft-degrades instead of turning the session into a failure.
+- Remaining live blockers from the same run are now explicit: local `xp_events` partition failures and post-session memory extraction `Connection error`.
+- Verification:
+  - `venv\Scripts\python.exe -m pytest tests/test_agent_e2e_script.py tests/test_learning_plan_service.py tests/test_interview_service.py tests/test_program_snapshot_service.py tests/test_voice_runtime.py -q`
+  - `81 passed`
+  - `venv\Scripts\python.exe -c "import main; print('main import ok')"` passed
+  - `venv\Scripts\python.exe scripts/test_agent_e2e.py --base-url http://127.0.0.1:8012 --scenario-set routing` passed
+
+### 2026-04-13
+- Saved two meaningful commits for continuity:
+  - `18183b9 feat(agent): выделить intent layer и трассировку voice-сессий`
+  - `3f39998 fix(voice): дождаться farewell и изолировать post-session ошибки`
+- Added frontend handoff hardening for the main voice path: explicit audio unlock on start, completion flow via `session_complete -> end -> session_end farewell`, and redirect only after farewell playback or socket-close fallback.
+- Added backend hardening for session finalization: stale vLLM alias fallback to the canonical model, deterministic `session_end` fallback flags, split TTS synthesis vs audio-delivery logging, and safer post-session rollback behavior around gamification failures.
+- Updated ops/docs continuity for local recovery: `QUICK_START.md` now points to the canonical vLLM model, `db/README.md` includes the gamification migration, and `scripts/manage_partitions.sh` now manages `xp_events` partitions too.
+- Verification:
+  - `venv\Scripts\python.exe -m pytest tests/test_llm_provider.py tests/test_session_end_node.py tests/test_voice_helpers.py tests/test_voice_session_services.py tests/test_voice_runtime.py tests/test_voice_observability.py -q`
+  - `48 passed`
+  - `venv\Scripts\python.exe -c "import main; print('main import ok')"` passed
+  - `npm.cmd run build` in `frontend` passed
 ### 2026-04-10
 - Added a product-oriented STT benchmark layer: explicit `stt_provider` metadata now flows through the main voice paths, dev debug exports retain full sent text, and `scripts/run_stt_benchmark.py` can score live smoke artifacts or structured multi-provider cases.
 - Added `!DOC/operations/STT_BENCHMARK_RUNBOOK.md` to lock the benchmark contract, expected inputs, and acceptance criteria around role/project/technical-term capture rather than generic WER.
