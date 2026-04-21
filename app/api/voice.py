@@ -25,7 +25,7 @@ import base64
 import time
 import logging
 from typing import Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.metrics import (
@@ -118,6 +118,7 @@ from app.agent.graph_v2 import (
 from app.services.voice_runtime import (
     EdgeTTSTTSProvider,
     ExplicitMessageTurnDetector,
+    ParakeetSTTProvider,
     PassthroughTextSTTProvider,
     VoiceSessionController,
     WebSocketTransport,
@@ -138,6 +139,42 @@ from app.services.voice_observability import (
 )
 
 router = APIRouter(prefix="/api/v1/voice", tags=["voice"])
+
+
+@router.post("/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    user_id: int = Form(...),
+    session_id: str = Form("frontend-session"),
+    stt_provider: str = Form("parakeet_v3"),
+):
+    provider_name = (stt_provider or settings.stt_backend_default).strip().lower()
+    if provider_name != "parakeet_v3":
+        raise HTTPException(status_code=400, detail=f"Unsupported backend STT provider: {provider_name}")
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio payload is empty")
+
+    provider = ParakeetSTTProvider()
+    try:
+        event = await provider.transcribe_audio(
+            audio_bytes,
+            content_type=audio.content_type,
+            user_id=user_id,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.warning("[Voice] Backend transcription failed for provider %s: %s", provider_name, exc)
+        raise HTTPException(status_code=502, detail=f"Backend STT failed: {exc}") from exc
+
+    return {
+        "provider": provider_name,
+        "text": event.text,
+        "confidence": event.confidence,
+        "language": event.language,
+        "metadata": event.metadata,
+    }
 
 
 @router.websocket("/chat")
@@ -1746,6 +1783,10 @@ async def voice_chat_plex(
                 session_id=session_id,
                 current_mode=final_mode,
                 conversation_history=conversation_history,
+                mission_task_type=agent_state.get("mission_task_type"),
+                mission_title=agent_state.get("mission_title"),
+                mission_reason=agent_state.get("mission_reason"),
+                mission_linked_goal_context=agent_state.get("mission_linked_goal_context"),
                 corrections_made=agent_state.get("corrections_made", []),
                 vocabulary_reviewed=agent_state.get("vocabulary_reviewed", []),
                 duration_minutes=int((time.time() - session_start_time) / 60),

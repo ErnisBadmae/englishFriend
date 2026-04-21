@@ -93,6 +93,17 @@ class STTProvider(ABC):
         """Streaming audio transcription for future realtime providers."""
         raise NotImplementedError("Streaming STT is not implemented for this provider")
 
+    async def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: Optional[str],
+        user_id: int,
+        session_id: str,
+    ) -> STTEvent:
+        """Batch audio transcription for backend STT providers."""
+        raise NotImplementedError("Batch audio transcription is not implemented for this provider")
+
 
 class TurnDetector(ABC):
     """Turn detection boundary for explicit or semantic commit logic."""

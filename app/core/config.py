@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     # Experimental modular voice runtime
     realtime_runtime_enabled: bool = False
 
+    # Backend STT
+    stt_backend_default: Literal["browser_vosk", "parakeet_v3", "composer"] = "browser_vosk"
+    parakeet_base_url: str = ""
+    parakeet_api_key: str = ""
+    parakeet_model: str = "parakeet-v3"
+    parakeet_timeout: int = 30
+
     # Pronunciation assessment
     pronunciation_provider: Literal["heuristic", "azure"] = "heuristic"
     pronunciation_locale: str = "en-US"
