@@ -14,6 +14,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.data.interview_tracks import recommend_interview_track
 from app.models.enums_and_dimensions import CEFRLevel
 from app.models.extended_tables import LearningPlan
+from app.services.ai.memory_extraction_service import (
+    MemoryExtractionSoftFailure,
+    get_memory_extraction_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +168,10 @@ def _humanize_key(value: Optional[str]) -> Optional[str]:
     if not value:
         return None
     return str(value).replace("_", " ").strip()
+
+
+def _clamp_unit(value: float) -> float:
+    return round(max(0.0, min(1.0, value)), 2)
 
 
 class LearningPlanService:
@@ -420,6 +428,47 @@ class LearningPlanService:
         await self.db.refresh(plan)
         return plan
 
+    async def set_project_notes(
+        self,
+        user_id: int,
+        raw_notes: str,
+    ) -> LearningPlan:
+        plan = await self.get_or_create_plan(user_id)
+        roadmap = deepcopy(plan.roadmap or {})
+        notes = re.sub(r"\s+", " ", raw_notes).strip()
+        goal_brief = self.get_goal_brief(plan)
+        career_context = self.get_career_context(plan)
+        vacancy_analysis = (
+            self._analyze_vacancy_text(roadmap.get("vacancy_text", ""))
+            if roadmap.get("vacancy_text")
+            else {}
+        )
+        project_story_pack = self._build_project_story_pack(
+            raw_notes=notes,
+            goal_brief=goal_brief,
+            career_context=career_context,
+            vacancy_analysis=vacancy_analysis,
+        )
+
+        roadmap["project_notes"] = notes
+        roadmap["project_notes_updated_at"] = _utcnow_iso()
+        roadmap["project_story_pack"] = project_story_pack
+
+        interview_pack = dict(roadmap.get("interview_pack") or {})
+        if interview_pack and project_story_pack:
+            interview_pack["top_blockers"] = _dedupe([
+                *(project_story_pack.get("weak_spots") or []),
+                *(interview_pack.get("top_blockers") or []),
+            ])[:3]
+            roadmap["interview_pack"] = interview_pack
+
+        plan.roadmap = dict(roadmap)
+        flag_modified(plan, "roadmap")
+        plan.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(plan)
+        return plan
+
     async def record_paid_intent(
         self,
         user_id: int,
@@ -459,6 +508,10 @@ class LearningPlanService:
         user_id: int,
         session_id: str,
         mode: str,
+        mission_task_type: Optional[str] = None,
+        mission_title: Optional[str] = None,
+        mission_reason: Optional[str] = None,
+        mission_linked_goal_context: Optional[str] = None,
         duration_minutes: int = 0,
         conversation_history: Optional[list[dict[str, Any]]] = None,
         corrections_made: Optional[list[dict[str, Any]] | int] = None,
@@ -478,16 +531,40 @@ class LearningPlanService:
             if existing.get("session_id") == session_id:
                 return existing
 
+        session_messages = conversation_history or []
+        user_messages = [
+            str(message.get("content") or "").strip()
+            for message in session_messages
+            if message.get("role") == "user" and message.get("content")
+        ]
+        comparison_key = mission_task_type or mode
+        previous_similar_evidence = next(
+            (
+                item
+                for item in existing_items
+                if str(item.get("task_type") or item.get("mission_type") or "").strip() == comparison_key
+            ),
+            None,
+        )
+        weakness_tags = await self._extract_session_weakness_tags(user_messages)
+
         evidence = self._build_session_evidence(
             session_id=session_id,
             mode=mode,
+            mission_task_type=mission_task_type,
+            mission_title=mission_title,
+            mission_reason=mission_reason,
+            mission_linked_goal_context=mission_linked_goal_context,
             duration_minutes=duration_minutes,
-            conversation_history=conversation_history or [],
+            conversation_history=session_messages,
             corrections_made=corrections_made,
             vocabulary_reviewed=vocabulary_reviewed or [],
             assessed_level=assessed_level,
             assessment_scores=assessment_scores or {},
             interview_run=interview_run,
+            weakness_tags=weakness_tags,
+            previous_similar_evidence=previous_similar_evidence,
+            project_story_pack=roadmap.get("project_story_pack"),
         )
         if not evidence:
             return None
@@ -608,6 +685,13 @@ class LearningPlanService:
             career_context=self.get_career_context(plan),
             recommended_vocabulary=roadmap.get("recommended_vocabulary") or [],
         )
+
+    def get_project_story_pack(self, plan: LearningPlan) -> Optional[dict[str, Any]]:
+        roadmap = plan.roadmap or {}
+        project_story_pack = roadmap.get("project_story_pack")
+        if isinstance(project_story_pack, dict):
+            return project_story_pack
+        return None
 
     def get_session_evidence(self, plan: LearningPlan) -> list[dict[str, Any]]:
         roadmap = plan.roadmap or {}
@@ -1165,11 +1249,235 @@ class LearningPlanService:
                 normalized.append(str(item))
         return _dedupe(normalized)
 
+    async def _extract_session_weakness_tags(self, user_messages: list[str]) -> list[str]:
+        if len(user_messages) < 2:
+            return []
+
+        try:
+            memories = await get_memory_extraction_service().extract_error_patterns(user_messages)
+        except MemoryExtractionSoftFailure as exc:
+            logger.info(
+                "Skipped error-pattern extraction due to transient provider failure: %s",
+                exc.reason,
+            )
+            return []
+        except Exception as exc:  # pragma: no cover - defensive logging guard
+            logger.warning("Failed to extract session weakness tags: %s", exc)
+            return []
+
+        return _dedupe([
+            str(memory.content).strip()
+            for memory in memories
+            if getattr(memory, "content", None)
+        ])[:4]
+
+    def _score_session_outcome(
+        self,
+        *,
+        mode: str,
+        user_turns: int,
+        corrections_count: int,
+        vocabulary_count: int,
+        interview_run: Optional[dict[str, Any]],
+    ) -> Optional[float]:
+        if interview_run:
+            overall = (interview_run.get("scores") or {}).get("overall")
+            if overall is None:
+                return None
+            try:
+                return _clamp_unit(float(overall) / 10.0)
+            except (TypeError, ValueError):
+                return None
+
+        if mode == "assessment":
+            return None
+
+        if mode == "vocabulary_drill":
+            return _clamp_unit(0.35 + min(vocabulary_count, 6) * 0.08 + min(user_turns, 2) * 0.05)
+
+        score = 0.42
+        score += min(user_turns, 4) * 0.08
+        score += min(vocabulary_count, 3) * 0.04
+        if corrections_count == 0:
+            score += 0.2
+        elif corrections_count <= 2:
+            score += 0.12
+        elif corrections_count <= 4:
+            score += 0.05
+        elif corrections_count >= 7:
+            score -= 0.12
+        return _clamp_unit(score)
+
+    def _build_improvement_tags(
+        self,
+        *,
+        outcome_score: Optional[float],
+        weakness_tags: list[str],
+        previous_similar_evidence: Optional[dict[str, Any]],
+    ) -> list[str]:
+        if not previous_similar_evidence:
+            return []
+
+        tags: list[str] = []
+        previous_score = previous_similar_evidence.get("outcome_score")
+        if previous_score is not None and outcome_score is not None:
+            try:
+                previous_score_value = float(previous_score)
+            except (TypeError, ValueError):
+                previous_score_value = None
+            if previous_score_value is not None:
+                if outcome_score >= previous_score_value + 0.08:
+                    tags.append(f"Outcome score improved from {previous_score_value:.2f} to {outcome_score:.2f}")
+                elif outcome_score <= previous_score_value - 0.08:
+                    tags.append(f"Outcome score dropped from {previous_score_value:.2f} to {outcome_score:.2f}")
+                else:
+                    tags.append("Outcome score stayed flat versus the previous similar drill")
+
+        previous_weaknesses = _dedupe([
+            *[str(item) for item in (previous_similar_evidence.get("weakness_tags") or []) if str(item).strip()],
+            str(previous_similar_evidence.get("main_issue") or "").strip(),
+        ])
+        repeated = [
+            item for item in weakness_tags
+            if item.lower() in {previous.lower() for previous in previous_weaknesses}
+        ]
+        if repeated:
+            tags.append(f"Repeated issue: {repeated[0]}")
+
+        resolved = [
+            item for item in previous_weaknesses
+            if item and item.lower() not in {current.lower() for current in weakness_tags}
+        ]
+        if resolved:
+            tags.append(f"Less visible now: {resolved[0]}")
+
+        return tags[:3]
+
+    def _build_adaptation_hint(
+        self,
+        *,
+        outcome_score: Optional[float],
+        weakness_tags: list[str],
+        previous_similar_evidence: Optional[dict[str, Any]],
+    ) -> str:
+        focus_target = weakness_tags[0] if weakness_tags else "the main weak spot"
+        if outcome_score is None:
+            return "Collect one more mission before changing the drill."
+
+        previous_score = None
+        if previous_similar_evidence and previous_similar_evidence.get("outcome_score") is not None:
+            try:
+                previous_score = float(previous_similar_evidence["outcome_score"])
+            except (TypeError, ValueError):
+                previous_score = None
+
+        if previous_score is not None and outcome_score <= previous_score + 0.02:
+            return f"Repeat the same drill once more and stay narrow around {focus_target}."
+        if outcome_score < 0.55:
+            return f"Repeat a tighter version of this drill and focus on {focus_target}."
+        if previous_score is not None and outcome_score >= previous_score + 0.1:
+            return f"Advance to the next scenario, but keep watching {focus_target}."
+        if outcome_score >= 0.72:
+            return f"Advance to a harder scenario and keep {focus_target} visible."
+        return f"Do one more focused repetition before advancing past {focus_target}."
+
+    def _split_project_notes(self, raw_notes: str) -> list[str]:
+        parts = [
+            part.strip(" -")
+            for part in re.split(r"(?:[\r\n]+|(?<=[.!?])\s+)", raw_notes)
+            if part and part.strip(" -")
+        ]
+        return parts
+
+    def _truncate_project_line(self, text: str, limit: int = 150) -> str:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 3].rstrip() + "..."
+
+    def _build_project_story_pack(
+        self,
+        *,
+        raw_notes: str,
+        goal_brief: Optional[dict[str, Any]],
+        career_context: Optional[dict[str, Any]],
+        vacancy_analysis: Optional[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        notes = re.sub(r"\s+", " ", raw_notes).strip()
+        if len(notes.split()) < 8:
+            return None
+
+        sentences = self._split_project_notes(notes)
+        target_role = (
+            (goal_brief or {}).get("target_role")
+            or (career_context or {}).get("target_role")
+            or "your target role"
+        )
+        domain = (goal_brief or {}).get("domain") or "software_engineering"
+        problem_statement = self._truncate_project_line(
+            sentences[0]
+            if sentences
+            else f"One project relevant to {target_role} where your work changed the outcome."
+        )
+
+        approach_candidates = sentences[1:3] or sentences[:1]
+        approach_summary = self._truncate_project_line(
+            " ".join(approach_candidates)
+            or "Explain the technical decisions, trade-offs, and your direct contribution."
+        )
+
+        metric_sentence = next(
+            (
+                sentence for sentence in sentences
+                if re.search(r"\b(\d+%|\d+x|\d+\.\d+%|latency|accuracy|f1|auc|ctr|uplift|revenue|cost|metric|impact)\b", sentence, re.IGNORECASE)
+            ),
+            "",
+        )
+        metrics_and_impact = self._truncate_project_line(
+            metric_sentence
+            or "Clarify the metric, the business impact, and what changed after your work."
+        )
+
+        example_answer_parts = [
+            f"In one recent project, {problem_statement[0].lower() + problem_statement[1:] if len(problem_statement) > 1 else problem_statement}",
+            f"My role was closest to {target_role}, and I owned the key decisions around {approach_summary.lower()}",
+            f"The main result was {metrics_and_impact[0].lower() + metrics_and_impact[1:] if len(metrics_and_impact) > 1 else metrics_and_impact}",
+        ]
+        english_example_answer = " ".join(part.rstrip(".") + "." for part in example_answer_parts if part).strip()
+
+        weak_spots: list[str] = []
+        if not re.search(r"\b(i|my|we|our)\b", notes, re.IGNORECASE):
+            weak_spots.append("Your direct contribution is still hard to hear in the story.")
+        if not re.search(r"\b(metric|impact|result|improved|reduced|increased|accuracy|latency|revenue|cost|f1|auc|ctr|\d+%|\d+x)\b", notes, re.IGNORECASE):
+            weak_spots.append("The impact is still vague because the story lacks a concrete metric.")
+        if not re.search(r"\b(trade-off|tradeoff|decision|because|why|constraint|challenge)\b", notes, re.IGNORECASE):
+            weak_spots.append("The technical decision and trade-off are still implicit.")
+        if domain == "machine_learning" and not re.search(r"\b(metric|model|dataset|feature|inference|training|deployment|experiment|monitoring)\b", notes, re.IGNORECASE):
+            weak_spots.append("The ML-specific terms are still too generic for a technical interview.")
+
+        vacancy_terms = list((vacancy_analysis or {}).get("key_terms") or [])
+        if vacancy_terms and not any(term.lower() in notes.lower() for term in vacancy_terms[:4]):
+            weak_spots.append("The story language is not yet aligned with the target vacancy.")
+
+        return {
+            "target_role": target_role,
+            "problem_statement": problem_statement,
+            "approach_summary": approach_summary,
+            "metrics_and_impact": metrics_and_impact,
+            "english_example_answer": english_example_answer,
+            "weak_spots": _dedupe(weak_spots)[:4],
+            "updated_at": _utcnow_iso(),
+        }
+
     def _build_session_evidence(
         self,
         *,
         session_id: str,
         mode: str,
+        mission_task_type: Optional[str],
+        mission_title: Optional[str],
+        mission_reason: Optional[str],
+        mission_linked_goal_context: Optional[str],
         duration_minutes: int,
         conversation_history: list[dict[str, Any]],
         corrections_made: Optional[list[dict[str, Any]] | int],
@@ -1177,6 +1485,9 @@ class LearningPlanService:
         assessed_level: Optional[str],
         assessment_scores: dict[str, Any],
         interview_run: Optional[dict[str, Any]],
+        weakness_tags: list[str],
+        previous_similar_evidence: Optional[dict[str, Any]],
+        project_story_pack: Optional[dict[str, Any]],
     ) -> Optional[dict[str, Any]]:
         user_messages = [
             str(message.get("content") or "").strip()
@@ -1200,8 +1511,42 @@ class LearningPlanService:
         if not meaningful:
             return None
 
-        mode_label = _humanize_key(mode) or "guided session"
+        task_type = mission_task_type or mode
+        mode_label = _humanize_key(task_type) or _humanize_key(mode) or "guided session"
         recorded_at = _utcnow_iso()
+        correction_issue = self._extract_correction_issue(corrections)
+
+        contextual_weakness_tags = list(weakness_tags)
+        if correction_issue:
+            contextual_weakness_tags.insert(0, correction_issue)
+        if (
+            project_story_pack
+            and (
+                mission_linked_goal_context == "project_walkthrough"
+                or "project" in task_type
+                or "stakeholder" in task_type
+            )
+        ):
+            contextual_weakness_tags.extend(project_story_pack.get("weak_spots") or [])
+        contextual_weakness_tags = _dedupe(contextual_weakness_tags)[:4]
+
+        outcome_score = self._score_session_outcome(
+            mode=mode,
+            user_turns=user_turns,
+            corrections_count=corrections_count,
+            vocabulary_count=len(vocab_words),
+            interview_run=interview_run,
+        )
+        improvement_tags = self._build_improvement_tags(
+            outcome_score=outcome_score,
+            weakness_tags=contextual_weakness_tags,
+            previous_similar_evidence=previous_similar_evidence,
+        )
+        adaptation_hint = self._build_adaptation_hint(
+            outcome_score=outcome_score,
+            weakness_tags=contextual_weakness_tags,
+            previous_similar_evidence=previous_similar_evidence,
+        )
 
         if interview_run:
             overall = (interview_run.get("scores") or {}).get("overall")
@@ -1219,13 +1564,21 @@ class LearningPlanService:
                 "id": session_id,
                 "session_id": session_id,
                 "mission_type": mode,
-                "mission_title": interview_run.get("track_title") or "Career interview run",
+                "mode": mode,
+                "task_type": task_type,
+                "linked_goal_context": mission_linked_goal_context,
+                "mission_title": mission_title or interview_run.get("track_title") or "Career interview run",
                 "summary": interview_run.get("summary") or "Interview run saved with score and next focus.",
                 "what_was_trained": interview_run.get("track_subtitle") or "Interview delivery under realistic pressure.",
                 "what_went_well": (interview_run.get("strengths") or [])[:3],
                 "main_issue": _humanize_key((interview_run.get("meta") or {}).get("weakest_area")) or "Interview delivery needs another repetition.",
                 "next_focus": (interview_run.get("next_focus") or [])[:3],
                 "evidence_signals": evidence_signals,
+                "outcome_score": outcome_score,
+                "weakness_tags": contextual_weakness_tags,
+                "improvement_tags": improvement_tags,
+                "adaptation_hint": adaptation_hint,
+                "mission_reason": mission_reason,
                 "recorded_at": recorded_at,
                 "duration_minutes": duration_minutes,
             }
@@ -1243,13 +1596,21 @@ class LearningPlanService:
                 "id": session_id,
                 "session_id": session_id,
                 "mission_type": "assessment",
-                "mission_title": "Baseline assessment",
+                "mode": mode,
+                "task_type": task_type,
+                "linked_goal_context": mission_linked_goal_context,
+                "mission_title": mission_title or "Baseline assessment",
                 "summary": f"Baseline captured at CEFR {assessed_level or 'level pending'}. The program can now route practice from real evidence.",
                 "what_was_trained": "Measured your speaking baseline against the career goal.",
                 "what_went_well": ["You completed the baseline flow and unlocked program routing."],
                 "main_issue": weakest_axis or "Need more speaking evidence to isolate the weakest area.",
                 "next_focus": next_focus[:3],
                 "evidence_signals": evidence_signals,
+                "outcome_score": outcome_score,
+                "weakness_tags": contextual_weakness_tags,
+                "improvement_tags": improvement_tags,
+                "adaptation_hint": adaptation_hint,
+                "mission_reason": mission_reason,
                 "recorded_at": recorded_at,
                 "duration_minutes": duration_minutes,
             }
@@ -1260,7 +1621,10 @@ class LearningPlanService:
                 "id": session_id,
                 "session_id": session_id,
                 "mission_type": mode,
-                "mission_title": "Vocabulary reinforcement",
+                "mode": mode,
+                "task_type": task_type,
+                "linked_goal_context": mission_linked_goal_context,
+                "mission_title": mission_title or "Vocabulary reinforcement",
                 "summary": f"You reinforced {vocab_count} job-relevant word{'s' if vocab_count != 1 else ''} in context.",
                 "what_was_trained": "Active recall on vocabulary linked to your current program.",
                 "what_went_well": [
@@ -1276,11 +1640,15 @@ class LearningPlanService:
                     f"{vocab_count} words reinforced",
                     f"{user_turns} speaking turn{'s' if user_turns != 1 else ''}",
                 ],
+                "outcome_score": outcome_score,
+                "weakness_tags": contextual_weakness_tags,
+                "improvement_tags": improvement_tags,
+                "adaptation_hint": adaptation_hint,
+                "mission_reason": mission_reason,
                 "recorded_at": recorded_at,
                 "duration_minutes": duration_minutes,
             }
 
-        correction_issue = self._extract_correction_issue(corrections)
         what_went_well = ["You completed a full guided speaking mission."]
         if user_turns >= 2:
             what_went_well.append("You stayed in English across multiple turns.")
@@ -1288,8 +1656,8 @@ class LearningPlanService:
             what_went_well.append("Your answers stayed relatively clean under practice pressure.")
 
         next_focus = []
-        if correction_issue:
-            next_focus.append(f"Repeat one more drill focusing on {correction_issue}.")
+        if contextual_weakness_tags:
+            next_focus.append(f"Repeat one more drill focusing on {contextual_weakness_tags[0]}.")
         if vocab_words:
             next_focus.append(f"Reuse {vocab_words[0]} in your next answer.")
         next_focus.append("Keep answers short, clear, and tied to your target job context.")
@@ -1302,8 +1670,8 @@ class LearningPlanService:
             evidence_signals.append(f"{len(vocab_words)} vocabulary cue{'s' if len(vocab_words) != 1 else ''} reinforced")
 
         summary = "You completed a guided speaking mission with live coaching."
-        if correction_issue:
-            summary = f"You practiced {mode_label} and surfaced a repeatable issue around {correction_issue}."
+        if contextual_weakness_tags:
+            summary = f"You practiced {mode_label} and surfaced a repeatable issue around {contextual_weakness_tags[0]}."
         elif vocab_words:
             summary = f"You practiced {mode_label} and reinforced vocabulary in context."
 
@@ -1311,13 +1679,21 @@ class LearningPlanService:
             "id": session_id,
             "session_id": session_id,
             "mission_type": mode,
-            "mission_title": _humanize_key(mode_label).title(),
+            "mode": mode,
+            "task_type": task_type,
+            "linked_goal_context": mission_linked_goal_context,
+            "mission_title": mission_title or _humanize_key(mode_label).title(),
             "summary": summary,
-            "what_was_trained": self._describe_trained_area(mode),
+            "what_was_trained": self._describe_trained_area(task_type),
             "what_went_well": what_went_well[:3],
-            "main_issue": correction_issue or "Need more repetitions before a clear weak point emerges.",
+            "main_issue": contextual_weakness_tags[0] if contextual_weakness_tags else "Need more repetitions before a clear weak point emerges.",
             "next_focus": next_focus[:3],
             "evidence_signals": evidence_signals,
+            "outcome_score": outcome_score,
+            "weakness_tags": contextual_weakness_tags,
+            "improvement_tags": improvement_tags,
+            "adaptation_hint": adaptation_hint,
+            "mission_reason": mission_reason,
             "recorded_at": recorded_at,
             "duration_minutes": duration_minutes,
         }

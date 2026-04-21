@@ -208,6 +208,9 @@ def _mission_payload(
     success_signal: str,
     from_interview: bool = False,
     interview_track_id: Optional[str] = None,
+    adaptation_reason: Optional[str] = None,
+    evidence_source: str = "stage_default",
+    repeat_vs_advance: str = "new",
 ) -> dict[str, Any]:
     return {
         "mode": mode,
@@ -223,6 +226,9 @@ def _mission_payload(
         "expected_outcome": expected_outcome,
         "estimated_minutes": estimated_minutes,
         "success_signal": success_signal,
+        "adaptation_reason": adaptation_reason,
+        "evidence_source": evidence_source,
+        "repeat_vs_advance": repeat_vs_advance,
     }
 
 
@@ -433,6 +439,121 @@ def _apply_track_to_mission(mission: dict[str, Any], track_id: str, track_title:
     return updated
 
 
+def _evidence_task_type(item: dict[str, Any]) -> str:
+    return str(item.get("task_type") or item.get("mission_type") or "").strip()
+
+
+def _evidence_main_issue(item: dict[str, Any]) -> Optional[str]:
+    weakness_tags = [str(tag).strip() for tag in (item.get("weakness_tags") or []) if str(tag).strip()]
+    if weakness_tags:
+        return weakness_tags[0]
+    main_issue = str(item.get("main_issue") or "").strip()
+    return main_issue or None
+
+
+def _evidence_outcome_score(item: dict[str, Any]) -> Optional[float]:
+    raw = item.get("outcome_score")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_repeat_vs_advance(
+    session_evidence: list[dict[str, Any]] | None,
+    mission_type: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    evidence_items = [
+        item
+        for item in (session_evidence or [])
+        if isinstance(item, dict) and _evidence_task_type(item) and _evidence_task_type(item) not in {"assessment", "goal_setup"}
+    ]
+    if not evidence_items:
+        return None
+
+    target_type = mission_type or _evidence_task_type(evidence_items[0])
+    relevant = [item for item in evidence_items if _evidence_task_type(item) == target_type][:3]
+    if not relevant:
+        return None
+
+    latest = relevant[0]
+    latest_score = _evidence_outcome_score(latest)
+    previous_score = _evidence_outcome_score(relevant[1]) if len(relevant) > 1 else None
+    main_issue = _evidence_main_issue(latest) or "the same weak area"
+
+    if latest_score is not None and len(relevant) >= 2 and previous_score is not None:
+        if latest_score <= previous_score + 0.02:
+            return {
+                "decision": "repeat",
+                "task_type": target_type,
+                "latest_evidence": latest,
+                "main_issue": main_issue,
+                "reason": f"Repeat {target_type.replace('_', ' ')} because the outcome score is flat and {main_issue} is still visible.",
+            }
+        if latest_score >= previous_score + 0.1:
+            return {
+                "decision": "advance",
+                "task_type": target_type,
+                "latest_evidence": latest,
+                "main_issue": main_issue,
+                "reason": f"Advance because the latest run improved while {main_issue} stayed trackable.",
+            }
+
+    if latest_score is not None and latest_score < 0.52:
+        return {
+            "decision": "repeat",
+            "task_type": target_type,
+            "latest_evidence": latest,
+            "main_issue": main_issue,
+            "reason": f"Repeat {target_type.replace('_', ' ')} because the last run still struggled on {main_issue}.",
+        }
+    return None
+
+
+def _build_repeat_mission_from_evidence(adaptation: dict[str, Any]) -> dict[str, Any]:
+    latest = dict(adaptation.get("latest_evidence") or {})
+    task_type = str(adaptation.get("task_type") or _evidence_task_type(latest) or "guided_speaking_session")
+    mode = str(latest.get("mode") or "free_conversation")
+    issue = str(adaptation.get("main_issue") or "the same weak area")
+    mission_title = str(latest.get("mission_title") or "Repeat the weak-spot drill")
+    linked_goal_context = latest.get("linked_goal_context")
+    estimated_minutes = int(latest.get("duration_minutes") or 8)
+
+    return _mission_payload(
+        mode=mode,
+        launch_mode=mode if mode != "guided_setup" else None,
+        title=mission_title,
+        reason=f"Repeat the same drill and stay narrow around {issue}.",
+        why_now="The last two similar runs did not show enough improvement yet.",
+        linked_goal_context=linked_goal_context,
+        linked_skill_gap=issue,
+        task_type=task_type,
+        expected_outcome=f"One tighter repetition of {task_type.replace('_', ' ')} with the same weak spot made explicit.",
+        estimated_minutes=max(6, estimated_minutes),
+        success_signal=str(latest.get("adaptation_hint") or f"The next run shows less of {issue}."),
+        interview_track_id=latest.get("interview_track_id"),
+        adaptation_reason=str(adaptation.get("reason") or f"Repeating because {issue} is still visible."),
+        evidence_source="repeated_main_issue",
+        repeat_vs_advance="repeat",
+    )
+
+
+def _apply_adaptation_metadata(
+    mission: dict[str, Any],
+    *,
+    adaptation_reason: Optional[str],
+    evidence_source: str,
+    repeat_vs_advance: str,
+) -> dict[str, Any]:
+    updated = dict(mission)
+    updated["adaptation_reason"] = adaptation_reason
+    updated["evidence_source"] = evidence_source
+    updated["repeat_vs_advance"] = repeat_vs_advance
+    return updated
+
+
 def _is_entry_main_loop_mission(
     *,
     current_stage: Optional[str],
@@ -518,6 +639,13 @@ def recommend_next_mission(
     session_evidence: list[dict[str, Any]] | None = None,
     interview_runs_count: int = 0,
 ) -> dict[str, Any]:
+    adaptation = _detect_repeat_vs_advance(session_evidence)
+    advance_reason = (
+        adaptation.get("reason")
+        if adaptation and adaptation.get("decision") == "advance"
+        else None
+    )
+
     if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
         missing = []
         if goal_brief:
@@ -564,19 +692,34 @@ def recommend_next_mission(
         )
 
     if weakest_interview_area and weakest_interview_area in _WEAKEST_AREA_MISSIONS:
-        return dict(_WEAKEST_AREA_MISSIONS[weakest_interview_area])
+        mission = dict(_WEAKEST_AREA_MISSIONS[weakest_interview_area])
+        mission["adaptation_reason"] = f"Latest interview evidence says {weakest_interview_area.replace('_', ' ')} is still the main weak spot."
+        mission["evidence_source"] = "last_session_weakness"
+        mission["repeat_vs_advance"] = "new"
+        return mission
 
     current_stage = (program_plan or {}).get("current_stage")
+    if adaptation and adaptation.get("decision") == "repeat":
+        return _build_repeat_mission_from_evidence(adaptation)
+
     if _is_entry_main_loop_mission(
         current_stage=current_stage,
         interview_runs_count=interview_runs_count,
         session_evidence=session_evidence,
     ):
-        return _build_entry_main_loop_mission(
+        mission = _build_entry_main_loop_mission(
             goal_brief=goal_brief,
             program_plan=program_plan,
             error_patterns=error_patterns,
         )
+        if advance_reason:
+            mission = _apply_adaptation_metadata(
+                mission,
+                adaptation_reason=advance_reason,
+                evidence_source="stage_default",
+                repeat_vs_advance="advance",
+            )
+        return mission
 
     technical_focus_mission = _pick_technical_focus_mission(
         goal_brief=goal_brief,
@@ -584,7 +727,13 @@ def recommend_next_mission(
         interview_pack=interview_pack,
     )
     if technical_focus_mission:
-        return _mission_payload(**technical_focus_mission)
+        mission = _mission_payload(
+            **technical_focus_mission,
+            adaptation_reason=advance_reason,
+            evidence_source="stage_default",
+            repeat_vs_advance="advance" if advance_reason else "new",
+        )
+        return mission
 
     weekly_focus = (program_plan or {}).get("weekly_focus") or []
     if (
@@ -603,7 +752,7 @@ def recommend_next_mission(
         why_now = "This is the most interview-relevant speaking drill for your current target role and vacancy context."
         if blockers:
             why_now = f"Main blocker right now: {blockers[0]}"
-        return _apply_track_to_mission(_mission_payload(
+        mission = _apply_track_to_mission(_mission_payload(
             mode="mock_interview",
             launch_mode="mock_interview",
             title=mission_title,
@@ -616,7 +765,11 @@ def recommend_next_mission(
             estimated_minutes=10,
             success_signal=_track_success_signal(track_id),
             interview_track_id=track_id,
+            adaptation_reason=advance_reason,
+            evidence_source="stage_default",
+            repeat_vs_advance="advance" if advance_reason else "new",
         ), track_id, track_title, reason)
+        return mission
 
     if due_count >= 5:
         return _mission_payload(
@@ -631,6 +784,9 @@ def recommend_next_mission(
             expected_outcome=f"At least {min(5, due_count)} due words reinforced in context.",
             estimated_minutes=7,
             success_signal="Your due queue shrinks and the same words feel easier in live speaking.",
+            adaptation_reason=advance_reason,
+            evidence_source="stage_default",
+            repeat_vs_advance="advance" if advance_reason else "new",
         )
 
     if current_stage == "foundation":
@@ -646,6 +802,9 @@ def recommend_next_mission(
             expected_outcome="One cleaner career-related answer with fewer avoidable slips.",
             estimated_minutes=9,
             success_signal="You can answer in English with fewer corrections and clearer delivery.",
+            adaptation_reason=advance_reason,
+            evidence_source="stage_default",
+            repeat_vs_advance="advance" if advance_reason else "new",
         )
 
     if current_stage in {"career_scenarios", "target_role_simulation"}:
@@ -661,6 +820,9 @@ def recommend_next_mission(
             expected_outcome="One realistic career scenario completed with score and next focus.",
             estimated_minutes=10,
             success_signal="You finish one track with concrete feedback and a clearer next step.",
+            adaptation_reason=advance_reason,
+            evidence_source="stage_default",
+            repeat_vs_advance="advance" if advance_reason else "new",
         )
 
     if error_patterns:
@@ -676,6 +838,9 @@ def recommend_next_mission(
             expected_outcome="Fewer repeats of the most common spoken error.",
             estimated_minutes=8,
             success_signal="That same grammar issue appears less often in the next mission.",
+            adaptation_reason=advance_reason,
+            evidence_source="stage_default",
+            repeat_vs_advance="advance" if advance_reason else "new",
         )
 
     return _mission_payload(
@@ -690,6 +855,9 @@ def recommend_next_mission(
         expected_outcome="One useful practice repetition tied to your current stage.",
         estimated_minutes=8,
         success_signal="You finish with one clearer improvement target for the next session.",
+        adaptation_reason=advance_reason,
+        evidence_source="stage_default",
+        repeat_vs_advance="advance" if advance_reason else "new",
     )
 
 
@@ -712,6 +880,7 @@ class ProgramSnapshotService:
         program_plan = self.learning_plan_service.get_program_plan(plan)
         career_context = self.learning_plan_service.get_career_context(plan)
         interview_pack = self.learning_plan_service.get_interview_pack(plan)
+        project_story_pack = self.learning_plan_service.get_project_story_pack(plan)
         interview_runs = roadmap.get("interview_runs") or []
 
         vocabulary_stats = await self.vocabulary_service.get_vocabulary_stats(user_id)
@@ -790,6 +959,7 @@ class ProgramSnapshotService:
             "program": program_plan,
             "career_context": career_context,
             "interview_pack": interview_pack,
+            "project_story_pack": project_story_pack,
             "mission": mission,
             "gamification": {"xp": xp_info, "streak": streak_info},
             "interview": interview_summary,

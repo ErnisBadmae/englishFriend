@@ -71,6 +71,9 @@ class MissionSummary(BaseModel):
     expected_outcome: str
     estimated_minutes: int
     success_signal: str
+    adaptation_reason: Optional[str] = None
+    evidence_source: str = "stage_default"
+    repeat_vs_advance: str = "new"
 
 
 class ProgramStage(BaseModel):
@@ -110,6 +113,16 @@ class InterviewPackSummary(BaseModel):
     recommended_track: Optional[str] = None
     recommended_track_title: Optional[str] = None
     summary: Optional[str] = None
+
+
+class ProjectStoryPackSummary(BaseModel):
+    target_role: Optional[str] = None
+    problem_statement: Optional[str] = None
+    approach_summary: Optional[str] = None
+    metrics_and_impact: Optional[str] = None
+    english_example_answer: Optional[str] = None
+    weak_spots: list[str] = []
+    updated_at: Optional[str] = None
 
 
 class InterviewRecommendedTrack(BaseModel):
@@ -243,6 +256,9 @@ class SessionEvidence(BaseModel):
     id: str
     session_id: str
     mission_type: str
+    mode: Optional[str] = None
+    task_type: Optional[str] = None
+    linked_goal_context: Optional[str] = None
     mission_title: str
     summary: str
     what_was_trained: str
@@ -250,6 +266,11 @@ class SessionEvidence(BaseModel):
     main_issue: Optional[str] = None
     next_focus: list[str] = []
     evidence_signals: list[str] = []
+    outcome_score: Optional[float] = None
+    weakness_tags: list[str] = []
+    improvement_tags: list[str] = []
+    adaptation_hint: Optional[str] = None
+    mission_reason: Optional[str] = None
     recorded_at: str
     duration_minutes: int = 0
 
@@ -282,6 +303,7 @@ class ProgramSnapshotResponse(BaseModel):
     program: ProgramSummary
     career_context: CareerContextSummary
     interview_pack: Optional[InterviewPackSummary] = None
+    project_story_pack: Optional[ProjectStoryPackSummary] = None
     mission: MissionSummary
     gamification: dict[str, Any]
     interview: InterviewSnapshot
