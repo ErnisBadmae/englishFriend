@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -60,11 +62,45 @@ class MemoryPipeline:
         embedding_service: Optional[EmbeddingService] = None,
         extraction_service: Optional[MemoryExtractionService] = None,
         qdrant_service: Optional[QdrantService] = None,
+        vector_sync_scheduler: Optional[Callable[..., None]] = None,
     ):
         self.db = db
         self._embedding = embedding_service or get_embedding_service()
         self._extraction = extraction_service or get_memory_extraction_service()
         self._qdrant = qdrant_service or get_qdrant_service()
+        self._vector_sync_scheduler = vector_sync_scheduler or self._schedule_qdrant_upsert
+
+    async def _extract_memories_with_retry(
+        self,
+        *,
+        messages: list[dict],
+        existing_memories: list[str],
+        user_id: int,
+    ) -> list:
+        attempts = 2
+        last_exc: MemoryExtractionSoftFailure | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._extraction.extract_from_conversation(
+                    messages=messages,
+                    existing_memories=existing_memories,
+                )
+            except MemoryExtractionSoftFailure as exc:
+                last_exc = exc
+                if exc.reason != "provider_connection_error" or attempt >= attempts:
+                    raise
+                logger.info(
+                    "Retrying memory extraction for user %s after transient provider failure (%s/%s)",
+                    user_id,
+                    attempt,
+                    attempts,
+                )
+                await asyncio.sleep(0.2)
+
+        if last_exc:
+            raise last_exc
+        return []
 
     async def process_conversation(
         self,
@@ -100,9 +136,10 @@ class MemoryPipeline:
 
         try:
             existing = await self._get_existing_memories(user_id)
-            extracted = await self._extraction.extract_from_conversation(
+            extracted = await self._extract_memories_with_retry(
                 messages=messages,
                 existing_memories=[memory.content for memory in existing],
+                user_id=user_id,
             )
             if not extracted:
                 logger.debug("No new memories extracted for user %s", user_id)
@@ -334,21 +371,79 @@ class MemoryPipeline:
             logger.debug("Saved memory %s without vector embedding", memory.id)
             return memory
 
-        qdrant_saved = await self._qdrant.upsert_memory(
-            memory_id=memory.id,
-            user_id=user_id,
-            content=content,
-            embedding=embedding,
-            kind=kind.value,
-            salience=salience,
-            meta=meta,
-        )
-        if not qdrant_saved:
-            logger.warning("Saved memory %s in PostgreSQL but skipped Qdrant sync", memory.id)
-        else:
-            logger.debug("Saved memory %s in PostgreSQL and Qdrant", memory.id)
+        try:
+            self._vector_sync_scheduler(
+                memory_id=memory.id,
+                user_id=user_id,
+                content=content,
+                embedding=embedding,
+                kind=kind.value,
+                salience=salience,
+                meta=meta,
+            )
+            logger.debug("Saved memory %s in PostgreSQL and scheduled vector sync", memory.id)
+        except Exception as exc:
+            logger.warning(
+                "Saved memory %s in PostgreSQL but failed to schedule vector sync: %s",
+                memory.id,
+                exc,
+            )
 
         return memory
+
+    def _schedule_qdrant_upsert(
+        self,
+        *,
+        memory_id: str,
+        user_id: int,
+        content: str,
+        embedding: list[float],
+        kind: str,
+        salience: float,
+        meta: Optional[dict] = None,
+    ) -> None:
+        asyncio.create_task(
+            self._sync_memory_to_qdrant(
+                memory_id=memory_id,
+                user_id=user_id,
+                content=content,
+                embedding=embedding,
+                kind=kind,
+                salience=salience,
+                meta=meta,
+            )
+        )
+
+    async def _sync_memory_to_qdrant(
+        self,
+        *,
+        memory_id: str,
+        user_id: int,
+        content: str,
+        embedding: list[float],
+        kind: str,
+        salience: float,
+        meta: Optional[dict] = None,
+    ) -> None:
+        try:
+            qdrant_saved = await self._qdrant.upsert_memory(
+                memory_id=memory_id,
+                user_id=user_id,
+                content=content,
+                embedding=embedding,
+                kind=kind,
+                salience=salience,
+                meta=meta,
+            )
+        except Exception as exc:
+            logger.warning("Background vector sync failed for memory %s: %s", memory_id, exc)
+            return
+
+        if not qdrant_saved:
+            logger.warning("Saved memory %s in PostgreSQL but Qdrant sync did not complete", memory_id)
+            return
+
+        logger.debug("Background Qdrant sync completed for memory %s", memory_id)
 
 
 def create_memory_pipeline(db: AsyncSession) -> MemoryPipeline:
