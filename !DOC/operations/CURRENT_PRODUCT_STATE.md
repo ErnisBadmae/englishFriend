@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-04-14
+Last updated: 2026-04-21
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
@@ -35,90 +35,56 @@ Do not create a new session log if this file is enough.
 
 ## Golden Path
 1. Noisy user intent comes in through text or voice.
-2. System builds a draft career goal from weak signals.
-3. User confirms or lightly corrects the draft.
-4. System runs a quick baseline assessment.
-5. System compiles a 90-day draft program.
-6. Home shows target, baseline, current stage, and today's mission.
-7. Session produces evidence.
-8. Next mission adapts from that evidence.
+2. System builds and confirms a target career direction.
+3. System runs a lightweight baseline and sets the first stage.
+4. User adds high-signal artifacts such as vacancy context and project notes.
+5. Home shows target, stage, mission, and supporting artifacts.
+6. Guided session runs through the bounded coach flow.
+7. Session produces structured evidence, not only transcript history.
+8. Next mission adapts from repeated weakness, improvement, and career context.
 
 ## What Works Now
-- Program snapshot API aggregates goal, assessment, program, mission, interview, pronunciation, vocabulary, and evidence.
-- Interview loop works end-to-end: run, save, results screen, adaptive next mission.
-- Pronunciation evidence layer exists through provider abstraction with current heuristic text-backed implementation.
-- Guided sessions now save generic session evidence, not only interview outcomes.
-- Internal coach behavior now supports md-driven skill manifests with safe Python fallback, so prompt/policy iteration is less hardcoded without turning the product into a general assistant.
-- The product can now accept a pasted vacancy, sharpen career context, build an interview pack, and store a paid-beta intent signal without adding a separate platform layer.
-- Onboarding now uses code-owned prompt logic for the main flow instead of depending on DB prompt templates.
-- Draft goal state is routing-ready for baseline and first program steps.
-- Home is simplified around target, baseline, mission, and stage instead of a large dashboard.
-- Setup and assessment sessions now support transcript review before send, so weak browser STT is less destructive in the first-run flow.
-- Setup and assessment now use a persistent voice+text composer with helper chips and manual send, so poor STT no longer forces a fragile modal review step.
-- Session end now persists a strong draft goal, not only an explicitly confirmed goal.
-- Graph/session init now treats `draft` as setup-complete enough to move into baseline routing.
-- Experimental modular voice runtime now exists behind `REALTIME_RUNTIME_ENABLED` at `/api/v1/voice/realtime` with explicit transport, STT, turn detection, TTS, and controller boundaries.
-- The new runtime keeps the current text protocol and LangGraph brain, so the stack can benchmark new voice paths without rewriting product state logic.
-- Shared `voice_session` lifecycle now powers both `/chat/v2` and `/realtime`, so user bootstrap and post-session persistence are no longer duplicated across the two main voice paths.
-- Foundation and grammar missions now run through a stricter guided voice flow on `/chat/v2`, so weak STT no longer auto-sends noisy turns into a free-form tutor loop.
-- Learning turns for early foundation work now stay anchored to current work -> recent ML project -> next step, with deterministic clarifications instead of semantic guessing.
-- Primary frontend voice sessions now pass explicit mission metadata from `ProgramSnapshot.mission` into backend init, so `/chat/v2` and `/realtime` do not rely only on roadmap inference for early mission anchoring.
-- `llama_cpp` / Qwen compatibility is now hardened in the adapter layer: empty final content no longer silently propagates, and `final-only` mode is the default contract for the CPU endpoint.
-- Voice bootstrap now assembles a compact `LearnerProfileSummary` plus mission-scoped memory context from roadmap, evidence, and stored memories, so prompt memory is less raw and more stable across sessions.
-- Memory persistence now does a lightweight self-healing pass before save: relative dates are normalized, exact duplicates are dropped, and semantic conflicts are surfaced for profile-level resolution instead of silently bloating prompt context.
-- Mainline voice paths now emit a shared observability envelope across backend layers, including `runtime`, `session_id`, `turn_id`, `phase`, and `mode`.
-- Frontend dev voice sessions now expose a local debug panel with event capture and JSON export, so browser STT, websocket flow, and session handoff can be correlated with backend logs.
-- `/chat/v2` and `/realtime` now enrich websocket payloads with optional runtime metadata, so both paths can be compared through the same smoke harness.
-- Mainline voice paths now carry an explicit `stt_provider` label through session init, websocket payloads, and observability, so smoke runs and benchmark reports can be grouped by STT lane instead of only by transport source.
-- A product-oriented STT benchmark layer now exists: frontend debug exports keep full sent transcripts in dev mode, and `scripts/run_stt_benchmark.py` can score live smoke artifacts or multi-provider case files against role/project/technical-term expectations.
-- Voice session start/end handoff is now hardened for the main frontend path: the first session starts after explicit user gesture/audio unlock, and setup completion now waits for the final farewell before redirecting Home.
-- Session end is now resilient to stale vLLM aliases: missing `qwen32b-32k` falls back to the canonical vLLM model, and `session_end` still returns a deterministic farewell if LLM generation fails.
-- Post-session persistence is safer: gamification failures now rollback locally instead of poisoning the whole shared DB session, and session evidence is persisted before XP side effects.
-- Ops partition management now covers `xp_events` as well as `sessions`, so the local/dev environment has a documented path to stop `xp_events` partition failures from recurring.
-- The first main-loop mission for fresh users now follows `main_contexts[0]` deterministically: workplace-first -> `stakeholder_explanation_drill`, interview-first -> `foundation_speaking_drill`, project-first -> `technical_project_walkthrough`.
-- Live `/chat/v2` routing smoke now passes for all 3 canonical product scenarios (`workplace`, `interview`, `project`), and composer sessions now soft-degrade cleanly when TTS is unavailable instead of behaving like failed sessions.
-- Runtime, pedagogy, and data-flow logging is now ASCII-safe for Windows consoles, so the live smoke path no longer crashes on Unicode log markers.
+- `ProgramSnapshot` now aggregates target state, baseline, mission, interview artifacts, project story artifacts, and evidence in one product-facing response.
+- Shared `voice_session` lifecycle powers `/chat/v2` and `/realtime`, and the frontend passes explicit mission metadata into backend session init.
+- Session bootstrap is now explicitly documented as PostgreSQL-canonical, with Qdrant used only as best-effort retrieval enrichment and Neo4j kept outside the bootstrap path.
+- Session end now persists richer `session_evidence`, including `outcome_score`, `weakness_tags`, `improvement_tags`, `adaptation_hint`, and mission-linked context.
+- `recommend_next_mission()` now supports `repeat` vs `advance` logic and exposes `adaptation_reason`, `evidence_source`, and `repeat_vs_advance` to the frontend.
+- The wedge now includes vacancy upload, interview pack generation, paid-intent capture, project notes, and `project_story_pack`.
+- Post-session hardening is in place: XP writes ensure the monthly `xp_events` partition before insert, memory extraction retries once before soft-failing, and vector sync is scheduled out-of-band after PostgreSQL commit instead of blocking request-time persistence.
+- Backend STT now has a real upgrade lane through `ParakeetSTTProvider` and `POST /api/v1/voice/transcribe`, while browser Vosk remains the current fallback/default path.
 
 ## Known Issues
-- Old users with stale data can surface edge cases; snapshot fallback has been hardened, but more live verification is needed.
-- Frontend bundle is still too large and warns on build.
-- Langfuse is configured in code but disabled locally unless credentials are set.
-- Some old docs are noisy or outdated; use this file as the active continuity source.
-- Browser Vosk is still weak on broken English; the product now has a stronger typed fallback, but STT quality itself is unchanged.
-- `/chat/v2` still contains the older large endpoint implementation; the new modular runtime is additive for now and has not yet replaced that path.
-- Legacy and premium voice paths are not fully aligned yet; `/chat-legacy` and `/chat/plex` still use older init patterns outside the shared mission-contract path.
-- Live retest on the real `llama_cpp` endpoint is still needed after the new Qwen compatibility pass.
-- Memory consolidation is still request-time only; there is no background job yet for periodic profile refresh or deep contradiction cleanup.
-- Cloud LLM resilience is still thin; the practical path today is mostly `Groq -> llama.cpp`.
-- The vocabulary scheduling layer still runs on the current Python FSRS path and has not yet been reviewed against Rust-backed alternatives.
-- The dev debug panel is local-only; frontend debug events are not yet persisted or queryable from the backend.
-- The benchmark layer is artifact-first for now; it can score browser/live exports and structured case files, but first-class server adapters for `faster-whisper` and `Parakeet-TDT` are not wired yet.
-- Strategic risk: product breadth can still drift toward a generic tutor / learning workspace if new features are not filtered through the career-loop moat.
-- Browser-level audio verification is still needed for the main frontend path: first greeting audio, farewell audio before redirect, and clean post-session logs from a real browser session.
-- Local composer sessions now survive TTS failure, but live TTS still degrades in local runs because the Bing endpoint is unavailable.
-- Post-session gamification still hits local `xp_events` partition errors even though session evidence survives and persistence completes.
-- Post-session memory extraction still shows cloud `Connection error` failures in local live runs.
-- There are still local uncommitted tails outside the saved commits: `frontend/src/App.tsx`, deleted `!DOC/REORGANIZATION_SUMMARY.md`, and stray local path `nul`.
+- Old users with stale roadmap state can still surface edge cases; more live verification is needed against non-fresh accounts.
+- Browser Vosk is still weak on broken English; the backend Parakeet lane exists, but live benchmark and rollout tuning are still pending.
+- Browser-level verification is still needed for the main frontend path: first greeting audio, farewell audio before redirect, and clean post-session logs from a real browser run.
+- Memory consolidation is still request-time only; there is no background job yet for periodic profile refresh or contradiction cleanup.
+- Pace and pause evidence are still missing, and pronunciation is still mostly transcript-backed rather than audio-native.
+- `/chat/v2` still contains the older large endpoint implementation; the modular runtime is additive for now, not yet the mainline path.
+- Full `pytest tests -q` still has unrelated legacy failures outside the current wedge work; targeted product-track tests are green.
 
 ## Next Step
-- Fix the remaining local ops blockers first:
-  - `xp_events` partition failure during post-session gamification
-  - memory extraction `Connection error` in the post-session path
-- Then run one browser-level mainline smoke to validate greeting audio, farewell audio, and redirect timing on the real frontend path.
-- Keep the new 3-scenario routing smoke as the product-routing regression gate for `/chat/v2`.
-- Keep the roadmap filtered by moat:
-  - prioritize features that improve goal precision, pedagogy, evidence, or next-mission adaptation
-  - deprioritize features that only add generic tutor breadth
-- Then start the STT benchmark track:
-  - collect the first benchmark-ready artifacts with `STT_BENCHMARK_RUNBOOK.md`
-  - compare current browser Vosk first
-  - then add backend `faster-whisper`
-  - then add backend `Parakeet-TDT`
-  - then add browser-side `Whisper-small/WebGPU`
-- Keep `Cerebras` as the near-term resilience sidecar and keep FSRS review as a parallel, lower-priority track.
-- Keep `deep-research-report.md` as the broader architecture map, but treat this file as the current execution source of truth.
+- Run one real browser smoke pass for `workplace`, `interview`, and `project`, then mark greeting/farewell/redirect as live-verified.
+- Benchmark browser Vosk against backend Parakeet on role capture, project capture, technical terms, and guided-session latency; then choose the mainline STT lane from evidence.
+- Move memory consolidation from request-time only toward a background job.
+- Add richer speaking evidence next: pace, pause patterns, and later audio-backed pronunciation scoring.
+- Keep roadmap decisions filtered by the moat: career state, weak-English pedagogy, structured evidence, and adaptive next-mission routing.
+- Keep PersonaPlex as a premium or advanced delivery lane, not as the primary moat bet for the next cycle.
 
 ## Last Update
+### 2026-04-21
+- Added a short truth-state architecture doc that separates the real hot path from the async/materialization contour: PostgreSQL is canonical, Qdrant is best-effort retrieval, and Neo4j is async-only for now.
+- Moved memory-to-Qdrant sync out of the request path: memory persistence now commits to PostgreSQL first and schedules vector sync as best-effort background work.
+- Added a server-side guard in the XP write path so monthly `xp_events` partitions are ensured before insert instead of relying only on ops scripts.
+- Hardened post-session memory extraction with one retry and a soft-failure outcome, so transient provider connection errors do not poison the whole persistence path.
+- Extended `session_evidence` and mission routing: the product now records richer weakness/improvement signals and can route `repeat` vs `advance` with a visible `adaptation_reason`.
+- Completed the next wedge layer with `project_notes` and `project_story_pack`, and added a backend Parakeet transcription lane behind `POST /api/v1/voice/transcribe`.
+- Verification:
+  - `python -m pytest tests/test_learning_plan_service.py tests/test_program_snapshot_service.py tests/test_xp_service.py tests/test_rag_pipeline.py tests/test_voice_runtime.py tests/test_voice_helpers.py tests/test_voice_session_services.py tests/e2e/test_business_flow.py::test_gamification -q`
+  - `116 passed`
+  - `python -m py_compile app/services/gamification/xp_service.py app/services/ai/memory_pipeline.py app/services/learning_plan_service.py app/services/program_snapshot_service.py app/services/voice_runtime/stt.py app/api/career.py app/api/voice.py`
+  - `npm.cmd run build` in `frontend` passed
+  - `python -m pytest tests -q` still shows unrelated legacy failures outside the current wedge track
+
 ### 2026-04-14
 - Locked the first main-loop mission contract around `main_contexts[0]` for fresh users: workplace-first now routes to `stakeholder_explanation_drill`, interview-first to `foundation_speaking_drill`, and project-first to `technical_project_walkthrough`.
 - Expanded the live `/chat/v2` smoke harness into a 3-scenario routing suite and verified all 3 scenarios against a fresh backend: workplace, interview, and project.

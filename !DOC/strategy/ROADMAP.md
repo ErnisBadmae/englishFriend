@@ -1,161 +1,152 @@
 ---
-last_updated: 2026-03-30
+last_updated: 2026-04-21
 ---
 
 # Roadmap
 
-> Strategic update on 2026-03-30:
-> the execution order in this file is no longer the primary product roadmap.
-> See [PRODUCT_WEDGE_PIVOT_2026-03-30.md](./PRODUCT_WEDGE_PIVOT_2026-03-30.md) for the current wedge, rationale, and next build step.
+This is the active delivery roadmap for the current wedge.
 
-**Summary**: EnglishFriend MVP is ~95% complete with PersonaPlex (full-duplex, 200-400ms, $0) already integrated. The roadmap focuses on launch validation (Phase 1.5), monetization with self-hosted advantage (Phase 2), and scaling to B2B/mobile (Phase 3).
+North star:
 
-## Phase 1: MVP (Status: ~95% Complete)
+`career state -> evidence -> adaptive missions`
 
-**Goal**: Working Free Tier with AI mentor
+Supporting architectural map:
+[../architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md](../architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md)
 
-**Completed**:
-- ✅ Vosk STT — working (browser WASM, 48kHz→16kHz resampling)
-- ✅ Groq LLM — configured (llama-3.3-70b-versatile)
-- ✅ edge-tts — working (en-US-AndrewNeural)
-- ✅ Agent V2 (LangGraph) — 4-node state machine, tests pass (7/7)
-- ✅ PersonaPlex integration — full-duplex via NVIDIA Moshi 7B, 200-400ms latency, fallback to legacy stack
-- ✅ Gamification — XP system, streaks implemented
-- ✅ Prometheus + Grafana — metrics for voice, agent, PersonaPlex
-- ✅ PostgreSQL + CDC (Debezium → Kafka) — working
-- ✅ Neo4j + Qdrant — infrastructure deployed
-- ✅ FSRS vocabulary service — code exists (not yet integrated into dialogue)
+## Intended Outcome
 
-**Remaining**:
-- 🔄 Telegram Mini App frontend — verify/finalize
-- 🔄 Basic analytics (retention, session duration dashboards)
-- 🔄 Stabilization and bug fixes
-- 🔄 End-to-end testing of full user journey
+Over the next 6-8 weeks, EnglishFriend should become:
 
----
+- demo-stable on the main guided path
+- stronger on real weak-English speech input
+- better at routing the next mission from actual session evidence
+- more complete on the wedge through vacancy + interview + project story artifacts
 
-## Phase 1.5: Launch & Validate (2-4 weeks)
+This cycle is not about becoming a broader tutor.
+It is about making the current moat legible and repeatable.
 
-**Goal**: Get first 100 users, validate product-market fit
+## Architectural Thesis
 
-**Tasks**:
+The product should be built as:
 
-1. **Closed Beta (week 1-2)**:
-   - 20-50 testers from target audience (Russian-speaking devs)
-   - Source: personal contacts, developer Telegram chats
-   - Fix critical bugs from feedback
+- a vertical career-English coach externally
+- a bounded coach runtime internally
+- a career-state and evidence engine at the center
+- a replaceable voice and STT layer underneath
 
-2. **Soft Launch (week 3-4)**:
-   - Open to 200-500 users
-   - Habr article: "Как мы сделали AI-репетитора с задержкой 200ms"
-   - Telegram channel for the project
-   - Partnerships with 2-3 IT Telegram channels
+Decision rule:
 
-3. **Prepare for scale**:
-   - Referral mechanics (invite friend → +30 min free)
-   - Product Hunt / Hacker News launch prep
-   - Collect and analyze user feedback
+- `Parakeet` is the next mainline STT bet
+- `PersonaPlex` remains a premium or advanced delivery lane
+- the moat comes from state, pedagogy, evidence, and adaptation, not from a voice stack alone
 
-**Success Metrics**:
-- 100 active users
-- 7-day retention >30%
-- Average session >10 minutes
-- 80% of beta testers complete 3+ sessions
+## Track 1: Demo Readiness
 
----
+Timeline: Weeks 1-2
 
-## Phase 2: Premium Launch (2-3 months after Phase 1.5)
+Goal: remove the remaining blockers that make live product demos fragile.
 
-**Goal**: Monetization through Pro Tier ($12.99/month)
+Scope:
 
-**Tasks**:
+- harden post-session gamification so `xp_events` writes do not fail on missing monthly partitions
+- harden post-session memory extraction so transient provider connection failures do not poison the whole run
+- verify main frontend browser behavior for first greeting audio, farewell audio, and redirect timing
 
-1. **Pro Tier Features**:
-   - PersonaPlex as premium voice stack (already integrated, full-duplex, $0 COGS)
-   - Free Tier: Vosk + Groq + edge-tts (30 min/day limit)
-   - Pro Tier: PersonaPlex unlimited + advanced features
+Acceptance:
 
-2. **FSRS Vocabulary in Dialogue**:
-   - Connect existing FSRS code into turn_processor
-   - Organic word repetition during conversations
-   - Post-session vocabulary report (new words + errors)
+- no `xp_events` partition failure on the mainline session end path
+- no fatal post-session failure from one transient memory extraction error
+- one real browser smoke pass for `workplace`, `interview`, and `project`
 
-3. **RAG via Qdrant**:
-   - Infrastructure ready (Qdrant deployed, CDC syncing memories)
-   - Connect semantic search into prompt building
-   - AI remembers past sessions, goals, interests
+## Track 2: Backend STT With Parakeet
 
-4. **Payment System**:
-   - Stripe integration
-   - Free Tier limitations enforcement (30 min/day)
-   - 7-day free trial for Pro
+Timeline: Weeks 2-4
 
-5. **Post-Session Feedback**:
-   - Error summary (grammar, pronunciation patterns)
-   - New vocabulary list with FSRS scheduling
-   - Progress tracking dashboard
+Goal: improve the weakest part of the current loop, speech recognition under broken English.
 
-**Success Metrics**:
-- 500 registered users
-- 5-10% free → paid conversion
-- MRR $500+
-- Churn rate <15%/month
+Scope:
 
----
+- keep browser Vosk as fallback
+- add backend `ParakeetSTTProvider`
+- expose a backend transcription lane through `/api/v1/voice/transcribe`
+- let the frontend switch between browser STT and backend STT without changing product state logic
+- benchmark capture quality on role, project, and technical-term signals
 
-## Phase 3: Scale (6+ months after Phase 2)
+Acceptance:
 
-**Goal**: Growth and diversification
+- `Parakeet` beats browser Vosk on product metrics, not only generic WER
+- p50 latency remains acceptable for guided sessions
+- the default STT choice can be justified from live benchmark evidence
 
-**Tasks**:
+## Track 3: Evidence Loop Hardening
 
-1. **B2B / Corporate Licenses**:
-   - Team Tier: $99/month for up to 10 people
-   - Admin dashboard with team progress
-   - Custom scenarios (business English, technical interviews)
+Timeline: Weeks 3-6
 
-2. **Mobile Application**:
-   - React Native app
-   - Offline vocabulary review (FSRS cards)
-   - Push notifications for spaced repetition
+Goal: make the next mission depend on actual repeated weakness or improvement.
 
-3. **Language Expansion**:
-   - Additional L1 support (Spanish-speaking, Arabic-speaking learners)
-   - Localized error databases per L1
-   - Multi-language system prompts
+Scope:
 
-4. **Group Mode**:
-   - 2-3 students + AI mentor conversation
-   - Peer practice with AI moderation
-   - Competition/collaboration mechanics
+- extend `session_evidence` with richer fields such as `outcome_score`, `weakness_tags`, `improvement_tags`, and `adaptation_hint`
+- route missions by `repeat` vs `advance`, not only by stage default
+- keep weakest-area routing for interview readiness
+- expose `adaptation_reason` in the Home mission card so the user sees why this mission is next
 
-5. **Advanced Analytics**:
-   - Weak point detection (grammar, vocabulary, pronunciation)
-   - Automatic material recommendations
-   - Progress export (PDF/Excel)
+Acceptance:
 
-6. **Emotional Intelligence**:
-   - Frustration detection → task simplification
-   - Boredom detection → topic switch
-   - Leverage PersonaPlex prosody data
+- repeated weakness leads to a narrower repeat drill
+- visible improvement advances the learner to the next step
+- fallback stays stable when evidence is weak or mixed
 
-**Success Metrics**:
-- 1000+ paying users (Pro + Team)
-- MRR $10K+
-- B2B contracts signed
-- NPS >50
+## Track 4: Wedge Completion Through Project Story Pack
 
----
+Timeline: Weeks 4-8
 
-## Success Metrics Summary
+Goal: move from a 3/5 wedge to a more complete career loop.
 
-| Phase | Users | Retention | Revenue |
-|-------|-------|-----------|---------|
-| 1.5 (Launch) | 100 active | 30% 7-day | — |
-| 2 (Premium) | 500 registered, 25-50 pro | — | MRR $500+ |
-| 3 (Scale) | 1000+ paying | — | MRR $10K+ |
+Scope:
 
----
+- capture raw `project_notes`
+- generate `project_story_pack`
+- surface it in the snapshot and Home
+- feed weak spots from the project story back into session evidence and mission routing
 
-*For business context, see [Business Strategy](./BUSINESS_STRATEGY.md)*
-*For technical details, see [Technical Strategy](./TECHNICAL_STRATEGY.md)*
+Acceptance:
+
+- vacancy upload, interview pack, project notes, and project story pack work as one guided path
+- weak project storytelling produces future targeted missions
+
+## What We Are Explicitly Not Doing
+
+Do not spend this cycle on:
+
+- generic tutor flows
+- notebook or research workspace surfaces
+- user-facing multi-agent tooling
+- a full realtime stack rewrite
+- FSRS as the headline feature
+- graph or vector infrastructure productization as a user-facing bet
+
+## Verification Gates
+
+Use these gates to keep the roadmap honest.
+
+- browser smoke: one real guided run for `workplace`, `interview`, and `project`
+- STT benchmark: compare browser Vosk vs backend `Parakeet` on role/project/technical-term capture
+- backend tests: repeat vs advance routing, session evidence, XP writes, and voice/session contracts stay green
+- frontend build: Home and voice session flows compile with the new mission and STT paths
+
+## Exit Criteria For This Cycle
+
+This roadmap is successful when:
+
+- the main demo path is stable enough to show repeatedly
+- users can feel the STT improvement in real sessions
+- next missions are visibly tied to prior weakness or improvement
+- the wedge is clearer than "AI voice tutor" and closer to "career-English operating loop"
+
+For current operational status, see [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md).
+
+Если коротко про следующий шаг: сначала live browser smoke и benchmark browser Vosk vs  
+ backend Parakeet, потом background memory consolidation и richer speaking evidence (pace/
+pause, позже pronunciation/audio scoring). Именно эта последовательность усиливает moat, а
+не уводит продукт в generic tutor breadth.
