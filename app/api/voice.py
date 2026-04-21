@@ -779,6 +779,7 @@ async def voice_chat_v2(
     final_mode = "unknown"
     session_status = "disconnected"
     completion_signal_sent = False
+    tts_soft_degraded = False
 
     try:
         session_deps = VoiceSessionDependencies()
@@ -796,23 +797,25 @@ async def voice_chat_v2(
             stt_provider=stt_provider,
         )
         session_id = session_context.session_id
+        resolved_user_id = int(session_context.user_id or user_id)
 
         use_v2 = USE_AGENT_V2
         agent_version = "v2" if use_v2 else "v1"
         session_scope = VoiceSessionScope(
             runtime=runtime_label,
             session_id=session_id,
-            user_id=user_id,
+            user_id=resolved_user_id,
             agent_version=agent_version,
             mission_task_type=mission_task_type,
             stt_provider=stt_provider,
         )
         bind_voice_context(session_scope)
-        logger.info(f"[Voice] Using agent {agent_version} for user {user_id}")
+        logger.info(f"[Voice] Using agent {agent_version} for user {resolved_user_id}")
         agent_version_sessions.labels(version=agent_version).inc()
+        composer_typed_session = str(stt_provider or "").strip().lower() == "composer"
 
         agent_state = await bootstrap_service.initialize_agent_state(
-            user_id=user_id,
+            user_id=resolved_user_id,
             context=session_context,
             use_v2_agent=use_v2,
             explicit_mode=mode,
@@ -853,7 +856,7 @@ async def voice_chat_v2(
         async def persist_session(status: str) -> None:
             request = SessionPersistRequest.from_agent_state(
                 status=status,
-                user_id=user_id,
+                user_id=resolved_user_id,
                 session_id=session_id,
                 final_mode=final_mode,
                 runtime=runtime_label,
@@ -872,6 +875,7 @@ async def voice_chat_v2(
             turn: Optional[int] = None,
             turn_id: Optional[str] = None,
         ) -> None:
+            nonlocal tts_soft_degraded
             envelope = make_turn_envelope(
                 session_scope,
                 turn_id=turn_id,
@@ -893,6 +897,9 @@ async def voice_chat_v2(
 
             await websocket.send_json(payload)
 
+            if composer_typed_session and tts_soft_degraded:
+                return
+
             try:
                 tts_start = time.perf_counter()
                 audio_bytes = await tts.synthesize(text)
@@ -913,16 +920,28 @@ async def voice_chat_v2(
                     audio_bytes=len(audio_bytes),
                 )
             except Exception as e:
-                logger.warning(f"TTS error: {e}")
-                voice_errors_total.labels(stage="tts").inc()
-                log_voice_event(
-                    logger,
-                    envelope=envelope,
-                    layer="tts",
-                    event="tts_failed",
-                    level=logging.WARNING,
-                    error=str(e),
-                )
+                if composer_typed_session:
+                    if not tts_soft_degraded:
+                        tts_soft_degraded = True
+                        logger.info("[Voice] TTS soft-degraded for composer session: %s", e)
+                        log_voice_event(
+                            logger,
+                            envelope=envelope,
+                            layer="tts",
+                            event="tts_soft_degraded",
+                            error=str(e),
+                        )
+                else:
+                    logger.warning(f"TTS error: {e}")
+                    voice_errors_total.labels(stage="tts").inc()
+                    log_voice_event(
+                        logger,
+                        envelope=envelope,
+                        layer="tts",
+                        event="tts_failed",
+                        level=logging.WARNING,
+                        error=str(e),
+                    )
                 return
 
             try:

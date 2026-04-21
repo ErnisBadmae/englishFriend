@@ -89,6 +89,7 @@ class VoiceSessionController:
         self._user_id = user_id
         self._mode = mode
         self._interview_track = interview_track
+        self._resolved_user_id = user_id
         self._mission_task_type = mission_task_type
         self._mission_title = mission_title
         self._mission_reason = mission_reason
@@ -121,7 +122,7 @@ class VoiceSessionController:
         return VoiceSessionScope(
             runtime=self._runtime,
             session_id=self._context.session_id,
-            user_id=self._user_id,
+            user_id=self._resolved_user_id,
             agent_version=self._agent_version,
             mission_task_type=self._mission_task_type or self._agent_state.get("mission_task_type"),
             stt_provider=self._stt_provider_name,
@@ -167,11 +168,12 @@ class VoiceSessionController:
             runtime=self._runtime,
             stt_provider=self._stt_provider_name,
         )
+        self._resolved_user_id = int(self._context.user_id or self._user_id)
         bind_voice_context(self._scope())
         agent_version_sessions.labels(version=self._agent_version).inc()
 
         self._agent_state = await self._bootstrap_service.initialize_agent_state(
-            user_id=self._user_id,
+            user_id=self._resolved_user_id,
             context=self._context,
             use_v2_agent=self._use_v2_agent,
             explicit_mode=self._mode,
@@ -261,7 +263,7 @@ class VoiceSessionController:
         stt_start = time.perf_counter()
         stt_event = await self._stt_provider.transcribe_text(
             decision.text,
-            user_id=self._user_id,
+            user_id=self._resolved_user_id,
             session_id=self._context.session_id,
         )
         stt_duration = time.perf_counter() - stt_start
@@ -574,7 +576,7 @@ class VoiceSessionController:
         """Persist the session state using the shared lifecycle service."""
         request = SessionPersistRequest.from_agent_state(
             status=status,
-            user_id=self._user_id,
+            user_id=self._resolved_user_id,
             session_id=self._context.session_id,
             final_mode=self._final_mode,
             runtime=self._runtime,
