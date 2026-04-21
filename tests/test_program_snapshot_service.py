@@ -185,6 +185,102 @@ def test_recommend_next_mission_uses_foundation_stage_for_speaking_drill():
     assert mission["estimated_minutes"] == 9
 
 
+def test_recommend_next_mission_repeats_when_same_issue_plateaus():
+    mission = recommend_next_mission(
+        goal_brief={
+            "primary_goal": "Get an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "medium_3_6m",
+            "main_contexts": ["project_walkthrough", "interviews"],
+            "status": "confirmed",
+        },
+        program_plan={
+            "current_stage": "career_scenarios",
+            "weekly_focus": ["Explain one project with trade-offs and impact"],
+            "preferred_mode": "free_conversation",
+        },
+        due_count=0,
+        error_patterns=[],
+        has_assessment=True,
+        session_evidence=[
+            {
+                "mission_type": "free_conversation",
+                "mode": "free_conversation",
+                "task_type": "project_walkthrough_drill",
+                "mission_title": "Walk through one technical project",
+                "linked_goal_context": "project_walkthrough",
+                "outcome_score": 0.48,
+                "weakness_tags": ["impact is still vague"],
+                "adaptation_hint": "Repeat the same drill once more and stay narrow around impact is still vague.",
+                "duration_minutes": 10,
+            },
+            {
+                "mission_type": "free_conversation",
+                "mode": "free_conversation",
+                "task_type": "project_walkthrough_drill",
+                "mission_title": "Walk through one technical project",
+                "linked_goal_context": "project_walkthrough",
+                "outcome_score": 0.47,
+                "weakness_tags": ["impact is still vague"],
+                "duration_minutes": 10,
+            },
+        ],
+        interview_runs_count=1,
+    )
+
+    assert mission["task_type"] == "project_walkthrough_drill"
+    assert mission["repeat_vs_advance"] == "repeat"
+    assert mission["evidence_source"] == "repeated_main_issue"
+    assert "impact is still vague" in mission["reason"].lower()
+
+
+def test_recommend_next_mission_marks_advance_when_recent_score_improves():
+    mission = recommend_next_mission(
+        goal_brief={
+            "primary_goal": "Get an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "medium_3_6m",
+            "main_contexts": ["interviews", "project_walkthrough"],
+            "status": "confirmed",
+        },
+        program_plan={
+            "current_stage": "foundation",
+            "weekly_focus": ["Build short, accurate answers about your background"],
+            "preferred_mode": "free_conversation",
+        },
+        due_count=0,
+        error_patterns=[],
+        has_assessment=True,
+        session_evidence=[
+            {
+                "mission_type": "free_conversation",
+                "mode": "free_conversation",
+                "task_type": "foundation_speaking_drill",
+                "mission_title": "Run a foundation speaking drill",
+                "outcome_score": 0.71,
+                "weakness_tags": ["article usage"],
+            },
+            {
+                "mission_type": "free_conversation",
+                "mode": "free_conversation",
+                "task_type": "foundation_speaking_drill",
+                "mission_title": "Run a foundation speaking drill",
+                "outcome_score": 0.55,
+                "weakness_tags": ["article usage"],
+            },
+        ],
+        interview_runs_count=1,
+    )
+
+    assert mission["task_type"] == "foundation_speaking_drill"
+    assert mission["repeat_vs_advance"] == "advance"
+    assert mission["adaptation_reason"]
+
+
 @pytest.mark.parametrize(
     ("main_contexts", "expected_task_type", "expected_context"),
     [

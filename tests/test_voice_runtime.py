@@ -9,7 +9,7 @@ from app.agent.state import AgentPhase, LearningModeEnum
 from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
 from app.services.voice_session import BootstrapContext, SessionCompletion
 from app.services.voice_runtime.controller import VoiceRuntimeDependencies, VoiceSessionController
-from app.services.voice_runtime.stt import PassthroughTextSTTProvider
+from app.services.voice_runtime.stt import ParakeetSTTProvider, PassthroughTextSTTProvider
 from app.services.voice_runtime.turn_detection import ExplicitMessageTurnDetector
 from app.services.voice_runtime.tts import EdgeTTSTTSProvider
 
@@ -62,6 +62,35 @@ async def test_passthrough_text_stt_provider_returns_final_text():
     assert event.type == "final"
     assert event.text == "Interview practice"
     assert event.confidence == 1.0
+
+
+@pytest.mark.asyncio
+async def test_parakeet_stt_provider_normalizes_transcription_payload():
+    response = MagicMock()
+    response.json.return_value = {
+        "text": "Explain one trade-off decision",
+        "confidence": 0.87,
+        "language": "en",
+    }
+    response.raise_for_status = MagicMock()
+
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.post = AsyncMock(return_value=response)
+
+    with patch("app.services.voice_runtime.stt.httpx.AsyncClient", return_value=client):
+        provider = ParakeetSTTProvider(base_url="http://parakeet.local")
+        event = await provider.transcribe_audio(
+            b"audio-bytes",
+            content_type="audio/webm",
+            user_id=1,
+            session_id="s1",
+        )
+
+    assert event.type == "final"
+    assert event.text == "Explain one trade-off decision"
+    assert event.confidence == 0.87
+    assert event.language == "en"
 
 
 @pytest.mark.asyncio

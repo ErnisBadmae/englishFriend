@@ -236,6 +236,7 @@ class TestMemoryPipeline:
             mock_embed.return_value.is_available.return_value = True
             mock_embed.return_value.embed_text = AsyncMock(return_value=[0.1] * 1536)
             mock_qdrant.return_value.upsert_memory = AsyncMock(return_value=True)
+            mock_scheduler = MagicMock()
 
             mock_db = MagicMock()
             mock_db.add = MagicMock()
@@ -244,7 +245,7 @@ class TestMemoryPipeline:
 
             from app.services.ai.memory_pipeline import MemoryPipeline
 
-            pipeline = MemoryPipeline(db=mock_db)
+            pipeline = MemoryPipeline(db=mock_db, vector_sync_scheduler=mock_scheduler)
             result = await pipeline.save_single_memory(
                 user_id=1,
                 content="User loves Python",
@@ -254,7 +255,8 @@ class TestMemoryPipeline:
 
             assert result is not None
             mock_embed.return_value.embed_text.assert_called_once()
-            mock_qdrant.return_value.upsert_memory.assert_called_once()
+            mock_scheduler.assert_called_once()
+            mock_qdrant.return_value.upsert_memory.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_save_single_memory_without_embeddings_uses_db_only(self):
@@ -264,6 +266,7 @@ class TestMemoryPipeline:
 
             mock_embed.return_value.is_available.return_value = False
             mock_qdrant.return_value.upsert_memory = AsyncMock(return_value=True)
+            mock_scheduler = MagicMock()
 
             mock_db = MagicMock()
             mock_db.add = MagicMock()
@@ -272,7 +275,7 @@ class TestMemoryPipeline:
 
             from app.services.ai.memory_pipeline import MemoryPipeline
 
-            pipeline = MemoryPipeline(db=mock_db)
+            pipeline = MemoryPipeline(db=mock_db, vector_sync_scheduler=mock_scheduler)
             result = await pipeline.save_single_memory(
                 user_id=1,
                 content="User loves Python",
@@ -281,6 +284,7 @@ class TestMemoryPipeline:
             )
 
             assert result is not None
+            mock_scheduler.assert_not_called()
             mock_qdrant.return_value.upsert_memory.assert_not_called()
 
     @pytest.mark.asyncio
@@ -318,6 +322,53 @@ class TestMemoryPipeline:
             assert all(record.levelname != "ERROR" for record in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_process_conversation_retries_once_after_transient_provider_error(self):
+        with patch("app.services.ai.memory_pipeline.get_embedding_service") as mock_embed, \
+             patch("app.services.ai.memory_pipeline.get_memory_extraction_service") as mock_extract, \
+             patch("app.services.ai.memory_pipeline.get_qdrant_service") as mock_qdrant:
+
+            mock_embed.return_value.is_available.return_value = False
+            mock_qdrant.return_value.health_check = AsyncMock(return_value=False)
+
+            extracted_memory = MagicMock(
+                kind=MemoryKind.FACT,
+                content="Student works on ML systems",
+                salience=0.8,
+                meta={},
+            )
+            mock_extract.return_value.extract_from_conversation = AsyncMock(
+                side_effect=[
+                    MemoryExtractionSoftFailure(
+                        reason="provider_connection_error",
+                        original_exception=RuntimeError("Connection error."),
+                    ),
+                    [extracted_memory],
+                ]
+            )
+
+            mock_db = MagicMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_db.execute = AsyncMock(return_value=mock_result)
+            mock_db.add = MagicMock()
+            mock_db.commit = AsyncMock()
+            mock_db.refresh = AsyncMock()
+            mock_db.rollback = AsyncMock()
+
+            from app.services.ai.memory_pipeline import MemoryPipeline
+
+            pipeline = MemoryPipeline(db=mock_db)
+            outcome = await pipeline.process_conversation_with_outcome(
+                user_id=1,
+                messages=[{"role": "user", "content": "I work on ML systems"}],
+                session_id="retry-session",
+            )
+
+            assert outcome.status == "saved"
+            assert len(outcome.saved_memories) == 1
+            assert mock_extract.return_value.extract_from_conversation.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_process_conversation_logs_unexpected_bug_as_error(self, caplog):
         caplog.set_level("INFO")
         with patch("app.services.ai.memory_pipeline.get_embedding_service") as mock_embed, \
@@ -347,6 +398,31 @@ class TestMemoryPipeline:
             assert result == []
             assert any(record.levelname == "ERROR" for record in caplog.records)
 
+    @pytest.mark.asyncio
+    async def test_background_qdrant_sync_calls_qdrant_service(self):
+        with patch("app.services.ai.memory_pipeline.get_embedding_service"), \
+             patch("app.services.ai.memory_pipeline.get_memory_extraction_service"), \
+             patch("app.services.ai.memory_pipeline.get_qdrant_service") as mock_qdrant:
+
+            mock_qdrant.return_value.upsert_memory = AsyncMock(return_value=True)
+
+            mock_db = MagicMock()
+
+            from app.services.ai.memory_pipeline import MemoryPipeline
+
+            pipeline = MemoryPipeline(db=mock_db)
+            await pipeline._sync_memory_to_qdrant(
+                memory_id="mem-1",
+                user_id=1,
+                content="User loves Python",
+                embedding=[0.1] * 1536,
+                kind=MemoryKind.PREFERENCE.value,
+                salience=0.7,
+                meta={"source": "test"},
+            )
+
+            mock_qdrant.return_value.upsert_memory.assert_awaited_once()
+
 
 class TestRAGIntegration:
     @pytest.mark.asyncio
@@ -370,6 +446,7 @@ class TestRAGIntegration:
                 ]
             )
             mock_qdrant.return_value.upsert_memory = AsyncMock(return_value=True)
+            mock_scheduler = MagicMock()
 
             mock_db = MagicMock()
             mock_result = MagicMock()
@@ -382,7 +459,7 @@ class TestRAGIntegration:
 
             from app.services.ai.memory_pipeline import MemoryPipeline
 
-            pipeline = MemoryPipeline(db=mock_db)
+            pipeline = MemoryPipeline(db=mock_db, vector_sync_scheduler=mock_scheduler)
             result = await pipeline.process_conversation(
                 user_id=1,
                 messages=[
@@ -395,4 +472,5 @@ class TestRAGIntegration:
             assert len(result) == 1
             mock_extract.return_value.extract_from_conversation.assert_called_once()
             mock_embed.return_value.embed_texts.assert_called_once()
-            mock_qdrant.return_value.upsert_memory.assert_called_once()
+            mock_scheduler.assert_called_once()
+            mock_qdrant.return_value.upsert_memory.assert_not_called()

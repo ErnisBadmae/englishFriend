@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -230,25 +230,35 @@ async def test_record_session_evidence_saves_generic_guided_result():
     service = LearningPlanService(db)
     service.get_or_create_plan = AsyncMock(return_value=plan)
 
-    evidence = await service.record_session_evidence(
-        user_id=1,
-        session_id="sess-1",
-        mode="free_conversation",
-        duration_minutes=8,
-        conversation_history=[
-            {"role": "assistant", "content": "Tell me about your work."},
-            {"role": "user", "content": "I build machine learning pipelines."},
-            {"role": "assistant", "content": "What was hard?"},
-            {"role": "user", "content": "Explaining trade-offs clearly."},
-        ],
-        corrections_made=[{"type": "articles", "original": "a architecture", "corrected": "an architecture"}],
-        vocabulary_reviewed=[{"word": "trade-off"}],
-    )
+    with patch("app.services.learning_plan_service.get_memory_extraction_service") as mock_extractor:
+        mock_extractor.return_value.extract_error_patterns = AsyncMock(return_value=[])
+
+        evidence = await service.record_session_evidence(
+            user_id=1,
+            session_id="sess-1",
+            mode="free_conversation",
+            mission_task_type="stakeholder_explanation_drill",
+            mission_title="Explain the project to a stakeholder",
+            mission_linked_goal_context="workplace_communication",
+            duration_minutes=8,
+            conversation_history=[
+                {"role": "assistant", "content": "Tell me about your work."},
+                {"role": "user", "content": "I build machine learning pipelines."},
+                {"role": "assistant", "content": "What was hard?"},
+                {"role": "user", "content": "Explaining trade-offs clearly."},
+            ],
+            corrections_made=[{"type": "articles", "original": "a architecture", "corrected": "an architecture"}],
+            vocabulary_reviewed=[{"word": "trade-off"}],
+        )
 
     assert evidence is not None
     assert evidence["session_id"] == "sess-1"
     assert evidence["mission_type"] == "free_conversation"
+    assert evidence["task_type"] == "stakeholder_explanation_drill"
+    assert evidence["linked_goal_context"] == "workplace_communication"
     assert "articles" in str(evidence["main_issue"])
+    assert evidence["outcome_score"] is not None
+    assert evidence["adaptation_hint"]
     assert plan.roadmap["session_evidence"][0]["session_id"] == "sess-1"
 
 
@@ -275,12 +285,14 @@ async def test_record_session_evidence_deduplicates_by_session_id():
     service = LearningPlanService(db)
     service.get_or_create_plan = AsyncMock(return_value=plan)
 
-    evidence = await service.record_session_evidence(
-        user_id=1,
-        session_id="sess-1",
-        mode="assessment",
-        assessed_level="B1",
-    )
+    with patch("app.services.learning_plan_service.get_memory_extraction_service") as mock_extractor:
+        mock_extractor.return_value.extract_error_patterns = AsyncMock(return_value=[])
+        evidence = await service.record_session_evidence(
+            user_id=1,
+            session_id="sess-1",
+            mode="assessment",
+            assessed_level="B1",
+        )
 
     assert evidence == existing
     assert plan.roadmap["session_evidence"] == [existing]
@@ -382,3 +394,50 @@ async def test_record_paid_intent_stores_latest_signal():
     assert signal["readiness_score"] == 6.4
     assert plan.roadmap["latest_paid_intent"]["source"] == "home_cta"
     assert plan.roadmap["paid_intents"][0]["note"] == "Looks useful"
+
+
+@pytest.mark.asyncio
+async def test_set_project_notes_builds_project_story_pack():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {
+        "goal": "Prepare for an ML role abroad",
+        "goal_brief": {
+            "primary_goal": "Prepare for an ML role abroad",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "open_ended",
+            "main_contexts": ["interviews", "project_walkthrough"],
+            "status": "confirmed",
+        },
+        "career_context": {
+            "target_role": "ML Engineer",
+            "vacancy_present": True,
+            "vacancy_summary": "ML Engineer role for an international company",
+        },
+        "vacancy_text": "Hiring an ML Engineer to deploy models, explain trade-offs, and own model performance metrics.",
+        "interview_pack": {
+            "top_blockers": ["Need clearer project walkthroughs"],
+        },
+    }
+    plan.level_target = None
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    updated = await service.set_project_notes(
+        1,
+        "I built a churn prediction model for subscription users. I designed features, chose gradient boosting, "
+        "and worked with product to define the retention metric. The model improved campaign targeting by 18% "
+        "and reduced wasted outreach cost.",
+    )
+
+    pack = service.get_project_story_pack(updated)
+
+    assert pack is not None
+    assert pack["target_role"] == "ML Engineer"
+    assert "churn prediction model" in pack["problem_statement"].lower()
+    assert pack["english_example_answer"]
+    assert isinstance(pack["weak_spots"], list)
+    assert updated.roadmap["project_notes"].startswith("I built a churn prediction model")
