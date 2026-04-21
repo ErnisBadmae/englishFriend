@@ -3,7 +3,7 @@ import { useVoskWithVAD } from '../hooks/useVoskWithVAD';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
 import { useVoiceDebugSession } from '../hooks/useVoiceDebugSession';
-import type { MissionSummary } from '../lib/api';
+import { transcribeVoiceAudio, type MissionSummary } from '../lib/api';
 import { VoiceDebugPanel } from './VoiceDebugPanel';
 import './VoiceChat.css';
 
@@ -80,11 +80,20 @@ export function VoiceChatV2({
   const missionSuccessSignal = mission?.success_signal || null;
   const missionLinkedGoalContext = mission?.linked_goal_context || null;
   const [draftText, setDraftText] = useState('');
+  const [backendIsListening, setBackendIsListening] = useState(false);
+  const [backendIsProcessing, setBackendIsProcessing] = useState(false);
+  const [backendTranscript, setBackendTranscript] = useState('');
+  const [backendError, setBackendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaChunksRef = useRef<Blob[]>([]);
+  const discardNextRecordingRef = useRef(false);
   const completionTimeoutRef = useRef<number | null>(null);
   const farewellTimeoutRef = useRef<number | null>(null);
   const latestPlaybackMetaRef = useRef<{ phase?: string; turnId?: string } | null>(null);
   const latestPlaybackActiveRef = useRef(false);
+  const sendTextRef = useRef<(text: string, meta?: { source?: string }) => void>(() => {});
   const completionFlowRef = useRef<{
     active: boolean;
     finalized: boolean;
@@ -115,6 +124,7 @@ export function VoiceChatV2({
   const requestCompletionRef = useRef<(payload?: { reason?: string; returnScreen?: string; source?: string }) => void>(() => {});
   const isStrictMission = mission?.task_type === 'foundation_speaking_drill'
     || mission?.task_type === 'grammar_rescue';
+  const usesBackendStt = sttProvider !== 'browser_vosk' && sttProvider !== 'composer';
   const debugSession = useVoiceDebugSession(debugEnabled);
   const {
     events: debugEvents,
@@ -127,8 +137,8 @@ export function VoiceChatV2({
   } = debugSession;
 
   const guidedReviewMode = useMemo(
-    () => reviewBeforeSend || isStrictMission || mode === 'assessment' || mode === 'guided_setup' || !mode,
-    [isStrictMission, mode, reviewBeforeSend]
+    () => usesBackendStt || reviewBeforeSend || isStrictMission || mode === 'assessment' || mode === 'guided_setup' || !mode,
+    [isStrictMission, mode, reviewBeforeSend, usesBackendStt]
   );
 
   const composerChips = useMemo(
@@ -327,6 +337,133 @@ export function VoiceChatV2({
     }
   }, [armCompletionFallback, logEvent]);
 
+  const cleanupBackendCapture = useCallback(() => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.ondataavailable = null;
+      mediaRecorderRef.current.onstop = null;
+      mediaRecorderRef.current.onerror = null;
+      mediaRecorderRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    mediaChunksRef.current = [];
+  }, []);
+
+  const handleBackendTranscription = useCallback(async (audioBlob: Blob) => {
+    setBackendIsProcessing(true);
+    setBackendError(null);
+    setBackendTranscript('');
+    try {
+      const result = await transcribeVoiceAudio(
+        userId,
+        audioBlob,
+        sttProvider,
+        latestSessionIdRef.current
+      );
+      const text = result.text.trim();
+      setBackendTranscript(text);
+      logEvent('session', 'backend_stt_transcribed', {
+        sttProvider,
+        textPreview: text.slice(0, 120),
+        charCount: text.length,
+        confidence: result.confidence,
+      });
+      if (!text) {
+        return;
+      }
+      if (guidedReviewMode) {
+        setDraftText((previous) => mergeTranscriptDraft(previous, text));
+        return;
+      }
+      sendTextRef.current(text, { source: sttProvider });
+      setBackendTranscript('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Backend transcription failed';
+      setBackendError(message);
+      logEvent('session', 'backend_stt_failed', {
+        sttProvider,
+        message,
+      });
+    } finally {
+      setBackendIsProcessing(false);
+    }
+  }, [guidedReviewMode, logEvent, sttProvider, userId]);
+
+  const stopBackendCapture = useCallback((discard = false) => {
+    const recorder = mediaRecorderRef.current;
+    discardNextRecordingRef.current = discard;
+    setBackendIsListening(false);
+    if (!recorder) {
+      if (discard) {
+        setBackendTranscript('');
+      }
+      cleanupBackendCapture();
+      return;
+    }
+    if (recorder.state !== 'inactive') {
+      recorder.stop();
+      return;
+    }
+    cleanupBackendCapture();
+  }, [cleanupBackendCapture]);
+
+  const startBackendCapture = useCallback(async () => {
+    if (backendIsListening || backendIsProcessing) {
+      return;
+    }
+    setBackendError(null);
+    setBackendTranscript('');
+    discardNextRecordingRef.current = false;
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+    mediaStreamRef.current = stream;
+    mediaChunksRef.current = [];
+
+    const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : 'audio/webm';
+    const recorder = new MediaRecorder(stream, { mimeType: preferredMimeType });
+    mediaRecorderRef.current = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        mediaChunksRef.current.push(event.data);
+      }
+    };
+    recorder.onerror = () => {
+      setBackendError('Audio recording failed');
+      setBackendIsListening(false);
+      cleanupBackendCapture();
+    };
+    recorder.onstop = () => {
+      const shouldDiscard = discardNextRecordingRef.current;
+      discardNextRecordingRef.current = false;
+      const chunks = [...mediaChunksRef.current];
+      const mimeType = recorder.mimeType || preferredMimeType;
+      cleanupBackendCapture();
+      if (shouldDiscard || chunks.length === 0) {
+        setBackendTranscript('');
+        return;
+      }
+      void handleBackendTranscription(new Blob(chunks, { type: mimeType }));
+    };
+
+    recorder.start();
+    setBackendIsListening(true);
+    logEvent('session', 'backend_stt_capture_started', {
+      sttProvider,
+      mimeType: preferredMimeType,
+    });
+  }, [backendIsListening, backendIsProcessing, cleanupBackendCapture, handleBackendTranscription, logEvent, sttProvider]);
+
   const {
     isModelLoading,
     isModelLoaded,
@@ -340,6 +477,7 @@ export function VoiceChatV2({
     confirmSend,
     error: voskError,
   } = useVoskWithVAD({
+    enabled: !usesBackendStt,
     silenceTimeoutMs: guidedReviewMode ? 4000 : 2500,
     onFinalResult: (text) => {
       console.log('[VoiceChatV2] Final:', text);
@@ -415,6 +553,25 @@ export function VoiceChatV2({
     onDebugEvent: logEvent,
   });
 
+  const activeListening = usesBackendStt ? backendIsListening : isListening;
+  const activeVoiceStatus = usesBackendStt
+    ? (backendIsProcessing
+      ? 'processing'
+      : backendIsListening
+        ? 'listening'
+        : (backendTranscript.trim() || draftText.trim())
+          ? 'ready_to_send'
+          : 'idle')
+    : voiceStatus;
+  const activeTranscript = usesBackendStt ? backendTranscript : transcript;
+  const speechRecognitionReady = usesBackendStt ? true : isModelLoaded;
+  const speechRecognitionLoading = usesBackendStt ? false : isModelLoading;
+  const error = backendError || voskError?.message || wsError;
+
+  useEffect(() => {
+    sendTextRef.current = sendText;
+  }, [sendText]);
+
   useEffect(() => {
     requestCompletionRef.current = (payload) => {
       const completion = completionFlowRef.current;
@@ -426,7 +583,11 @@ export function VoiceChatV2({
       completion.returnScreen = payload?.returnScreen ?? completion.returnScreen;
 
       if (latestListeningRef.current) {
-        cancelAndReset();
+        if (usesBackendStt) {
+          stopBackendCapture(true);
+        } else {
+          cancelAndReset();
+        }
       }
 
       if (completionTimeoutRef.current === null) {
@@ -452,7 +613,7 @@ export function VoiceChatV2({
         requestSessionEnd();
       }
     };
-  }, [cancelAndReset, logEvent, requestSessionEnd]);
+  }, [cancelAndReset, logEvent, requestSessionEnd, stopBackendCapture, usesBackendStt]);
 
   useEffect(() => {
     finalizeSessionRef.current = (source: string) => {
@@ -464,6 +625,9 @@ export function VoiceChatV2({
       completion.finalized = true;
       clearCompletionTimers();
       stopAudio();
+      if (usesBackendStt) {
+        stopBackendCapture(true);
+      }
       disconnect({
         sendEnd: false,
         resetMessages: false,
@@ -484,7 +648,7 @@ export function VoiceChatV2({
         });
       }, debugEnabled ? 700 : 200);
     };
-  }, [clearCompletionTimers, debugEnabled, disconnect, logEvent, onSessionEnded, stopAudio]);
+  }, [clearCompletionTimers, debugEnabled, disconnect, logEvent, onSessionEnded, stopAudio, stopBackendCapture, usesBackendStt]);
 
   useEffect(() => {
     autoCompleteHandlerRef.current = (payload) => {
@@ -508,8 +672,8 @@ export function VoiceChatV2({
   }, [sessionId, setSessionMeta]);
 
   useEffect(() => {
-    latestListeningRef.current = isListening;
-  }, [isListening]);
+    latestListeningRef.current = activeListening;
+  }, [activeListening]);
 
   useEffect(() => {
     latestPlaybackActiveRef.current = isPlaying;
@@ -518,14 +682,17 @@ export function VoiceChatV2({
   useEffect(() => {
     setSessionMeta({
       latestDraftText: draftText || null,
-      latestTranscriptPreview: transcript || null,
-      isListening,
-      voiceStatus,
+      latestTranscriptPreview: activeTranscript || null,
+      isListening: activeListening,
+      voiceStatus: activeVoiceStatus,
       isAudioReady,
     });
-  }, [draftText, isAudioReady, isListening, setSessionMeta, transcript, voiceStatus]);
+  }, [activeListening, activeTranscript, activeVoiceStatus, draftText, isAudioReady, setSessionMeta]);
 
   useEffect(() => {
+    if (usesBackendStt) {
+      return;
+    }
     if (voiceStatus !== 'ready_to_send' || !transcript.trim()) {
       return;
     }
@@ -549,7 +716,7 @@ export function VoiceChatV2({
       });
       sendText(text, { source: 'browser_vosk' });
     }
-  }, [voiceStatus, transcript, guidedReviewMode, stopListening, confirmSend, logEvent, sendText]);
+  }, [voiceStatus, transcript, guidedReviewMode, stopListening, confirmSend, logEvent, sendText, usesBackendStt]);
 
   const handleSendGuidedDraft = useCallback(() => {
     const text = draftText.trim();
@@ -558,6 +725,7 @@ export function VoiceChatV2({
     }
     cancelAndReset();
     setDraftText('');
+    setBackendTranscript('');
     logEvent('session', 'composer_send', {
       textPreview: text.slice(0, 120),
       charCount: text.length,
@@ -577,6 +745,32 @@ export function VoiceChatV2({
         });
       }
       connect();
+      return;
+    }
+
+    if (usesBackendStt) {
+      if (backendIsProcessing) {
+        return;
+      }
+      if (backendIsListening) {
+        stopBackendCapture(false);
+        return;
+      }
+      if (draftText.trim()) {
+        handleSendGuidedDraft();
+        return;
+      }
+      try {
+        await startBackendCapture();
+        logEvent('session', 'listening_requested', {
+          guidedReviewMode: true,
+          sttProvider,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to start recording';
+        setBackendError(message);
+        logEvent('audio', 'backend_capture_failed', { message, sttProvider });
+      }
       return;
     }
 
@@ -658,17 +852,34 @@ export function VoiceChatV2({
     confirmSend,
     sendText,
     cancelAndReset,
+    backendIsListening,
+    backendIsProcessing,
+    setBackendError,
+    startBackendCapture,
+    stopBackendCapture,
+    sttProvider,
+    usesBackendStt,
   ]);
 
   const handleRetryGuided = useCallback(() => {
-    cancelAndReset();
+    if (usesBackendStt) {
+      stopBackendCapture(true);
+      setBackendTranscript('');
+      setBackendError(null);
+    } else {
+      cancelAndReset();
+    }
     setDraftText('');
-  }, [cancelAndReset]);
+  }, [cancelAndReset, stopBackendCapture, usesBackendStt]);
 
   const handleTypeInstead = useCallback(() => {
-    const currentTranscript = transcript.trim();
-    if (isListening) {
-      stopListening();
+    const currentTranscript = activeTranscript.trim();
+    if (activeListening) {
+      if (usesBackendStt) {
+        stopBackendCapture(true);
+      } else {
+        stopListening();
+      }
     }
     if (currentTranscript) {
       setDraftText((previous) => mergeTranscriptDraft(previous, currentTranscript));
@@ -681,7 +892,7 @@ export function VoiceChatV2({
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(draftText.length, draftText.length);
     }, 0);
-  }, [draftText.length, isListening, logEvent, stopListening, transcript]);
+  }, [activeListening, activeTranscript, draftText.length, logEvent, stopBackendCapture, stopListening, usesBackendStt]);
 
   const handleInsertChip = useCallback((chip: string) => {
     setDraftText((previous) => mergeTranscriptDraft(previous, chip));
@@ -692,7 +903,14 @@ export function VoiceChatV2({
   }, [logEvent]);
 
   const handleEndSession = useCallback(() => {
-    if (isListening) {
+    if (activeListening) {
+      if (usesBackendStt) {
+        stopBackendCapture(true);
+      } else {
+        cancelAndReset();
+      }
+    }
+    if (isListening && !usesBackendStt) {
       cancelAndReset();
     }
     logEvent('session', 'session_end_clicked', {
@@ -704,16 +922,19 @@ export function VoiceChatV2({
       returnScreen: 'home',
       source: 'manual_end_button',
     });
-  }, [messages.length, sessionId, isListening, cancelAndReset, logEvent]);
+  }, [activeListening, cancelAndReset, isListening, logEvent, messages.length, sessionId, stopBackendCapture, usesBackendStt]);
 
   useEffect(() => () => {
     clearCompletionTimers();
     stopAudio();
-  }, [clearCompletionTimers, stopAudio]);
+    if (usesBackendStt) {
+      stopBackendCapture(true);
+    }
+  }, [clearCompletionTimers, stopAudio, stopBackendCapture, usesBackendStt]);
 
   const getStatusMessage = () => {
-    if (isModelLoading) return 'Loading speech recognition...';
-    if (!isModelLoaded) return 'Failed to load model';
+    if (speechRecognitionLoading) return 'Loading speech recognition...';
+    if (!speechRecognitionReady && !usesBackendStt) return 'Failed to load model';
     if (isConnecting) return 'Connecting and preparing voice...';
     if (!isConnected) {
       return isAudioReady
@@ -723,15 +944,21 @@ export function VoiceChatV2({
     if (isPlaying) return 'Coach is speaking...';
 
     if (guidedReviewMode) {
-      switch (voiceStatus) {
+      switch (activeVoiceStatus) {
         case 'listening':
-          return 'Listening. Short English is enough.';
+          return usesBackendStt
+            ? 'Recording. Tap again when the answer is complete.'
+            : 'Listening. Short English is enough.';
         case 'thinking':
           return 'Pause detected. We will keep the transcript in the composer.';
         case 'ready_to_send':
-          return 'Transcript ready. Edit key words before sending.';
+          return usesBackendStt
+            ? 'Transcript ready. Edit key words before sending.'
+            : 'Transcript ready. Edit key words before sending.';
         case 'processing':
-          return 'Coach is responding...';
+          return usesBackendStt
+            ? 'Transcribing your audio...'
+            : 'Coach is responding...';
         default:
           return draftText.trim()
             ? 'Edit the key words, then send.'
@@ -739,7 +966,7 @@ export function VoiceChatV2({
       }
     }
 
-    switch (voiceStatus) {
+    switch (activeVoiceStatus) {
       case 'listening':
         return 'Listening... speak in English';
       case 'thinking':
@@ -755,9 +982,9 @@ export function VoiceChatV2({
 
   const getButtonClass = () => {
     let cls = 'voice-button-v2';
-    if (isListening) cls += ' listening';
-    if (voiceStatus === 'thinking') cls += ' thinking';
-    if (voiceStatus === 'ready_to_send') cls += ' ready';
+    if (activeListening) cls += ' listening';
+    if (activeVoiceStatus === 'thinking') cls += ' thinking';
+    if (activeVoiceStatus === 'ready_to_send') cls += ' ready';
     if (isPlaying) cls += ' playing';
     return cls;
   };
@@ -767,28 +994,27 @@ export function VoiceChatV2({
       return 'Start session';
     }
     if (guidedReviewMode) {
-      if (isListening) {
-        return 'Finish capture';
+      if (activeListening) {
+        return usesBackendStt ? 'Finish recording' : 'Finish capture';
       }
       if (draftText.trim()) {
         return 'Send';
       }
-      return 'Speak';
+      return usesBackendStt ? 'Record' : 'Speak';
     }
-    if (isListening) {
-      return voiceStatus === 'thinking' ? 'Thinking...' : 'Tap to send';
+    if (activeListening) {
+      return activeVoiceStatus === 'thinking' ? 'Thinking...' : 'Tap to send';
     }
     return 'Start speaking';
   };
 
-  const error = voskError?.message || wsError;
   const primaryDisabled = guidedReviewMode
     ? (!isConnected
-      ? (!isModelLoaded || isModelLoading || isConnecting)
-      : (isPlaying || (!draftText.trim() && (!isModelLoaded || isModelLoading))))
+      ? (!speechRecognitionReady || speechRecognitionLoading || isConnecting)
+      : (isPlaying || backendIsProcessing || (!draftText.trim() && (!speechRecognitionReady || speechRecognitionLoading) && !usesBackendStt)))
     : (!isConnected
-      ? (!isModelLoaded || isModelLoading || isConnecting)
-      : (!isModelLoaded || isModelLoading || isPlaying));
+      ? (!speechRecognitionReady || speechRecognitionLoading || isConnecting)
+      : (!speechRecognitionReady || speechRecognitionLoading || isPlaying || backendIsProcessing));
 
   return (
     <div className="voice-chat">
@@ -823,10 +1049,10 @@ export function VoiceChatV2({
           </div>
         ))}
 
-        {isListening && (
-          <div className={`message user current ${voiceStatus}`}>
+        {activeListening && (
+          <div className={`message user current ${activeVoiceStatus}`}>
             <div className="message-content">
-              {transcript || '...'}
+              {activeTranscript || '...'}
             </div>
             {silenceProgress > 0 && (
               <div className="silence-progress">
@@ -839,7 +1065,7 @@ export function VoiceChatV2({
           </div>
         )}
 
-        {voiceStatus === 'processing' && (
+        {activeVoiceStatus === 'processing' && (
           <div className="message assistant processing">
             <div className="message-content">
               <span className="typing-indicator">
@@ -911,7 +1137,7 @@ export function VoiceChatV2({
           onClick={() => void handlePrimaryAction()}
           disabled={primaryDisabled}
         >
-          {isListening ? (
+          {activeListening ? (
             <>
               <span className="pulse-ring"></span>
               <span className="btn-icon">Mic</span>
@@ -927,7 +1153,7 @@ export function VoiceChatV2({
           )}
         </button>
 
-        {isListening && (
+        {activeListening && (
           <button className="cancel-button" onClick={handleRetryGuided}>
             Cancel
           </button>
@@ -941,7 +1167,7 @@ export function VoiceChatV2({
               ? 'Check the key words, then send. If recognition is weak, type the important parts instead.'
               : 'Tap Speak, or type directly if Vosk misses too much.'}
           </p>
-        ) : isListening ? (
+        ) : activeListening ? (
           <p>Take your time. I will wait 2.5 seconds of silence before responding.</p>
         ) : (
           <p>Speak naturally. I understand beginners and will help with mistakes.</p>

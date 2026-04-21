@@ -76,6 +76,9 @@ export interface MissionSummary {
   expected_outcome: string;
   estimated_minutes: number;
   success_signal: string;
+  adaptation_reason?: string | null;
+  evidence_source?: string | null;
+  repeat_vs_advance?: string | null;
 }
 
 export interface CareerContextSummary {
@@ -96,6 +99,16 @@ export interface InterviewPackSummary {
   recommended_track?: string | null;
   recommended_track_title?: string | null;
   summary?: string | null;
+}
+
+export interface ProjectStoryPackSummary {
+  target_role?: string | null;
+  problem_statement?: string | null;
+  approach_summary?: string | null;
+  metrics_and_impact?: string | null;
+  english_example_answer?: string | null;
+  weak_spots: string[];
+  updated_at?: string | null;
 }
 
 export interface ProgramSummary {
@@ -251,6 +264,9 @@ export interface SessionEvidence {
   id: string;
   session_id: string;
   mission_type: string;
+  mode?: string | null;
+  task_type?: string | null;
+  linked_goal_context?: string | null;
   mission_title: string;
   summary: string;
   what_was_trained: string;
@@ -258,6 +274,11 @@ export interface SessionEvidence {
   main_issue?: string | null;
   next_focus: string[];
   evidence_signals: string[];
+  outcome_score?: number | null;
+  weakness_tags: string[];
+  improvement_tags: string[];
+  adaptation_hint?: string | null;
+  mission_reason?: string | null;
   recorded_at: string;
   duration_minutes: number;
 }
@@ -276,6 +297,7 @@ export interface ProgramSnapshot {
   program: ProgramSummary;
   career_context: CareerContextSummary;
   interview_pack?: InterviewPackSummary | null;
+  project_story_pack?: ProjectStoryPackSummary | null;
   mission: MissionSummary;
   gamification: {
     xp: {
@@ -352,6 +374,17 @@ interface SubmitVacancyPayload {
 interface SubmitPaidIntentPayload {
   source: string;
   note?: string;
+}
+
+interface SubmitProjectNotesPayload {
+  project_notes: string;
+}
+
+export interface TranscriptionResult {
+  provider: string;
+  text: string;
+  confidence?: number | null;
+  language?: string | null;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -466,6 +499,9 @@ function normalizeSessionEvidence(raw: unknown): SessionEvidence | null {
     id: typeof record.id === 'string' ? record.id : String(record.session_id),
     session_id: String(record.session_id),
     mission_type: typeof record.mission_type === 'string' ? record.mission_type : 'free_conversation',
+    mode: typeof record.mode === 'string' ? record.mode : null,
+    task_type: typeof record.task_type === 'string' ? record.task_type : null,
+    linked_goal_context: typeof record.linked_goal_context === 'string' ? record.linked_goal_context : null,
     mission_title: typeof record.mission_title === 'string' ? record.mission_title : 'Guided mission',
     summary: typeof record.summary === 'string' ? record.summary : '',
     what_was_trained: typeof record.what_was_trained === 'string' ? record.what_was_trained : '',
@@ -473,6 +509,11 @@ function normalizeSessionEvidence(raw: unknown): SessionEvidence | null {
     main_issue: typeof record.main_issue === 'string' ? record.main_issue : null,
     next_focus: asStringArray(record.next_focus),
     evidence_signals: asStringArray(record.evidence_signals),
+    outcome_score: record.outcome_score == null ? null : Number(record.outcome_score),
+    weakness_tags: asStringArray(record.weakness_tags),
+    improvement_tags: asStringArray(record.improvement_tags),
+    adaptation_hint: typeof record.adaptation_hint === 'string' ? record.adaptation_hint : null,
+    mission_reason: typeof record.mission_reason === 'string' ? record.mission_reason : null,
     recorded_at: typeof record.recorded_at === 'string' ? record.recorded_at : new Date().toISOString(),
     duration_minutes: Number(record.duration_minutes ?? 0),
   };
@@ -487,6 +528,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const mission = asRecord(record.mission);
   const careerContext = asRecord(record.career_context);
   const interviewPack = record.interview_pack ? asRecord(record.interview_pack) : null;
+  const projectStoryPack = record.project_story_pack ? asRecord(record.project_story_pack) : null;
   const gamification = asRecord(record.gamification);
   const xp = asRecord(gamification.xp);
   const streak = asRecord(gamification.streak);
@@ -625,6 +667,15 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       recommended_track_title: typeof interviewPack.recommended_track_title === 'string' ? interviewPack.recommended_track_title : null,
       summary: typeof interviewPack.summary === 'string' ? interviewPack.summary : null,
     } : null,
+    project_story_pack: projectStoryPack ? {
+      target_role: typeof projectStoryPack.target_role === 'string' ? projectStoryPack.target_role : null,
+      problem_statement: typeof projectStoryPack.problem_statement === 'string' ? projectStoryPack.problem_statement : null,
+      approach_summary: typeof projectStoryPack.approach_summary === 'string' ? projectStoryPack.approach_summary : null,
+      metrics_and_impact: typeof projectStoryPack.metrics_and_impact === 'string' ? projectStoryPack.metrics_and_impact : null,
+      english_example_answer: typeof projectStoryPack.english_example_answer === 'string' ? projectStoryPack.english_example_answer : null,
+      weak_spots: asStringArray(projectStoryPack.weak_spots),
+      updated_at: typeof projectStoryPack.updated_at === 'string' ? projectStoryPack.updated_at : null,
+    } : null,
     mission: {
       mode: typeof mission.mode === 'string' ? mission.mode : defaultMission.mode,
       launch_mode: typeof mission.launch_mode === 'string' ? mission.launch_mode : defaultMission.launch_mode ?? null,
@@ -639,6 +690,9 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       expected_outcome: typeof mission.expected_outcome === 'string' ? mission.expected_outcome : defaultMission.expected_outcome,
       estimated_minutes: Number(mission.estimated_minutes ?? defaultMission.estimated_minutes),
       success_signal: typeof mission.success_signal === 'string' ? mission.success_signal : defaultMission.success_signal,
+      adaptation_reason: typeof mission.adaptation_reason === 'string' ? mission.adaptation_reason : null,
+      evidence_source: typeof mission.evidence_source === 'string' ? mission.evidence_source : null,
+      repeat_vs_advance: typeof mission.repeat_vs_advance === 'string' ? mission.repeat_vs_advance : null,
     },
     gamification: {
       xp: {
@@ -804,4 +858,44 @@ export async function submitPaidIntent(userId: number, payload: SubmitPaidIntent
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export async function submitProjectNotes(userId: number, payload: SubmitProjectNotesPayload): Promise<void> {
+  await fetchJson(`/api/v1/career/${userId}/project-notes`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function transcribeVoiceAudio(
+  userId: number,
+  audioBlob: Blob,
+  sttProvider: string,
+  sessionId?: string | null
+): Promise<TranscriptionResult> {
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'voice-input.webm');
+  formData.append('user_id', String(userId));
+  formData.append('session_id', sessionId || 'frontend-session');
+  formData.append('stt_provider', sttProvider);
+
+  const response = await fetch(`${API_BASE}/api/v1/voice/transcribe`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail = `Request failed with status ${response.status}`;
+    try {
+      const data = await response.json() as { detail?: string };
+      if (data.detail) {
+        detail = data.detail;
+      }
+    } catch {
+      // Ignore JSON parse failures.
+    }
+    throw new ApiError(detail, response.status);
+  }
+
+  return response.json() as Promise<TranscriptionResult>;
 }

@@ -29,6 +29,7 @@ export type VoiceStatus =
   | 'processing';    // Отправлено, ждём ответ
 
 interface UseVoskWithVADOptions {
+  enabled?: boolean;
   modelUrl?: string;
   silenceTimeoutMs?: number;
   onFinalResult?: (text: string) => void;
@@ -56,6 +57,7 @@ const DEFAULT_MODEL_URL = '/vosk-model-small-en-us-0.15.zip';
 
 export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWithVADReturn {
   const {
+    enabled = true,
     modelUrl = DEFAULT_MODEL_URL,
     silenceTimeoutMs = VAD_CONFIG.silenceTimeoutMs,
     onFinalResult,
@@ -97,6 +99,7 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
 
   // Загрузка модели
   const loadModel = useCallback(async () => {
+    if (!enabled) return;
     // Используем ref вместо state для проверки
     if (modelRef.current || isLoadingRef.current) return;
 
@@ -160,10 +163,17 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
         setIsModelLoading(false);
       }
     }
-  }, [modelUrl, onDebugEvent, onError]);
+  }, [enabled, modelUrl, onDebugEvent, onError]);
 
   useEffect(() => {
     isMountedRef.current = true;
+    if (!enabled) {
+      setIsModelLoading(false);
+      setIsModelLoaded(false);
+      return () => {
+        isMountedRef.current = false;
+      };
+    }
     loadModel();
 
     return () => {
@@ -194,7 +204,7 @@ export function useVoskWithVAD(options: UseVoskWithVADOptions = {}): UseVoskWith
       // Reset state so model can be reloaded on remount
       isLoadingRef.current = false;
     };
-  }, [loadModel]);
+  }, [enabled, loadModel]);
 
   // Обновление прогресса тишины
   const updateSilenceProgress = useCallback(() => {
