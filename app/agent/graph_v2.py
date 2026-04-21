@@ -48,6 +48,14 @@ from app.core.observability import (
 
 logger = logging.getLogger(__name__)
 
+
+def _ascii_log_preview(value: Any, limit: int = 50) -> str:
+    """Render a console-safe preview for runtime logs."""
+    text = str(value or "")
+    if len(text) > limit:
+        text = f"{text[:limit]}..."
+    return text.encode("ascii", errors="backslashreplace").decode("ascii")
+
 # Feature flag for v2
 USE_AGENT_V2 = os.getenv("USE_AGENT_V2", "true").lower() == "true"
 
@@ -397,8 +405,9 @@ async def run_agent_turn_v2(
     turn_id = get_turn_id()
 
     logger.info(
-        f"[Agent V2] ▶ Turn start | phase={phase.value if hasattr(phase, 'value') else phase} | "
-        f"user_msg='{(user_message or '')[:50]}...'"
+        "[Agent V2] START Turn | phase=%s | user_msg='%s'",
+        phase.value if hasattr(phase, "value") else phase,
+        _ascii_log_preview(user_message, 50),
     )
 
     # Start Langfuse trace for this turn
@@ -440,8 +449,10 @@ async def run_agent_turn_v2(
         new_phase = result.get("current_phase", phase)
 
         logger.info(
-            f"[Agent V2] ◀ Turn complete | phase={new_phase.value if hasattr(new_phase, 'value') else new_phase} | "
-            f"latency={latency_ms:.0f}ms | response='{response}...'"
+            "[Agent V2] END Turn | phase=%s | latency=%.0fms | response='%s'",
+            new_phase.value if hasattr(new_phase, "value") else new_phase,
+            latency_ms,
+            _ascii_log_preview(response, 50),
         )
 
         # Log decision summary
@@ -449,8 +460,10 @@ async def run_agent_turn_v2(
         if decision_log:
             latest = decision_log[-1] if decision_log else {}
             logger.info(
-                f"[Agent V2] 📋 Decision: node={latest.get('node')} | "
-                f"action={latest.get('action')} | reason={latest.get('reason')}"
+                "[Agent V2] DECISION node=%s | action=%s | reason=%s",
+                _ascii_log_preview(latest.get("node"), 40),
+                _ascii_log_preview(latest.get("action"), 40),
+                _ascii_log_preview(latest.get("reason"), 80),
             )
 
         # Update Langfuse trace with results

@@ -21,15 +21,32 @@ from typing import Optional, Any
 
 logger = logging.getLogger("pedagogy")
 
+_CATEGORY_MARKERS = {
+    "GOAL": "GOAL",
+    "INTEREST": "INTEREST",
+    "ASSESS": "ASSESS",
+    "MODE": "MODE",
+    "ERROR": "ERROR",
+    "CORRECT": "CORRECT",
+    "MEMORY": "MEMORY",
+    "SESSION": "SESSION",
+    "PHASE": "PHASE",
+}
+
+
+def _ascii_safe(value: Optional[Any], limit: Optional[int] = None) -> str:
+    """Return a stable ASCII-only representation safe for Windows consoles."""
+    text = "" if value is None else str(value)
+    if limit is not None and len(text) > limit:
+        text = f"{text[:limit]}..."
+    return text.encode("ascii", errors="backslashreplace").decode("ascii")
+
 
 def _preview_text(value: Optional[Any], limit: int) -> str:
     """Render a safe short preview for logs."""
     if value is None:
         return "'<none>'"
-    text = str(value)
-    if len(text) > limit:
-        return f"'{text[:limit]}...'"
-    return f"'{text}'"
+    return f"'{_ascii_safe(value, limit)}'"
 
 
 class PedagogyLogger:
@@ -65,10 +82,16 @@ class PedagogyLogger:
             message: Main log message
             **kwargs: Additional context to include
         """
+        del emoji
         user_prefix = f"[user:{self.user_id}] " if self.user_id else ""
-        context = " ".join(f"{k}={v}" for k, v in kwargs.items()) if kwargs else ""
+        context = " ".join(
+            f"{_ascii_safe(k)}={_ascii_safe(v, 120)}" for k, v in kwargs.items()
+        ) if kwargs else ""
 
-        log_message = f"[PEDAGOGY] {emoji} [{category}] {user_prefix}{message}"
+        log_message = (
+            f"[PEDAGOGY] {_CATEGORY_MARKERS.get(category, category)} "
+            f"[{_ascii_safe(category)}] {user_prefix}{_ascii_safe(message, 240)}"
+        )
         if context:
             log_message += f" | {context}"
 

@@ -47,6 +47,13 @@ class DataFlowLogger:
             "personaplex_turns": 0,
         }
 
+    @staticmethod
+    def _safe_text(value: Any, limit: int = 120) -> str:
+        text = str(value)
+        if len(text) > limit:
+            text = f"{text[:limit]}..."
+        return text.encode("ascii", errors="backslashreplace").decode("ascii")
+
     def log_postgres_write(
         self,
         table: str,
@@ -62,7 +69,8 @@ class DataFlowLogger:
 
         user_info = format_user_info(user_id)
         logger.info(
-            f"📝 POSTGRES {operation}{user_info} → {table}: {data_preview}"
+            f"POSTGRES WRITE {self._safe_text(operation)}{self._safe_text(user_info)} "
+            f"-> {self._safe_text(table)}: {self._safe_text(data_preview)}"
         )
 
     def log_postgres_read(
@@ -77,7 +85,8 @@ class DataFlowLogger:
 
         user_info = format_user_info(user_id)
         logger.info(
-            f"📖 POSTGRES READ{user_info} ← {table}: {query_info} ({result_count} rows)"
+            f"POSTGRES READ{self._safe_text(user_info)} <- {self._safe_text(table)}: "
+            f"{self._safe_text(query_info)} ({result_count} rows)"
         )
 
     def log_qdrant_write(
@@ -95,7 +104,8 @@ class DataFlowLogger:
         vector_info = f" id={vector_id}" if vector_id else ""
 
         logger.info(
-            f"🧠 QDRANT WRITE{user_info}{vector_info} → {collection}: {data_preview}"
+            f"QDRANT WRITE{self._safe_text(user_info)}{self._safe_text(vector_info)} "
+            f"-> {self._safe_text(collection)}: {self._safe_text(data_preview)}"
         )
 
     def log_qdrant_search(
@@ -110,7 +120,8 @@ class DataFlowLogger:
 
         user_info = format_user_info(user_id)
         logger.info(
-            f"🔍 QDRANT SEARCH{user_info} ← {collection}: '{query_preview[:50]}...' ({result_count} results)"
+            f"QDRANT SEARCH{self._safe_text(user_info)} <- {self._safe_text(collection)}: "
+            f"'{self._safe_text(query_preview, 50)}' ({result_count} results)"
         )
 
     def log_neo4j_write(
@@ -127,7 +138,8 @@ class DataFlowLogger:
         user_info = format_user_info(user_id)
 
         logger.info(
-            f"🕸️  NEO4J {operation}{user_info} → {node_type}: {data_preview}"
+            f"NEO4J {self._safe_text(operation)}{self._safe_text(user_info)} "
+            f"-> {self._safe_text(node_type)}: {self._safe_text(data_preview)}"
         )
 
     def log_learning_plan_update(
@@ -139,7 +151,8 @@ class DataFlowLogger:
     ):
         """Логировать обновление плана обучения."""
         logger.info(
-            f"📚 LEARNING_PLAN [user={user_id}] {field}: {old_value} → {new_value}"
+            f"LEARNING_PLAN [user={user_id}] {self._safe_text(field)}: "
+            f"{self._safe_text(old_value)} -> {self._safe_text(new_value)}"
         )
 
     def log_goal_detected(
@@ -150,7 +163,8 @@ class DataFlowLogger:
     ):
         """Логировать определение цели."""
         logger.info(
-            f"🎯 GOAL DETECTED [user={user_id}] from '{message[:50]}...' → {detected_goal}"
+            f"GOAL DETECTED [user={user_id}] from '{self._safe_text(message, 50)}' "
+            f"-> {self._safe_text(detected_goal)}"
         )
 
     def log_vocabulary_card_created(
@@ -161,7 +175,8 @@ class DataFlowLogger:
     ):
         """Логировать создание карточки."""
         logger.info(
-            f"🃏 VOCAB CARD [user={user_id}] created: '{word}' (source: {source})"
+            f"VOCAB CARD [user={user_id}] created: '{self._safe_text(word)}' "
+            f"(source: {self._safe_text(source)})"
         )
 
     def log_fsrs_review(
@@ -173,7 +188,8 @@ class DataFlowLogger:
     ):
         """Логировать FSRS повторение."""
         logger.info(
-            f"🔄 FSRS REVIEW [user={user_id}] '{word}' rated={rating} → next: {next_review}"
+            f"FSRS REVIEW [user={user_id}] '{self._safe_text(word)}' "
+            f"rated={self._safe_text(rating)} -> next: {self._safe_text(next_review)}"
         )
 
     def log_session_summary(
@@ -186,7 +202,7 @@ class DataFlowLogger:
     ):
         """Логировать итоги сессии."""
         logger.info(
-            f"📊 SESSION END [user={user_id}] session={session_id[:8]}... "
+            f"SESSION END [user={user_id}] session={self._safe_text(session_id[:8])}... "
             f"duration={duration_minutes}min, new_words={new_words}, xp={xp_earned}"
         )
 
@@ -202,8 +218,9 @@ class DataFlowLogger:
         """Log PersonaPlex session start."""
         self.stats["personaplex_connections"] += 1
         logger.info(
-            f"🎙️ PERSONAPLEX CONNECT [user={user_id}] "
-            f"session={session_id[:8]}... voice={voice} mode={mode}"
+            f"PERSONAPLEX CONNECT [user={user_id}] "
+            f"session={self._safe_text(session_id[:8])}... voice={self._safe_text(voice)} "
+            f"mode={self._safe_text(mode)}"
         )
 
     def log_personaplex_turn(
@@ -217,8 +234,9 @@ class DataFlowLogger:
         self.stats["personaplex_turns"] += 1
         preview = text_preview[:50] + "..." if len(text_preview) > 50 else text_preview
         logger.info(
-            f"🎙️ PERSONAPLEX TURN session={session_id[:8]}... "
-            f"role={role} latency={latency_ms}ms text={preview}"
+            f"PERSONAPLEX TURN session={self._safe_text(session_id[:8])}... "
+            f"role={self._safe_text(role)} latency={latency_ms}ms "
+            f"text={self._safe_text(preview)}"
         )
 
     def log_personaplex_disconnect(
@@ -231,7 +249,7 @@ class DataFlowLogger:
         minutes = int(duration_seconds // 60)
         seconds = int(duration_seconds % 60)
         logger.info(
-            f"🎙️ PERSONAPLEX DISCONNECT session={session_id[:8]}... "
+            f"PERSONAPLEX DISCONNECT session={self._safe_text(session_id[:8])}... "
             f"turns={turns} duration={minutes}m{seconds}s"
         )
 
@@ -242,7 +260,7 @@ class DataFlowLogger:
     ):
         """Log fallback from PersonaPlex to legacy stack."""
         logger.warning(
-            f"🎙️ PERSONAPLEX FALLBACK [user={user_id}] reason={reason}"
+            f"PERSONAPLEX FALLBACK [user={user_id}] reason={self._safe_text(reason)}"
         )
 
     def get_stats(self) -> dict:
