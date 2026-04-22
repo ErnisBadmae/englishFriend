@@ -7,7 +7,7 @@ Handles:
 
 The product uses a hard guided onboarding flow:
 - noisy speech should still produce a draft career goal
-- a routing-ready draft is enough to move to baseline assessment
+- a routing-ready draft is enough to move to the first useful mission
 - onboarding prompt is code-owned to avoid drift from stale DB templates
 """
 
@@ -16,6 +16,7 @@ import re
 import time
 from typing import Any, Optional
 
+from app.agent.recovery import build_mission_safe_recovery
 from app.agent.guardrails import (
     CONFIDENCE_THRESHOLDS,
     validate_and_sanitize,
@@ -40,6 +41,13 @@ from app.core.metrics import (
 from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
+from app.services.program_snapshot_service import recommend_next_mission
+from app.services.routing.goal_routing import (
+    INTERVIEW_SIGNAL_PATTERNS as _ROUTING_INTERVIEW_PATTERNS,
+    PROJECT_SIGNAL_PATTERNS as _ROUTING_PROJECT_PATTERNS,
+    WORKPLACE_SIGNAL_PATTERNS as _ROUTING_WORKPLACE_PATTERNS,
+    score_context_signals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,29 +72,11 @@ _JOB_SIGNAL_PATTERNS = (
     "remote",
     "company",
 )
-_INTERVIEW_SIGNAL_PATTERNS = (
-    "interview",
-    "interviews",
-    "mock interview",
-    "hr interview",
-)
-_PROJECT_SIGNAL_PATTERNS = (
-    "project",
-    "projects",
-    "architecture",
-    "system design",
-    "tradeoff",
-    "trade off",
-    "explain",
-)
-_WORKPLACE_SIGNAL_PATTERNS = (
-    "team",
-    "meeting",
-    "standup",
-    "manager",
-    "stakeholder",
-    "workplace",
-)
+# Canonical signal patterns live in app.services.routing.goal_routing so the
+# onboarding layer and the snapshot/mission layer agree on primary context.
+_INTERVIEW_SIGNAL_PATTERNS = _ROUTING_INTERVIEW_PATTERNS
+_PROJECT_SIGNAL_PATTERNS = _ROUTING_PROJECT_PATTERNS
+_WORKPLACE_SIGNAL_PATTERNS = _ROUTING_WORKPLACE_PATTERNS
 _VOCAB_SIGNAL_PATTERNS = (
     "vocabulary",
     "words",
@@ -100,6 +90,55 @@ _FLEXIBLE_COMPANY_CONTEXT_PATTERNS = (
     "whatever",
     "any company",
     "no matter",
+)
+_CORRECTION_CUE_PATTERNS = (
+    "actually",
+    "instead",
+    "change it",
+    "change the draft",
+    "change my goal",
+    "not interviews",
+    "not interview",
+    "not project",
+    "not project walkthrough",
+    "not workplace",
+    "not workplace communication",
+    "rather than",
+    "instead of",
+)
+_CONTEXT_NEGATION_PATTERNS: dict[str, tuple[str, ...]] = {
+    "interviews": (
+        "not interview",
+        "not interviews",
+        "instead of interview",
+        "instead of interviews",
+    ),
+    "project_walkthrough": (
+        "not project",
+        "not projects",
+        "not project walkthrough",
+        "instead of project",
+        "instead of projects",
+    ),
+    "workplace_communication": (
+        "not workplace",
+        "not workplace communication",
+        "not team meetings",
+        "instead of workplace",
+        "instead of team meetings",
+    ),
+}
+_ROLE_DOMAIN_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    ("applied scientist", "Applied Scientist", "machine_learning"),
+    ("research scientist", "Research Scientist", "machine_learning"),
+    ("data scientist", "Data Scientist", "data_science"),
+    ("data science", "Data Scientist", "data_science"),
+    ("backend engineer", "Backend Engineer", "software_engineering"),
+    ("frontend engineer", "Frontend Engineer", "software_engineering"),
+    ("software engineer", "Software Engineer", "software_engineering"),
+    ("machine learning engineer", "ML Engineer", "machine_learning"),
+    ("ml engineer", "ML Engineer", "machine_learning"),
+    ("ai engineer", "ML Engineer", "machine_learning"),
 )
 _PROCEED_PATTERNS = (
     "let's go",
@@ -319,11 +358,15 @@ async def onboarding_node(state: AgentState) -> AgentState:
     _update_shadow_intent(state, user_message)
 
     if not user_message.strip():
-        if state.get("goal_setup_complete") and not state.get("assessed_level") and not state.get("_skip_assessment", False):
-            state["pending_response"] = _build_assessment_followup_question(state)
-            state["needs_user_input"] = True
-            state["current_phase"] = AgentPhase.ASSESSMENT
-            state["current_mode"] = LearningModeEnum.ASSESSMENT
+        if state.get("goal_setup_complete") and not state.get("assessed_level"):
+            if _should_run_explicit_assessment(state):
+                state["pending_response"] = _build_assessment_followup_question(state)
+                state["needs_user_input"] = True
+                state["current_phase"] = AgentPhase.ASSESSMENT
+                state["current_mode"] = LearningModeEnum.ASSESSMENT
+            else:
+                _enter_first_useful_mission(state)
+            _record_onboarding_assistant_turn(state)
             return state
 
         if not state.get("goal_setup_complete"):
@@ -343,32 +386,57 @@ async def onboarding_node(state: AgentState) -> AgentState:
         _record_onboarding_assistant_turn(state)
         return state
 
+    explicit_correction = _infer_goal_brief_correction_from_message(
+        state,
+        user_message,
+    )
+    if explicit_correction:
+        corrected_goal_brief = _apply_explicit_goal_correction(
+            state,
+            explicit_correction,
+        )
+        state["pending_response"] = _build_goal_followup_question(
+            corrected_goal_brief,
+            corrected_goal_brief.get("primary_goal"),
+        )
+        state["needs_user_input"] = True
+        _record_onboarding_assistant_turn(state)
+        return state
+
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
     goal_became_routing_ready_this_turn = False
     inferred_goal_brief = _filter_goal_brief_update_for_turn(
-        state, _infer_goal_brief_from_message(user_message, state.get("goal_brief") or {})
+        state,
+        _infer_goal_brief_from_message(
+            user_message,
+            state.get("goal_brief") or {},
+            cumulative_text=_collect_user_transcript(state, current_message=user_message),
+        ),
     )
     if inferred_goal_brief:
         normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
         state["goal_brief"] = normalized_goal_brief
         state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
-        state["setup_step"] = "baseline_assessment" if state["goal_setup_complete"] else "goal_setup"
+        state["setup_step"] = "first_useful_mission" if state["goal_setup_complete"] else "goal_setup"
         if not state.get("detected_goal"):
             state["detected_goal"] = normalized_goal_brief.get("primary_goal")
         goal_became_routing_ready_this_turn = bool(
             state.get("goal_setup_complete") and state.get("last_question_type") == "goal_setup"
         )
         if goal_became_routing_ready_this_turn:
-            state["_skip_assessment"] = False
+            state["_skip_assessment"] = True
 
     if goal_became_routing_ready_this_turn and not state.get("assessed_level"):
-        _enter_assessment_phase(state)
-        state["pending_response"] = _build_assessment_followup_question(state)
+        if _should_run_explicit_assessment(state):
+            _enter_assessment_phase(state)
+            state["pending_response"] = _build_assessment_followup_question(state)
+        else:
+            _enter_first_useful_mission(state)
         state["needs_user_input"] = True
         _record_onboarding_assistant_turn(state)
         return state
 
-    if state.get("goal_setup_complete") and not state.get("assessed_level") and not state.get("_skip_assessment", False):
+    if state.get("goal_setup_complete") and not state.get("assessed_level") and _should_run_explicit_assessment(state):
         state = await _handle_assessment_turn(state, pedagogy)
         add_decision_log(
             state,
@@ -380,6 +448,11 @@ async def onboarding_node(state: AgentState) -> AgentState:
                 "baseline_provisional": state.get("baseline_provisional", False),
             },
         )
+        _record_onboarding_assistant_turn(state)
+        return state
+
+    if state.get("goal_setup_complete") and not state.get("assessed_level") and state.get("_skip_assessment", False):
+        _enter_first_useful_mission(state)
         _record_onboarding_assistant_turn(state)
         return state
 
@@ -413,16 +486,25 @@ async def onboarding_node(state: AgentState) -> AgentState:
             normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
             state["goal_brief"] = normalized_goal_brief
             state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
-            if state["goal_setup_complete"] and not state.get("assessed_level") and not state.get("_skip_assessment", False):
-                _enter_assessment_phase(state)
-                state["pending_response"] = _build_assessment_followup_question(state)
+            if state["goal_setup_complete"] and not state.get("assessed_level"):
+                if _should_run_explicit_assessment(state):
+                    _enter_assessment_phase(state)
+                    state["pending_response"] = _build_assessment_followup_question(state)
+                else:
+                    _enter_first_useful_mission(state)
             else:
                 state["pending_response"] = _build_goal_followup_question(
                     normalized_goal_brief,
                     normalized_goal_brief.get("primary_goal") or state.get("last_user_message"),
                 )
         else:
-            state["pending_response"] = "I'm having trouble right now. Could you repeat that?"
+            state["pending_response"] = build_mission_safe_recovery(
+                mission_task_type=state.get("mission_task_type"),
+                stage="onboarding",
+            )
+            state["fallback_reason"] = type(exc).__name__
+            state["fallback_stage"] = "onboarding"
+            state["retry_attempted"] = bool(_should_retry_first_turn_llm(state))
         state["needs_user_input"] = True
         return state
 
@@ -488,13 +570,14 @@ async def _apply_onboarding_action(
 ) -> AgentState:
     action_type = action.get("action", "")
     response_text = action.get("response_text", "")
-    goal_brief = extract_goal_brief_from_action(action)
+    goal_brief = _filter_llm_goal_brief_extraction(state, extract_goal_brief_from_action(action))
     goal_value = extract_goal_from_action(action)
     inferred_goal_brief = _filter_goal_brief_update_for_turn(
         state,
         _infer_goal_brief_from_message(
             state.get("last_user_message", ""),
             state.get("goal_brief") or {},
+            cumulative_text=_collect_user_transcript(state),
         ),
     )
     merged_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, goal_brief, inferred_goal_brief)
@@ -579,6 +662,7 @@ async def _apply_onboarding_action(
             state["assessed_level"] = level
         if scores:
             state["assessment_scores"] = scores
+        state["assessment_source"] = "explicit_assessment"
         if pedagogy is not None:
             pedagogy.log_level_assessed(
                 user_id=state["user_id"],
@@ -597,9 +681,12 @@ async def _apply_onboarding_action(
             )
             state["last_question_type"] = "goal_setup"
             return state
-        if not state.get("assessed_level") and not state.get("_skip_assessment", False):
-            _enter_assessment_phase(state)
-            state["pending_response"] = _build_assessment_followup_question(state)
+        if not state.get("assessed_level"):
+            if _should_run_explicit_assessment(state):
+                _enter_assessment_phase(state)
+                state["pending_response"] = _build_assessment_followup_question(state)
+            else:
+                _enter_first_useful_mission(state)
             return state
         state["current_phase"] = AgentPhase.LEARNING_SESSION
         state["setup_step"] = "ready_for_program"
@@ -614,9 +701,12 @@ async def _apply_onboarding_action(
 
     if action_type in {"ask_goal", "confirm_goal", "goal_confirmed", "goal_skipped"}:
         if state.get("goal_setup_complete"):
-            if not state.get("assessed_level") and not state.get("_skip_assessment", False):
-                _enter_assessment_phase(state)
-                state["pending_response"] = _build_assessment_followup_question(state)
+            if not state.get("assessed_level"):
+                if _should_run_explicit_assessment(state):
+                    _enter_assessment_phase(state)
+                    state["pending_response"] = _build_assessment_followup_question(state)
+                else:
+                    _enter_first_useful_mission(state)
             else:
                 state["pending_response"] = "I have enough to keep building your program. Let's continue."
                 state["setup_step"] = "ready_for_program"
@@ -684,7 +774,7 @@ def _build_goal_followup_question(goal_brief: dict[str, Any], goal_text: Optiona
         return (
             f"I already have a draft target for {role}"
             f"{f' focused on {contexts}' if contexts else ''}. "
-            "I can move to your baseline now unless you want to correct the draft."
+            "I can move to your first useful mission now unless you want to correct the draft."
         )
 
     first_missing = missing[0]
@@ -788,7 +878,7 @@ You are building a precise career-English goal brief.
 {next_hint}
 Never ask a broad question like "what is your goal?" if a plausible draft already exists.
 If the student is passive, offer short forced-choice options.
-Treat a routing-ready draft goal_brief as enough to move toward baseline assessment.
+Treat a routing-ready draft goal_brief as enough to move toward the first useful mission.
 Use "goal_confirmed" only when the user clearly confirms the draft or clearly restates it.
 
 Respond with JSON:
@@ -832,6 +922,27 @@ def _record_onboarding_user_turn(state: AgentState, user_message: str) -> None:
     state["conversation_history"] = history[-20:]
 
 
+def _collect_user_transcript(
+    state: AgentState,
+    *,
+    current_message: Optional[str] = None,
+) -> str:
+    """Concatenate user turns for cumulative context scoring."""
+    parts: list[str] = []
+    for entry in state.get("conversation_history") or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("role") or "").lower() != "user":
+            continue
+        content = str(entry.get("content") or "").strip()
+        if content:
+            parts.append(content)
+    last_message = (current_message or state.get("last_user_message") or "").strip()
+    if last_message and (not parts or parts[-1] != last_message):
+        parts.append(last_message)
+    return " \n ".join(parts)
+
+
 def _record_onboarding_assistant_turn(state: AgentState) -> None:
     response_text = str(state.get("pending_response") or "").strip()
     if not response_text:
@@ -843,10 +954,90 @@ def _record_onboarding_assistant_turn(state: AgentState) -> None:
     state["conversation_history"] = history[-20:]
 
 
+def _should_run_explicit_assessment(state: AgentState) -> bool:
+    if state.get("mission_task_type") == "baseline_assessment":
+        return True
+    if state.get("setup_step") == "baseline_assessment" and not state.get("_skip_assessment", False):
+        return True
+    if state.get("current_phase") == AgentPhase.ASSESSMENT and not state.get("_skip_assessment", False):
+        return True
+    return state.get("current_mode") == LearningModeEnum.ASSESSMENT and not state.get("_skip_assessment", False)
+
+
 def _enter_assessment_phase(state: AgentState) -> None:
     state["setup_step"] = "baseline_assessment"
     state["current_mode"] = LearningModeEnum.ASSESSMENT
     state["current_phase"] = AgentPhase.ASSESSMENT
+
+
+def _mode_to_learning_mode(mode: Optional[str]) -> LearningModeEnum:
+    if mode == "assessment":
+        return LearningModeEnum.ASSESSMENT
+    if mode == "mock_interview":
+        return LearningModeEnum.MOCK_INTERVIEW
+    if mode == "vocabulary_drill":
+        return LearningModeEnum.VOCABULARY_DRILL
+    if mode == "grammar_focus":
+        return LearningModeEnum.GRAMMAR_FOCUS
+    return LearningModeEnum.FREE_CONVERSATION
+
+
+def _build_first_useful_mission_intro(mission: dict[str, Any]) -> str:
+    task_type = str(mission.get("task_type") or "")
+    if task_type == "technical_project_walkthrough":
+        return (
+            "Let's start with a real mission, not a separate baseline. "
+            "Walk through one recent technical project: problem, approach, metric, and impact."
+        )
+    if task_type == "stakeholder_explanation_drill":
+        return (
+            "Let's start with a real mission, not a separate baseline. "
+            "Explain your project to a non-technical stakeholder in simple English."
+        )
+    if task_type == "foundation_speaking_drill":
+        return (
+            "Let's start with a real mission. "
+            "Tell me in simple English what you do now and what speaking skill feels weakest."
+        )
+    fallback_title = mission.get("title") or "today's drill"
+    fallback_signal = mission.get("success_signal") or "Give me one short answer in English to begin."
+    return (
+        f"Let's start with a real mission: {fallback_title}. "
+        f"{fallback_signal}"
+    )
+
+
+def _enter_first_useful_mission(state: AgentState) -> None:
+    roadmap = state.get("roadmap") or {}
+    goal_brief = _coerce_goal_brief_state(state.get("goal_brief") or {})
+    state["goal_brief"] = goal_brief
+    mission = recommend_next_mission(
+        goal_brief=goal_brief,
+        program_plan=(roadmap or {}).get("program_plan"),
+        due_count=int(state.get("due_vocabulary_count", 0) or 0),
+        error_patterns=list((roadmap or {}).get("error_patterns") or []),
+        has_assessment=False,
+        interview_pack=(roadmap or {}).get("interview_pack"),
+        session_evidence=list((roadmap or {}).get("session_evidence") or []),
+        interview_runs_count=len((roadmap or {}).get("interview_runs") or []),
+    )
+
+    launch_mode = mission.get("launch_mode") or mission.get("mode")
+    state["mission_task_type"] = mission.get("task_type")
+    state["mission_title"] = mission.get("title")
+    state["mission_reason"] = mission.get("reason")
+    state["mission_success_signal"] = mission.get("success_signal")
+    state["mission_linked_goal_context"] = mission.get("linked_goal_context")
+    state["interview_track_id"] = mission.get("interview_track_id")
+    state["current_mode"] = _mode_to_learning_mode(str(launch_mode or "free_conversation"))
+    state["current_phase"] = AgentPhase.LEARNING_SESSION
+    state["setup_step"] = "first_useful_mission"
+    state["last_question_type"] = "first_mission_handoff"
+    state["_skip_assessment"] = True
+    state["anchor_question_id"] = 0
+    state["anchor_follow_up_pending"] = False
+    state["pending_response"] = _build_first_useful_mission_intro(mission)
+    state["needs_user_input"] = True
 
 
 def _get_active_assessment_key(state: AgentState) -> Optional[str]:
@@ -1063,6 +1254,7 @@ def _complete_baseline_assessment(state: AgentState) -> None:
     state["baseline_provisional"] = provisional
     state["baseline_confidence"] = confidence
     state["level_confidence"] = confidence
+    state["assessment_source"] = "explicit_assessment"
     state["setup_step"] = "ready_for_program"
     state["last_question_type"] = "baseline_complete"
     state["session_complete_reason"] = "baseline_complete"
@@ -1150,6 +1342,8 @@ async def _handle_assessment_turn(state: AgentState, pedagogy) -> AgentState:
 def route_after_onboarding(state: AgentState) -> str:
     if state.get("should_end_session"):
         return "session_end"
+    if state.get("last_question_type") == "first_mission_handoff":
+        return "wait_for_input"
     if state.get("current_phase", AgentPhase.ONBOARDING) == AgentPhase.LEARNING_SESSION:
         return "learning"
     if state.get("needs_user_input", True):
@@ -1176,6 +1370,95 @@ def _normalize_assessment_answer(message: Optional[str]) -> str:
     return normalized
 
 
+def _has_explicit_goal_correction_signal(message: str) -> bool:
+    return _has_any_signal(message, _CORRECTION_CUE_PATTERNS)
+
+
+def _negated_contexts_from_message(normalized_message: str) -> set[str]:
+    negated: set[str] = set()
+    for context, patterns in _CONTEXT_NEGATION_PATTERNS.items():
+        if _has_any_signal(normalized_message, patterns):
+            negated.add(context)
+    return negated
+
+
+def _infer_role_domain_from_message(
+    normalized_message: str,
+) -> tuple[Optional[str], Optional[str]]:
+    for pattern, role_label, domain in _ROLE_DOMAIN_PATTERNS:
+        if pattern in normalized_message:
+            return role_label, domain
+    if _has_any_signal(normalized_message, _ML_SIGNAL_PATTERNS):
+        return "ML Engineer", "machine_learning"
+    return None, None
+
+
+def _build_primary_goal_from_brief(goal_brief: dict[str, Any]) -> str:
+    target_role = str(goal_brief.get("target_role") or "international role").strip()
+    primary_context = str(((goal_brief.get("main_contexts") or [None])[0]) or "").strip().lower()
+
+    if primary_context == "workplace_communication":
+        return f"Build English for clearer workplace communication as a {target_role} in an international company."
+    if primary_context == "project_walkthrough":
+        return f"Build English to explain {target_role} projects clearly in an international company."
+    return f"Build English for {target_role} interviews in an international company."
+
+
+def _infer_goal_brief_correction_from_message(
+    state: AgentState,
+    message: str,
+) -> Optional[dict[str, Any]]:
+    goal_brief = state.get("goal_brief") or {}
+    if not state.get("goal_setup_complete"):
+        return None
+    if state.get("current_phase") not in {None, AgentPhase.ONBOARDING}:
+        return None
+
+    normalized_message = _normalize_user_message(message)
+    if not normalized_message.strip() or not _has_explicit_goal_correction_signal(normalized_message):
+        return None
+
+    corrected: dict[str, Any] = {}
+    existing_contexts = list(goal_brief.get("main_contexts") or [])
+    context_scores = score_context_signals(normalized_message)
+    negated_contexts = _negated_contexts_from_message(normalized_message)
+    positive_contexts = [
+        context
+        for context in ("interviews", "workplace_communication", "project_walkthrough")
+        if context_scores.get(context, 0) > 0 and context not in negated_contexts
+    ]
+
+    if positive_contexts:
+        corrected["main_contexts"] = _order_main_contexts(
+            positive_contexts,
+            normalized_message=normalized_message,
+            cumulative_text=normalized_message,
+        )
+    elif negated_contexts and existing_contexts:
+        remaining_contexts = [
+            context for context in existing_contexts
+            if str(context).strip().lower() not in negated_contexts
+        ]
+        remaining_contexts = _dedupe_text(remaining_contexts)
+        if remaining_contexts and remaining_contexts != _dedupe_text(existing_contexts):
+            corrected["main_contexts"] = remaining_contexts
+
+    target_role, domain = _infer_role_domain_from_message(normalized_message)
+    if target_role:
+        corrected["target_role"] = target_role
+    if domain:
+        corrected["domain"] = domain
+    if (
+        _has_any_signal(normalized_message, _JOB_SIGNAL_PATTERNS)
+        or _has_any_signal(normalized_message, _FLEXIBLE_COMPANY_CONTEXT_PATTERNS)
+    ):
+        corrected["target_market"] = "international_company"
+
+    if not corrected:
+        return None
+    return corrected
+
+
 def _update_shadow_intent(state: AgentState, user_message: str) -> None:
     if not (user_message or "").strip():
         state["last_intent"] = None
@@ -1199,30 +1482,27 @@ def _order_main_contexts(
     contexts: list[str],
     *,
     normalized_message: str,
+    cumulative_text: Optional[str] = None,
 ) -> list[str]:
+    """Order ``contexts`` by cumulative signal score.
+
+    ``cumulative_text`` — concatenated onboarding transcript. When provided,
+    scoring is done across the whole transcript, not just the latest reply.
+    This is the core fix for second-turn context drift.
+    """
     unique_contexts = _dedupe_text(contexts)
     if not unique_contexts:
         return []
 
+    scoring_text = cumulative_text if cumulative_text is not None else normalized_message
+    signal_scores = score_context_signals(scoring_text)
     existing_order = {value: index for index, value in enumerate(unique_contexts)}
-    signal_scores = {
-        "interviews": _count_signal_hits(normalized_message, _INTERVIEW_SIGNAL_PATTERNS),
-        "project_walkthrough": _count_signal_hits(normalized_message, _PROJECT_SIGNAL_PATTERNS),
-        "workplace_communication": _count_signal_hits(normalized_message, _WORKPLACE_SIGNAL_PATTERNS),
-    }
-    if signal_scores["workplace_communication"] > 0:
-        signal_scores["workplace_communication"] += 3
-    prior_scores = {
-        value: max(0, len(unique_contexts) - index)
-        for value, index in existing_order.items()
-    }
 
     return sorted(
         unique_contexts,
         key=lambda value: (
             signal_scores.get(value, 0),
-            prior_scores.get(value, 0),
-            -existing_order.get(value, 999),
+            -existing_order.get(value, 999),  # earlier position wins on tie
         ),
         reverse=True,
     )
@@ -1246,7 +1526,15 @@ def _dedupe_text(items: list[str]) -> list[str]:
 def _infer_goal_brief_from_message(
     message: str,
     existing_goal_brief: Optional[dict[str, Any]] = None,
+    *,
+    cumulative_text: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
+    """Infer goal-brief fields from a single user turn.
+
+    ``cumulative_text`` — optional concatenated onboarding transcript so
+    ``main_contexts`` ordering reflects the whole goal-setup conversation,
+    not just the latest reply.
+    """
     normalized_message = _normalize_user_message(message)
     if not normalized_message.strip():
         return None
@@ -1290,6 +1578,7 @@ def _infer_goal_brief_from_message(
         inferred["main_contexts"] = _order_main_contexts(
             contexts,
             normalized_message=normalized_message,
+            cumulative_text=cumulative_text,
         )
     elif inferred.get("domain") == "machine_learning":
         inferred["main_contexts"] = ["interviews", "project_walkthrough", "workplace_communication"]
@@ -1319,18 +1608,100 @@ def _merge_goal_brief(
     existing_goal_brief: dict[str, Any],
     *updates: Optional[dict[str, Any]],
     confirmed: bool = False,
+    reset_confirmation: bool = False,
 ) -> dict[str, Any]:
+    """Merge goal-brief updates, keeping ``main_contexts`` sticky.
+
+    Once the existing brief is routing-ready (``status`` in ``draft`` /
+    ``confirmed``), ``main_contexts`` is not overwritten. New contexts from
+    updates are appended to preserve the primary that onboarding already
+    locked in. Other fields keep the existing last-write-wins behavior.
+    """
     merged = dict(existing_goal_brief or {})
+    if reset_confirmation:
+        merged["confirmed_by_user"] = False
+        if str(merged.get("status") or "").lower() == "confirmed":
+            merged["status"] = "draft"
+    existing_is_sticky = _is_goal_brief_routing_ready(merged)
+    existing_contexts = list(merged.get("main_contexts") or [])
+
     for update in updates:
         if not update:
             continue
         for key, value in update.items():
             if value in (None, "", []):
                 continue
+            if (
+                key == "main_contexts"
+                and existing_is_sticky
+                and existing_contexts
+                and not reset_confirmation
+            ):
+                # Keep the locked-in primary context first; append any new
+                # secondary contexts from the update without reordering.
+                combined = list(existing_contexts)
+                for ctx in value:
+                    if ctx and ctx not in combined:
+                        combined.append(ctx)
+                merged[key] = combined
+                continue
             merged[key] = value
-    if confirmed or merged.get("status") == "confirmed" or merged.get("confirmed_by_user"):
+
+    if not reset_confirmation and (
+        confirmed or merged.get("status") == "confirmed" or merged.get("confirmed_by_user")
+    ):
         merged["confirmed_by_user"] = True
     return _coerce_goal_brief_state(merged)
+
+
+def _apply_explicit_goal_correction(
+    state: AgentState,
+    correction: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_goal_brief = _merge_goal_brief(
+        state.get("goal_brief") or {},
+        {
+            **correction,
+            "confirmed_by_user": False,
+            "routing_decision_source": "explicit_user_correction",
+        },
+        reset_confirmation=True,
+    )
+    if any(key in correction for key in ("main_contexts", "target_role", "domain")):
+        normalized_goal_brief["primary_goal"] = _build_primary_goal_from_brief(
+            normalized_goal_brief
+        )
+
+    state["goal_brief"] = _coerce_goal_brief_state(normalized_goal_brief)
+    state["goal_setup_complete"] = _is_goal_brief_routing_ready(state["goal_brief"])
+    state["goal_needs_confirmation"] = True
+    state["confirmed_goal"] = None
+    state["detected_goal"] = state["goal_brief"].get("primary_goal")
+    state["current_phase"] = AgentPhase.ONBOARDING
+    state["setup_step"] = "goal_setup"
+    state["last_question_type"] = "goal_setup"
+    state["_skip_assessment"] = False
+    return state["goal_brief"]
+
+
+def _filter_llm_goal_brief_extraction(
+    state: AgentState,
+    extracted: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Drop fields that must not change after the goal is routing-ready.
+
+    Protects ``main_contexts``, ``domain``, ``target_role``, and
+    ``target_market`` from second-turn LLM drift. Softer fields (blockers,
+    motivation, deadline) remain editable.
+    """
+    if not extracted:
+        return extracted
+    if not state.get("goal_setup_complete"):
+        return extracted
+
+    protected = {"main_contexts", "domain", "target_role", "target_market"}
+    filtered = {k: v for k, v in extracted.items() if k not in protected}
+    return filtered if filtered else None
 
 
 def _apply_goal_brief_to_state(
