@@ -25,6 +25,7 @@ def test_build_latest_assessment_prefers_proficiency_profile():
             "confidence": 0.71,
             "status": "provisional",
             "provisional": True,
+            "source": "embedded_first_mission",
             "critical_gaps": ["Structured interview answers"],
         },
     }
@@ -36,6 +37,7 @@ def test_build_latest_assessment_prefers_proficiency_profile():
     assert latest["goal_readiness"] == 4.9
     assert latest["status"] == "provisional"
     assert latest["provisional"] is True
+    assert latest["source"] == "embedded_first_mission"
     assert latest["critical_gaps"] == ["Structured interview answers"]
 
 
@@ -64,7 +66,7 @@ def test_recommend_next_mission_requires_goal_setup_before_anything_else():
     assert mission["estimated_minutes"] == 4
 
 
-def test_recommend_next_mission_requests_assessment_after_draft_goal():
+def test_recommend_next_mission_starts_first_useful_mission_after_draft_goal():
     mission = recommend_next_mission(
         goal_brief={
             "primary_goal": "Get an ML role abroad",
@@ -75,15 +77,18 @@ def test_recommend_next_mission_requests_assessment_after_draft_goal():
             "main_contexts": ["interviews"],
             "status": "draft",
         },
-        program_plan={"current_stage": "baseline_assessment", "weekly_focus": []},
+        program_plan={"current_stage": "first_useful_mission", "weekly_focus": []},
         due_count=0,
         error_patterns=[],
         has_assessment=False,
     )
 
-    assert mission["mode"] == "assessment"
-    assert mission["launch_mode"] == "assessment"
-    assert mission["task_type"] == "baseline_assessment"
+    assert mission["mode"] == "free_conversation"
+    assert mission["launch_mode"] == "free_conversation"
+    # primary_context=interviews → foundation speaking drill, not a
+    # domain-driven technical walkthrough.
+    assert mission["task_type"] == "foundation_speaking_drill"
+    assert "baseline" in mission["why_now"].lower()
 
 
 def test_recommend_next_mission_prefers_vocab_when_latest_interview_gap_is_vocab():
@@ -489,7 +494,7 @@ def test_recommend_next_mission_uses_interview_pack_track_for_career_stage():
 
 def test_build_setup_state_guides_user_through_sequence():
     assert build_setup_state(goal_status="incomplete", assessment_complete=False) == "needs_goal"
-    assert build_setup_state(goal_status="draft", assessment_complete=False) == "needs_assessment"
+    assert build_setup_state(goal_status="draft", assessment_complete=False) == "needs_first_mission"
     assert build_setup_state(goal_status="confirmed", assessment_complete=True) == "ready_for_program"
 
 

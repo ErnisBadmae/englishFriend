@@ -59,7 +59,7 @@ def test_infer_goal_brief_accepts_doesnt_matter_as_company_context():
 
 def test_infer_goal_brief_keeps_explicit_workplace_context_first():
     brief = _infer_goal_brief_from_message(
-        "I want to speak better in an international team and later explain ML projects more clearly",
+        "I talk with product managers and operations team on standup and status update meetings",
         {
             "primary_goal": "Get an ML role abroad",
             "target_role": "ML Engineer",
@@ -75,13 +75,14 @@ def test_infer_goal_brief_keeps_explicit_workplace_context_first():
 
 
 @pytest.mark.asyncio
-async def test_transition_to_learning_moves_routing_ready_goal_to_assessment():
+async def test_transition_to_learning_moves_routing_ready_goal_to_first_useful_mission():
     state = create_initial_state(user_id=1, session_id="session-1")
     state["goal_brief"] = {
         "primary_goal": "Get an ML role abroad",
         "target_role": "ML Engineer",
         "domain": "machine_learning",
         "target_market": "international_company",
+        "deadline_type": "open_ended",
         "main_contexts": ["interviews"],
         "status": "incomplete",
     }
@@ -94,12 +95,16 @@ async def test_transition_to_learning_moves_routing_ready_goal_to_assessment():
         pedagogy=None,
     )
 
-    assert updated["current_phase"] == AgentPhase.ASSESSMENT
-    assert "one short speaking baseline" in updated["pending_response"].lower()
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    assert updated["setup_step"] == "first_useful_mission"
+    # primary_context=interviews must anchor the first mission to a
+    # foundation speaking drill, regardless of the ML domain field.
+    assert updated["mission_task_type"] == "foundation_speaking_drill"
+    assert "real mission" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio
-async def test_goal_skipped_keeps_draft_and_moves_to_assessment():
+async def test_goal_skipped_keeps_draft_and_moves_to_first_useful_mission():
     state = create_initial_state(user_id=1, session_id="session-1")
     state["last_user_message"] = "I want a machine learning job abroad and need interview English"
     state["goal_brief"] = {
@@ -121,7 +126,10 @@ async def test_goal_skipped_keeps_draft_and_moves_to_assessment():
 
     assert updated["goal_brief"]["status"] == "draft"
     assert updated["goal_setup_complete"] is True
-    assert "One quick baseline first" in updated["pending_response"]
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    # main_contexts[0] is "interviews" → foundation drill, not project walkthrough.
+    assert updated["mission_task_type"] == "foundation_speaking_drill"
+    assert "real mission" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio
@@ -189,10 +197,11 @@ async def test_initialize_session_v2_treats_draft_goal_as_setup_complete():
     )
 
     assert state["goal_setup_complete"] is True
+    assert state["setup_step"] == "first_useful_mission"
 
 
 @pytest.mark.asyncio
-async def test_onboarding_baseline_counts_turns_and_updates_history():
+async def test_onboarding_first_mission_handoff_counts_turns_and_updates_history():
     state = create_initial_state(user_id=1, session_id="session-1")
     state["goal_brief"] = {
         "primary_goal": "Get an ML role abroad",
@@ -204,15 +213,19 @@ async def test_onboarding_baseline_counts_turns_and_updates_history():
         "status": "draft",
     }
     state["goal_setup_complete"] = True
+    state["_skip_assessment"] = True
     state["last_user_message"] = "I build machine learning models at work."
 
     updated = await onboarding_node(state)
 
     assert updated["turn_count"] == 1
-    assert updated["current_mode"] == LearningModeEnum.ASSESSMENT
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    assert updated["current_mode"] == LearningModeEnum.FREE_CONVERSATION
+    # primary_context=interviews (first in main_contexts) → foundation drill.
+    assert updated["mission_task_type"] == "foundation_speaking_drill"
     assert updated["conversation_history"][0]["role"] == "user"
     assert updated["conversation_history"][-1]["role"] == "assistant"
-    assert "what role do you want" in updated["pending_response"].lower()
+    assert "real mission" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio
@@ -303,7 +316,7 @@ async def test_onboarding_current_role_accepts_affirmative_prefix_answer():
 
 
 @pytest.mark.asyncio
-async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_baseline():
+async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_first_mission():
     state = create_initial_state(user_id=1, session_id="session-1")
     state["last_question_type"] = "goal_setup"
     state["last_user_message"] = "I want a machine learning engineer job abroad."
@@ -311,10 +324,13 @@ async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_baselin
     updated = await onboarding_node(state)
 
     assert updated["goal_setup_complete"] is True
-    assert updated["current_phase"] == AgentPhase.ASSESSMENT
-    assert updated["current_mode"] == LearningModeEnum.ASSESSMENT
-    assert "one quick baseline first" in updated["pending_response"].lower()
-    assert "what do you do now?" in updated["pending_response"].lower()
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    assert updated["current_mode"] == LearningModeEnum.FREE_CONVERSATION
+    # "machine learning engineer job abroad" → primary_context=interviews →
+    # foundation speaking drill, not a technical project walkthrough.
+    assert updated["mission_task_type"] == "foundation_speaking_drill"
+    assert updated["last_question_type"] == "first_mission_handoff"
+    assert "real mission" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio
@@ -341,7 +357,7 @@ async def test_onboarding_llm_error_preserves_inferred_goal_signal():
 
 
 @pytest.mark.asyncio
-async def test_run_agent_turn_v2_first_goal_answer_transitions_to_baseline():
+async def test_run_agent_turn_v2_first_goal_answer_transitions_to_first_mission():
     state = await initialize_session_v2(
         user_id=1,
         session_id="session-1",
@@ -353,16 +369,17 @@ async def test_run_agent_turn_v2_first_goal_answer_transitions_to_baseline():
     updated = await run_agent_turn_v2(state, user_message="I want a machine learning engineer job abroad.")
 
     assert updated["goal_setup_complete"] is True
-    assert updated["current_phase"] == AgentPhase.ASSESSMENT
-    assert updated["current_mode"] == LearningModeEnum.ASSESSMENT
-    assert updated["last_question_type"] == "current_role"
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    assert updated["current_mode"] == LearningModeEnum.FREE_CONVERSATION
+    assert updated["mission_task_type"] == "foundation_speaking_drill"
+    assert updated["last_question_type"] == "first_mission_handoff"
     assert updated["last_intent"]["type"] == "direct_answer"
     assert updated["last_intent"]["policy_action"] == "llm_turn"
-    assert "one quick baseline first" in updated["pending_response"].lower()
+    assert "real mission" in updated["pending_response"].lower()
 
 
 @pytest.mark.asyncio
-async def test_onboarding_assessment_only_route_consumes_current_role_answer():
+async def test_run_agent_turn_v2_second_turn_routes_into_learning_after_first_mission_handoff():
     state = await initialize_session_v2(
         user_id=1,
         session_id="session-1",
@@ -371,12 +388,14 @@ async def test_onboarding_assessment_only_route_consumes_current_role_answer():
     )
     state = await run_agent_turn_v2(state)
     state = await run_agent_turn_v2(state, user_message="I want a machine learning engineer job abroad.")
-    updated = await run_agent_turn_v2(state, user_message="Yes, I work as a data analyst now.")
+    updated = await run_agent_turn_v2(state, user_message="I built a churn model for e-commerce.")
 
-    assert updated["assessment_answers"]["current_role"] == "Yes, I work as a data analyst now."
-    assert updated["assessment_step_index"] == 1
-    assert updated["last_question_type"] == "target_role"
-    assert "what role do you want next" in updated["pending_response"].lower()
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    # primary_context is sticky at "interviews" after first turn → mission stays
+    # pinned to foundation drill even when later user input mentions a project.
+    assert updated["mission_task_type"] == "foundation_speaking_drill"
+    assert updated.get("session_complete_reason") is None
+    assert updated["pending_response"]
 
 
 @pytest.mark.asyncio
@@ -408,7 +427,7 @@ async def test_onboarding_current_role_assessment_does_not_reorder_explicit_work
 
 
 @pytest.mark.asyncio
-async def test_run_agent_turn_v2_workplace_goal_survives_project_signal_during_baseline():
+async def test_run_agent_turn_v2_workplace_goal_survives_into_first_mission_selection():
     state = await initialize_session_v2(
         user_id=1,
         session_id="session-1",
@@ -418,18 +437,69 @@ async def test_run_agent_turn_v2_workplace_goal_survives_project_signal_during_b
 
     state = await run_agent_turn_v2(state)
     state = await run_agent_turn_v2(state, user_message="speaking better in an international team")
-    state = await run_agent_turn_v2(state, user_message="ML engineer job abroad")
-    state = await run_agent_turn_v2(
-        state,
-        user_message="now i am just learning ml theory and try to learn some math theorems and building pet project",
-    )
-    state = await run_agent_turn_v2(state, user_message="ML engineer job abroad")
-    updated = await run_agent_turn_v2(state, user_message="building ai agent and created RAG pipeline")
+    updated = await run_agent_turn_v2(state, user_message="ML engineer job abroad")
 
     assert updated["goal_brief"]["main_contexts"][0] == "workplace_communication"
-    assert updated["assessment_answers"]["current_role"].startswith("now i am just learning ml theory")
-    assert updated["assessment_answers"]["project_task"] == "building ai agent and created RAG pipeline"
-    assert updated["session_complete_reason"] == "baseline_complete"
+    assert updated["mission_task_type"] == "stakeholder_explanation_drill"
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+
+
+@pytest.mark.asyncio
+async def test_onboarding_explicit_correction_rewrites_primary_context_and_requires_confirmation():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Build English for ML Engineer interviews in an international company.",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "draft",
+    }
+    state["goal_setup_complete"] = True
+    state["current_phase"] = AgentPhase.ONBOARDING
+    state["last_question_type"] = "goal_setup"
+    state["last_user_message"] = (
+        "Actually not interviews. I need workplace communication with product managers instead."
+    )
+
+    updated = await onboarding_node(state)
+
+    assert updated["goal_brief"]["main_contexts"][0] == "workplace_communication"
+    assert updated["goal_brief"]["routing_decision_source"] == "explicit_user_correction"
+    assert updated["goal_needs_confirmation"] is True
+    assert updated["current_phase"] == AgentPhase.ONBOARDING
+    assert updated["last_question_type"] == "goal_setup"
+    assert updated["confirmed_goal"] is None
+
+
+@pytest.mark.asyncio
+async def test_onboarding_explicit_correction_can_change_role_and_reset_confirmed_goal():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["goal_brief"] = {
+        "primary_goal": "Build English for ML Engineer interviews in an international company.",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "open_ended",
+        "main_contexts": ["interviews"],
+        "status": "confirmed",
+        "confirmed_by_user": True,
+    }
+    state["confirmed_goal"] = "Build English for ML Engineer interviews in an international company."
+    state["goal_setup_complete"] = True
+    state["current_phase"] = AgentPhase.ONBOARDING
+    state["last_question_type"] = "goal_setup"
+    state["last_user_message"] = "Actually I need data scientist interviews instead."
+
+    updated = await onboarding_node(state)
+
+    assert updated["goal_brief"]["target_role"] == "Data Scientist"
+    assert updated["goal_brief"]["domain"] == "data_science"
+    assert updated["goal_brief"]["status"] == "draft"
+    assert updated["goal_brief"]["main_contexts"][0] == "interviews"
+    assert updated["confirmed_goal"] is None
+    assert updated["goal_needs_confirmation"] is True
 
 
 @pytest.mark.asyncio

@@ -74,6 +74,45 @@ def _session_dependencies():
     return deps, learning_plan_service, memory_pipeline, learner_profile_service
 
 
+def test_session_persist_request_from_agent_state_only_carries_new_assessment():
+    request = SessionPersistRequest.from_agent_state(
+        status="completed",
+        user_id=7,
+        session_id="session-7",
+        final_mode="free_conversation",
+        runtime="chat_v2",
+        existing_goal="ML Engineer",
+        agent_state={
+            "assessed_level": "B1",
+            "assessment_scores": {"fluency": 5.0},
+            "baseline_provisional": True,
+            "baseline_confidence": 0.5,
+        },
+    )
+
+    assert request.assessed_level is None
+    assert request.assessment_source is None
+
+    explicit_request = SessionPersistRequest.from_agent_state(
+        status="completed",
+        user_id=7,
+        session_id="session-7",
+        final_mode="assessment",
+        runtime="chat_v2",
+        existing_goal="ML Engineer",
+        agent_state={
+            "assessed_level": "B1",
+            "assessment_scores": {"fluency": 5.0},
+            "baseline_provisional": True,
+            "baseline_confidence": 0.5,
+            "assessment_source": "explicit_assessment",
+        },
+    )
+
+    assert explicit_request.assessed_level == "B1"
+    assert explicit_request.assessment_source == "explicit_assessment"
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_service_loads_user_learning_vocab_and_memory():
     deps, _, _, _ = _session_dependencies()
@@ -160,6 +199,43 @@ async def test_initialize_agent_state_prefers_resolved_context_user_id():
 
     assert learner_profile_service.build_mission_context.await_args.kwargs["user_id"] == 123
     assert init_v2.await_args.kwargs["user_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_initialize_agent_state_uses_v2_even_when_legacy_flag_is_false():
+    deps, _, _, learner_profile_service = _session_dependencies()
+    service = SessionBootstrapService(AsyncMock(), dependencies=deps)
+
+    bootstrap_context = BootstrapContext(
+        session_id="session-1",
+        user_id=42,
+        username="student",
+        language_level="B1",
+        is_new_user=True,
+        confirmed_goal="ML Engineer",
+        confirmed_interests=[],
+        roadmap={"goal_brief": None},
+        due_vocabulary_count=0,
+        due_vocabulary_words=[],
+        memory_section="",
+        learner_profile_summary=LearnerProfileSummary(goal_summary="ML Engineer abroad"),
+        mission_memory_context=MissionMemoryContext(relevant_memories=["Built recommendation systems"]),
+    )
+
+    with patch(
+        "app.services.voice_session.service.initialize_session_v2",
+        new=AsyncMock(return_value={"user_id": 42}),
+    ) as init_v2:
+        await service.initialize_agent_state(
+            user_id=42,
+            context=bootstrap_context,
+            use_v2_agent=False,
+            runtime="chat_v2",
+            stt_provider="composer",
+        )
+
+    assert learner_profile_service.build_mission_context.await_args.kwargs["user_id"] == 42
+    init_v2.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -256,6 +332,61 @@ async def test_persistence_service_persists_evidence_before_gamification():
 
     assert completion.error is None
     assert call_order == ["interview", "evidence", "gamification"]
+
+
+@pytest.mark.asyncio
+async def test_persistence_service_captures_embedded_baseline_from_first_useful_mission():
+    deps, learning_plan_service, memory_pipeline, _ = _session_dependencies()
+    service = SessionPersistenceService(
+        AsyncMock(),
+        dependencies=deps,
+        learning_plan_service=learning_plan_service,
+        memory_pipeline=memory_pipeline,
+    )
+
+    request = SessionPersistRequest(
+        status="completed",
+        user_id=10,
+        session_id="session-10",
+        final_mode="free_conversation",
+        runtime="chat_v2",
+        existing_goal="ML Engineer",
+        agent_state={
+            "turn_count": 3,
+            "roadmap": {"goal_brief": {"target_role": "ML Engineer"}},
+            "mission_task_type": "technical_project_walkthrough",
+        },
+        conversation_history=[
+            {"role": "assistant", "content": "Walk through one recent project."},
+            {"role": "user", "content": "I built a churn model for e-commerce."},
+            {"role": "assistant", "content": "What was the result?"},
+            {"role": "user", "content": "We improved recall and reduced missed risky users."},
+        ],
+        turn_count=3,
+        corrections_made=[],
+        vocabulary_reviewed=[],
+    )
+
+    with patch(
+        "app.services.voice_session.service.persist_interview_run_if_needed",
+        new=AsyncMock(return_value=None),
+    ), patch(
+        "app.services.voice_session.service.persist_session_evidence_if_needed",
+        new=AsyncMock(return_value={"id": "evidence-1"}),
+    ) as persist_evidence, patch(
+        "app.services.voice_session.service.award_session_gamification",
+        new=AsyncMock(),
+    ):
+        completion = await service.persist(request)
+
+    assert completion.error is None
+    learning_plan_service.record_assessment.assert_awaited_once()
+    record_kwargs = learning_plan_service.record_assessment.await_args.kwargs
+    assert record_kwargs["source"] == "embedded_first_mission"
+    assert record_kwargs["assessed_level"] in {"A2", "B1"}
+    evidence_kwargs = persist_evidence.await_args.kwargs
+    assert evidence_kwargs["assessment_source"] == "embedded_first_mission"
+    assert evidence_kwargs["assessed_level"] in {"A2", "B1"}
 
 
 @pytest.mark.asyncio

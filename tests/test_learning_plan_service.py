@@ -20,7 +20,7 @@ async def test_set_goal_creates_goal_brief_and_program_plan():
     assert plan.roadmap["goal"] == "I want an ML engineer job abroad"
     assert plan.roadmap["goal_brief"]["target_role"] == "ML Engineer"
     assert plan.roadmap["goal_brief"]["status"] == "draft"
-    assert plan.roadmap["program_plan"]["current_stage"] == "baseline_assessment"
+    assert plan.roadmap["program_plan"]["current_stage"] == "first_useful_mission"
 
 
 @pytest.mark.asyncio
@@ -105,11 +105,13 @@ async def test_record_assessment_can_store_provisional_status():
         scores={"fluency": 3.8, "grammar": 3.7, "vocabulary": 4.2, "comprehension": 4.5},
         provisional=True,
         confidence_override=0.44,
+        source="embedded_first_mission",
     )
 
     assert plan.roadmap["proficiency_profile"]["status"] == "provisional"
     assert plan.roadmap["proficiency_profile"]["provisional"] is True
     assert plan.roadmap["proficiency_profile"]["confidence"] == 0.44
+    assert plan.roadmap["proficiency_profile"]["source"] == "embedded_first_mission"
 
 
 def test_get_goal_setup_missing_returns_human_labels():
@@ -218,7 +220,7 @@ async def test_set_goal_preserves_confirmed_status_when_user_confirmed():
     )
 
     assert plan.roadmap["goal_brief"]["status"] == "confirmed"
-    assert plan.roadmap["program_plan"]["current_stage"] == "baseline_assessment"
+    assert plan.roadmap["program_plan"]["current_stage"] == "first_useful_mission"
 
 
 @pytest.mark.asyncio

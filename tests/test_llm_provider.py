@@ -13,6 +13,7 @@ from app.services.ai.llm_provider import (
     LlamaCppProvider,
     OpenAIProvider,
     VLLMProvider,
+    _provider_runtime_metadata,
     clear_provider_cache,
     get_llm_provider,
     sanitize_user_input,
@@ -275,6 +276,15 @@ class TestConfigIntegration:
     def test_cluster_defaults_configured(self):
         from app.core.config import settings
 
-        assert settings.vllm_base_url == "http://192.168.0.27:8000/v1"
+        assert settings.vllm_base_url == "http://192.168.0.18:8000/v1"
+        assert settings.vllm_api_key == "token-abc123"
         assert settings.vllm_model == "qwen32b-32k"
         assert settings.llama_cpp_base_url == "http://192.168.0.18:8001/v1"
+
+    def test_provider_runtime_metadata_hides_secret_value(self):
+        metadata = _provider_runtime_metadata("vllm")
+
+        assert metadata["base_url"] == "http://192.168.0.18:8000/v1"
+        assert metadata["model"] == "qwen32b-32k"
+        assert metadata["api_key_present"] is True
+        assert "token-abc123" not in str(metadata)
