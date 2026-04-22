@@ -1,8 +1,11 @@
 ---
-last_updated: 2026-04-21
+last_updated: 2026-04-22
 ---
 
 # Roadmap
+
+This roadmap is an execution appendix to:
+[../MASTER_PROJECT_VIEW_2026-04-22.md](../MASTER_PROJECT_VIEW_2026-04-22.md)
 
 This is the active delivery roadmap for the current wedge.
 

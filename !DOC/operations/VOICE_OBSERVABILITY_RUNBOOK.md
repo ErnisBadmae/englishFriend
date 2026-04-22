@@ -54,7 +54,7 @@ If one of the 3 is missing, the run is not considered fully instrumented.
 
 Goal:
 
-- validate `goal -> baseline -> session_complete -> return home`
+- validate `goal -> first useful mission -> session_complete -> return home`
 
 Success:
 

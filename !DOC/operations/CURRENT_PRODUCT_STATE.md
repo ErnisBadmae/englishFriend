@@ -1,10 +1,13 @@
 # Current Product State
 
-Last updated: 2026-04-21
+Last updated: 2026-04-22
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
 [../research/deep-research-report.md](../research/deep-research-report.md)
+
+Canonical master project view:
+[../MASTER_PROJECT_VIEW_2026-04-22.md](../MASTER_PROJECT_VIEW_2026-04-22.md)
 
 ## Reporting Rule
 This file is the single place for short progress reports from Codex and Claude Code.
@@ -36,7 +39,7 @@ Do not create a new session log if this file is enough.
 ## Golden Path
 1. Noisy user intent comes in through text or voice.
 2. System builds and confirms a target career direction.
-3. System runs a lightweight baseline and sets the first stage.
+3. System starts with the first useful mission and can infer the first working baseline from that real answer.
 4. User adds high-signal artifacts such as vacancy context and project notes.
 5. Home shows target, stage, mission, and supporting artifacts.
 6. Guided session runs through the bounded coach flow.
@@ -52,6 +55,28 @@ Do not create a new session log if this file is enough.
 - The wedge now includes vacancy upload, interview pack generation, paid-intent capture, project notes, and `project_story_pack`.
 - Post-session hardening is in place: XP writes ensure the monthly `xp_events` partition before insert, memory extraction retries once before soft-failing, and vector sync is scheduled out-of-band after PostgreSQL commit instead of blocking request-time persistence.
 - Backend STT now has a real upgrade lane through `ParakeetSTTProvider` and `POST /api/v1/voice/transcribe`, while browser Vosk remains the current fallback/default path.
+- Live synthetic product eval now exists through `scripts/run_product_synthetic_eval.py`: the service can be measured on `first useful mission -> embedded baseline -> evidence -> ready snapshot` without waiting for full browser voice polish.
+- Live synthetic eval now has `mainline` and `expanded` scenario sets, so the product can be measured both on canonical flows and on more varied user shapes.
+- Canonical routing policy (`app/services/routing/goal_routing.py`) is the single source of truth for `primary_context`, `recommended_track_id`, and `first_mission_task_type`; onboarding, snapshot, and mission selection all read from the same profile.
+- Runtime recovery is mission-safe: `app/agent/recovery.py` returns a drill-pinned next-utterance instead of the legacy `I'm having trouble` generic fallback; synthetic eval now enforces that via `no_generic_fallback_leak`.
+- Synthetic eval now separates routing vs runtime checks, and mainline is a blocking release gate while expanded is advisory-only.
+- Routing correction is now explicit rather than accidental: once the draft is routing-ready, keyword drift stays blocked, but a clear user correction can intentionally rewrite the draft and require reconfirmation.
+- Active voice mainline is now `v2`-only: `/chat`, `/chat/v2`, `/realtime`, and shared bootstrap/runtime no longer branch back into the legacy graph on the request path.
+- `chat_v2` now treats websocket `session_complete` as a post-persistence signal, so live eval can read snapshot immediately after completion without racing the evidence write path.
+- Local/team LLM truth-state is now explicit: mainline chat/runtime should use `vllm` via `http://192.168.0.18:8000/v1` with `token-abc123`, and `scripts/test_voice_backend.py` is the first-line connectivity smoke.
+- Live `mainline synthetic eval` is verified green again on a real local API: `workplace`, `interview`, and `project` all pass with `100%`.
+
+## Routing Invariants
+- `primary_context` is the source of truth for the first useful mission. `domain` and secondary contexts never override it.
+- Once `goal_brief.status` is `draft` or `confirmed`, `primary_context` is sticky: only an explicit user correction can change it.
+- Context scoring is cumulative across the onboarding transcript, not just the latest reply.
+- Mapping table (enforced by `GoalRoutingProfile` and by `tests/test_goal_routing.py::test_track_and_first_mission_always_consistent`):
+
+| `primary_context`         | `recommended_track_id`   | `first_mission_task_type`        |
+|---------------------------|--------------------------|----------------------------------|
+| `interviews`              | `hr_intro`               | `foundation_speaking_drill`      |
+| `workplace_communication` | `workplace_communication`| `stakeholder_explanation_drill`  |
+| `project_walkthrough`     | `project_walkthrough`    | `technical_project_walkthrough`  |
 
 ## Known Issues
 - Old users with stale roadmap state can still surface edge cases; more live verification is needed against non-fresh accounts.
@@ -61,6 +86,9 @@ Do not create a new session log if this file is enough.
 - Pace and pause evidence are still missing, and pronunciation is still mostly transcript-backed rather than audio-native.
 - `/chat/v2` still contains the older large endpoint implementation; the modular runtime is additive for now, not yet the mainline path.
 - Full `pytest tests -q` still has unrelated legacy failures outside the current wedge work; targeted product-track tests are green.
+- Explicit goal correction is now supported only inside the onboarding correction lane; a broader post-handoff goal-edit UX does not exist yet.
+- Mainline synthetic eval is green on fresh users; the remaining uncertainty is now in `expanded` edge cases and real browser voice UX, not in the canonical first-value flows.
+- Expanded `project_tradeoff_story` had one unstable assistant recovery turn on the last run; mission-safe recovery should absorb it, but this also needs a live re-run.
 
 ## Next Step
 - Run one real browser smoke pass for `workplace`, `interview`, and `project`, then mark greeting/farewell/redirect as live-verified.
@@ -71,7 +99,75 @@ Do not create a new session log if this file is enough.
 - Keep PersonaPlex as a premium or advanced delivery lane, not as the primary moat bet for the next cycle.
 
 ## Last Update
+### 2026-04-22 (stabilization pass)
+- Added an explicit correction lane in onboarding: routing stays sticky against drift, but a clear user correction can now rewrite `main_contexts`, `target_role`, `domain`, and re-open draft confirmation.
+- `GoalRoutingProfile.decision_source` now distinguishes `explicit_user_correction` from ordinary sticky draft routing.
+- `scripts/run_product_synthetic_eval.py` now treats only blocking scenarios as release gates; `expanded` edge cases stay advisory unless the user explicitly runs a single scenario.
+- Active voice request paths now stay on `v2` only, and shared bootstrap/runtime no longer fall back to the legacy graph in mainline execution.
+- Local run truth-state was clarified: canonical Windows API launch is `venv\\Scripts\\python.exe main.py`, and product synthetic eval should use softer timeouts against remote/corporate LLM backends.
+- Fixed the completion contract in `chat_v2`: websocket `session_complete` is now emitted after post-session persistence, not before it.
+- Repointed the active local/team vLLM truth-state from the stale `192.168.0.27` host to `http://192.168.0.18:8000/v1`, updated `.env` / `.env.example` / docs / tests, and added explicit connectivity smoke through `scripts/test_voice_backend.py`.
+- Re-ran live `mainline synthetic eval` after the fix on a real local API and confirmed `PASS 3/3`, `average_score=100.0`, `pass_rate=100.0%`.
+
+### 2026-04-21 (routing policy + mission-safe recovery)
+- Added `app/services/routing/goal_routing.py` as the canonical policy for `primary_context → recommended_track_id → first_mission_task_type`. Onboarding, `ProgramSnapshotService`, and first-mission selection now read from the same `GoalRoutingProfile`.
+- Context scoring is now cumulative across the onboarding transcript, and `primary_context` is sticky after `goal_setup_complete=True`; LLM-extracted goal-brief updates are filtered once routing is locked in.
+- Removed the `domain`-first branch and the `and not has_project_context` guard from `_build_first_useful_mission_without_assessment`, so secondary signals can no longer override the first useful mission.
+- Added `app/agent/recovery.py::build_mission_safe_recovery` and routed both the onboarding LLM-error path and the outer graph-level catch through it; replaced the legacy `I'm having trouble` fallbacks.
+- `scripts/run_product_synthetic_eval.py` now categorizes checks (`routing_check` vs `runtime_check`), adds a `no_generic_fallback_leak` scan of assistant transcripts, and treats mainline as blocking while expanded is advisory-only.
+- Verification:
+  - `py -m pytest tests/test_goal_routing.py tests/test_agent_error_recovery.py -q`
+  - `20 passed`
+
+### 2026-04-22
+- Added `!DOC/MASTER_PROJECT_VIEW_2026-04-22.md` as the new top-level project view that connects product thesis, moat, target architecture, execution rules, and dual-horizon planning in one place.
+- Repositioned docs around explicit roles:
+  - master view = canonical project definition
+  - `CURRENT_PRODUCT_STATE.md` = operational truth
+  - target architecture / roadmap / RU business flow = appendices
+- Updated `!DOC/README.md` so the reading order starts from the master view instead of forcing the team to reconstruct the project from several parallel docs.
+
 ### 2026-04-21
+- Ran live synthetic eval against a real local API + PostgreSQL and saved two reports:
+  - `product-synthetic-baseline-report.json`
+  - `product-synthetic-expanded-report.json`
+- Mainline baseline result:
+  - `workplace_first_value` PASS
+  - `project_first_value` PASS
+  - `interview_first_value` FAIL because persisted `latest_evidence.task_type` is `technical_project_walkthrough`, not `foundation_speaking_drill`
+- Expanded result exposed two more product weaknesses:
+  - `workplace_status_update` drifts from workplace communication into project walkthrough
+  - `project_tradeoff_story` hit one unstable assistant recovery turn
+- Updated `run_product_synthetic_eval.py` so live eval matches truth-state completion: explicit `session_complete` or a real farewell transcript with `phase=session_end`.
+- Added extra synthetic scenarios and rewrote `PRODUCT_SYNTHETIC_EVAL_RUNBOOK.md` with clean commands for `mainline` and `expanded`.
+- Verification:
+  - `python -m pytest tests/test_product_synthetic_eval_script.py -q`
+  - `10 passed`
+  - `python scripts/run_product_synthetic_eval.py --base-url http://127.0.0.1:8000 --output product-synthetic-baseline-report.json`
+  - `python scripts/run_product_synthetic_eval.py --base-url http://127.0.0.1:8000 --scenario-set expanded --output product-synthetic-expanded-report.json`
+
+### 2026-04-21
+- Added `scripts/run_product_synthetic_eval.py` plus `PRODUCT_SYNTHETIC_EVAL_RUNBOOK.md` as a live product-first eval loop for the mainline `chat_v2` path.
+- The synthetic eval uses canonical `composer` scenarios to score business behavior rather than STT quality: handoff into `first useful mission`, `embedded_first_mission` baseline persistence, `session_evidence`, and `ready_for_program` snapshot state.
+- Updated `VOICE_OBSERVABILITY_RUNBOOK.md` so the first-run smoke reflects the new `goal -> first useful mission -> session_complete` contract instead of the old baseline-first path.
+- Verification:
+  - `python -m py_compile scripts/run_product_synthetic_eval.py`
+  - `python -m pytest tests/test_product_synthetic_eval_script.py tests/test_agent_e2e_script.py -q`
+  - `27 passed`
+
+### 2026-04-21 (later)
+- Switched the main onboarding contract from `baseline-first` to `first-useful-mission-first`: a routing-ready draft goal now hands off straight into a real guided mission instead of blocking on a standalone assessment.
+- `ProgramSnapshot`, Home, and Progress now use `needs_first_mission`, and the UI explains that the working baseline can be inferred from the first real mission.
+- Added `assessment.source` with `explicit_assessment` vs `embedded_first_mission`, so the product can distinguish a manual baseline from one captured during a real mission.
+- Shared voice-session persistence now captures embedded baseline only when it is genuinely new, then writes it as `embedded_first_mission` and passes that source into `session_evidence`.
+- Onboarding/router runtime now resumes learning after the first-mission handoff instead of bouncing back into assessment-only logic.
+- Verification:
+  - `python -m pytest tests/test_program_snapshot_service.py tests/test_learning_plan_service.py tests/test_onboarding_node.py tests/test_voice_session_services.py -q`
+  - `73 passed`
+  - `python -m py_compile app/agent/state.py app/agent/graph_v2.py app/agent/nodes_v2/router.py app/agent/nodes_v2/onboarding.py app/services/voice_session/service.py app/api/voice_helpers.py app/services/learning_plan_service.py app/api/programs.py`
+  - `npm.cmd run build` in `frontend` passed
+
+### 2026-04-21 (earlier)
 - Added a short truth-state architecture doc that separates the real hot path from the async/materialization contour: PostgreSQL is canonical, Qdrant is best-effort retrieval, and Neo4j is async-only for now.
 - Moved memory-to-Qdrant sync out of the request path: memory persistence now commits to PostgreSQL first and schedules vector sync as best-effort background work.
 - Added a server-side guard in the XP write path so monthly `xp_events` partitions are ensured before insert instead of relying only on ops scripts.

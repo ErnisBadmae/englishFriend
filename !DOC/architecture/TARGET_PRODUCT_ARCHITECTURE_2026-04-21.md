@@ -1,9 +1,12 @@
 ---
-last_updated: 2026-04-21
-status: Canonical target architecture and moat map
+last_updated: 2026-04-22
+status: Target architecture appendix aligned to the master project view
 ---
 
 # Target Product Architecture
+
+Canonical top-level project view:
+[../MASTER_PROJECT_VIEW_2026-04-22.md](../MASTER_PROJECT_VIEW_2026-04-22.md)
 
 EnglishFriend should converge toward a vertical career-English operating loop for Russian-speaking technical specialists.
 

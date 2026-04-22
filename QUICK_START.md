@@ -48,8 +48,8 @@ venv\Scripts\activate
 python -c "import fastapi; print(fastapi.__version__)"
 # Должно вывести: 0.128.0
 
-# Запустить сервер
-python main.py
+# Запустить сервер каноническим способом
+venv\Scripts\python.exe main.py
 ```
 
 **Альтернатива (если venv не активируется):**
@@ -72,6 +72,8 @@ python main.py
 ```
 
 **Сервер будет доступен на:** http://localhost:8000
+
+Для локальной разработки держите API в отдельной вкладке терминала и не полагайтесь на фоновый detached-запуск для live-проверок.
 
 ---
 
@@ -122,6 +124,20 @@ open http://localhost:8000/docs
 **Ожидаемый ответ:**
 ```json
 {"status": "healthy"}
+```
+
+#### Product synthetic eval
+
+Откройте ещё один терминал и прогоните mainline-сценарии:
+
+```powershell
+venv\Scripts\python.exe scripts/run_product_synthetic_eval.py --base-url http://127.0.0.1:8000 --scenario-set mainline
+```
+
+Если используется удалённый/corporate LLM backend, используйте более мягкий timeout:
+
+```powershell
+venv\Scripts\python.exe scripts/run_product_synthetic_eval.py --base-url http://127.0.0.1:8000 --scenario-set mainline --turn-timeout 20 --session-timeout 30
 ```
 
 ---
@@ -190,15 +206,23 @@ cd ..
 
 ### 3.1. Настройка LLM backend
 
-Для тестов через корпоративный кластер по умолчанию используется `LLM_PROVIDER=vllm`.
+Для mainline chat/runtime по умолчанию используется наша LAN-hosted local Qwen LLM через `LLM_PROVIDER=vllm`.
 
 #### GPU vLLM (Qwen 32B)
 
 ```env
 LLM_PROVIDER=vllm
-VLLM_BASE_URL=http://192.168.0.27:8000/v1
+VLLM_BASE_URL=http://192.168.0.18:8000/v1
 VLLM_API_KEY=token-abc123
-VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct-AWQ
+VLLM_MODEL=qwen32b-32k
+```
+
+- Это канонический dev/team endpoint для текстового инференса.
+- Если LLM крутится на той же машине, допускается `http://localhost:8000/v1`, но командный truth-state проекта сейчас `http://192.168.0.18:8000/v1`.
+- Быстрый smoke:
+
+```powershell
+venv\Scripts\python.exe scripts/test_voice_backend.py
 ```
 
 #### CPU llama.cpp (Qwen 3.5 35B, большой контекст)
@@ -238,7 +262,7 @@ PERSONAPLEX_QUANTIZATION=int8
 
 #### Важно про embeddings / RAG
 
-- Чат и voice path могут работать через корпоративный кластер без OpenAI.
+- Чат и voice path могут работать через нашу LAN-hosted local Qwen LLM без OpenAI.
 - Векторная память и embeddings по-прежнему используют `OPENAI_API_KEY`.
 - Если `OPENAI_API_KEY` не задан или `VECTOR_MEMORY_ENABLED=false`, приложение переходит в DB-only режим для памяти и не должно ломать основной chat flow.
 

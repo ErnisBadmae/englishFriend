@@ -1,6 +1,7 @@
----
+ns---
 last_updated: 2026-04-21
 status: Russian business and data-flow schematic
+
 ---
 
 # Архитектура Продукта: Бизнес-Логика И Движение Данных
@@ -311,7 +312,7 @@ evidence + roadmap          v
 - retrieval в prompt context
 - долгосрочной персонализации там, где обычных SQL-фильтров уже мало
 
-Важно: в текущем коде `Qdrant` участвует как retrieval layer в mainline, но запись в него должна идти вне пользовательского request path после PostgreSQL commit.
+Важно: в текущем коде `Qdrant` частично участвует прямо в mainline memory pipeline.
 
 То есть сегодня у нас есть direct path:
 
@@ -320,7 +321,7 @@ MemoryPipeline
   ->
 PostgreSQL memories
   ->
-best-effort background sync into Qdrant
+best-effort direct upsert into Qdrant
 ```
 
 И отдельно есть более широкая infra-логика через CDC, которая описана в `DB.md` и `SYSTEM_OVERVIEW.md`.
@@ -421,7 +422,7 @@ Qdrant / Neo4j
 - `Frontend -> Backend API -> PostgreSQL`
 - `ProgramSnapshot` читает product state из PostgreSQL
 - `MemoryPipeline` сохраняет memory в PostgreSQL
-- `MemoryPipeline` уже умеет best-effort background sync в `Qdrant` после PostgreSQL commit
+- `MemoryPipeline` уже умеет direct best-effort upsert в `Qdrant`
 - `MemoryPipeline` уже умеет retrieval из `Qdrant` для relevant context
 
 ### Что существует как infra direction и system layer

@@ -126,7 +126,8 @@
       "Bash(venv/Scripts/python.exe main.py)",
       "Bash(echo \"Started with PID $!\")",
       "Bash(awk '{print $5}')",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(py *)"
     ]
   },
   "enableAllProjectMcpServers": true

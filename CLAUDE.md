@@ -71,7 +71,7 @@ Full-duplex speech-to-speech provider using NVIDIA Moshi 7B, self-hosted on Linu
 
 **Architecture**:
 ```
-Student audio → EnglishFriend → PersonaPlex (ws://192.168.0.88:8998/api/chat)
+Student audio → EnglishFriend → PersonaPlex (ws://192.168.0.18:8998/api/chat)
 Student audio ← EnglishFriend ← PersonaPlex
                      ↕
               LangGraph Agent (pedagogy, memories, vocabulary)
@@ -94,7 +94,7 @@ Student audio ← EnglishFriend ← PersonaPlex
 **Configuration** (`.env`):
 ```bash
 PERSONAPLEX_ENABLED=true
-PERSONAPLEX_HOST=192.168.0.88
+PERSONAPLEX_HOST=192.168.0.18
 PERSONAPLEX_PORT=8998
 PERSONAPLEX_DEFAULT_VOICE=NATM0
 PERSONAPLEX_QUANTIZATION=int8
@@ -124,7 +124,7 @@ docker compose -f docker-compose.cdc.yml up -d
 ### Running the Application
 ```bash
 # Start FastAPI application
-python main.py
+venv\Scripts\python.exe main.py
 
 # Or using Makefile
 make start
@@ -133,18 +133,43 @@ make start
 # API docs: http://localhost:8000/docs
 ```
 
+### Canonical Local Runbook
+```bash
+# Start infra once
+docker compose -f docker-compose.cdc.yml up -d
+
+# Keep API alive in a dedicated terminal
+venv\Scripts\python.exe main.py
+
+# Verify API health from a second terminal
+curl http://127.0.0.1:8000/health
+
+# Verify local LLM connectivity
+venv\Scripts\python.exe scripts/test_voice_backend.py
+
+# Run the blocking product regression gate
+venv\Scripts\python.exe scripts/run_product_synthetic_eval.py --base-url http://127.0.0.1:8000 --scenario-set mainline --turn-timeout 20 --session-timeout 30
+```
+
+Rules for Claude Code in this repo:
+- On Windows, prefer `venv\Scripts\python.exe main.py` as the canonical local API launch command.
+- Keep the API alive in its own terminal tab for live validation; do not rely on detached background launch tricks.
+- Prefer the LAN-hosted local Qwen endpoint for mainline LLM work: `VLLM_BASE_URL=http://192.168.0.18:8000/v1`, `VLLM_API_KEY=token-abc123`.
+- Treat `scripts/run_product_synthetic_eval.py --scenario-set mainline` as the canonical product regression gate.
+- Treat websocket `session_complete` as a post-persistence signal: if it is emitted, snapshot state should already be fresh enough for immediate validation.
+
 ### PersonaPlex Setup (Linux GPU Server)
 ```bash
 # Deploy PersonaPlex on Linux server (RTX 5060 Ti)
-scp docker-compose.personaplex.yml nero@192.168.0.88:~/personaplex/
-ssh nero@192.168.0.88 "cd ~/personaplex && docker compose up -d"
+scp docker-compose.personaplex.yml nero@192.168.0.18:~/personaplex/
+ssh nero@192.168.0.18 "cd ~/personaplex && docker compose up -d"
 
 # Verify health
-curl http://192.168.0.88:8998/health
+curl http://192.168.0.18:8998/health
 
 # Enable in .env on Windows laptop
 PERSONAPLEX_ENABLED=true
-PERSONAPLEX_HOST=192.168.0.88
+PERSONAPLEX_HOST=192.168.0.18
 ```
 
 ### Database Management
@@ -447,7 +472,7 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # SQL queries
 - sync-graph: `http://localhost:8091/health`
 - Qdrant: `http://localhost:6333/health`
 - Neo4j: `http://localhost:7474`
-- PersonaPlex: `http://192.168.0.88:8998/health` (Linux GPU server)
+- PersonaPlex: `http://192.168.0.18:8998/health` (Linux GPU server)
 
 ## Running Single Tests
 
