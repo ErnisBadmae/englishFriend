@@ -1,0 +1,406 @@
+{
+  "generated_at": "2026-04-21T12:25:56.182085+00:00",
+  "base_url": "http://127.0.0.1:8000",
+  "scenario_set": "expanded",
+  "reports": [
+    {
+      "slug": "workplace_first_value",
+      "description": "Workplace-first goal should hand off into a stakeholder mission and persist embedded baseline plus evidence.",
+      "passed": true,
+      "score": 100.0,
+      "user_id": 56,
+      "telegram_id": 947834693,
+      "checks": [
+        {
+          "name": "completion_signal_seen",
+          "passed": true,
+          "detail": "farewell/session_end transcript present"
+        },
+        {
+          "name": "first_useful_mission_handoff",
+          "passed": true,
+          "detail": "assistant used first-mission handoff language"
+        },
+        {
+          "name": "primary_context",
+          "passed": true,
+          "detail": "expected=workplace_communication, actual=workplace_communication"
+        },
+        {
+          "name": "recommended_track",
+          "passed": true,
+          "detail": "expected=workplace_communication, actual=workplace_communication"
+        },
+        {
+          "name": "setup_state",
+          "passed": true,
+          "detail": "expected=ready_for_program, actual=ready_for_program"
+        },
+        {
+          "name": "assessment_source",
+          "passed": true,
+          "detail": "expected=embedded_first_mission, actual=embedded_first_mission"
+        },
+        {
+          "name": "latest_evidence_saved",
+          "passed": true,
+          "detail": "latest session evidence present"
+        },
+        {
+          "name": "latest_evidence_task_type",
+          "passed": true,
+          "detail": "expected=stakeholder_explanation_drill, actual=stakeholder_explanation_drill"
+        },
+        {
+          "name": "latest_evidence_summary",
+          "passed": true,
+          "detail": "latest evidence summary present"
+        }
+      ],
+      "snapshot_excerpt": {
+        "primary_context": "workplace_communication",
+        "recommended_track_id": "workplace_communication",
+        "setup_state": "ready_for_program",
+        "assessment_source": "embedded_first_mission",
+        "assessment_level": "B1",
+        "latest_evidence_task_type": "stakeholder_explanation_drill",
+        "latest_evidence_summary": "You practiced a simpler stakeholder-friendly explanation of your work. The coach also captured a working baseline from this real speaking task."
+      },
+      "event_tail": [
+        "audio | phase=onboarding | mode=free_conversation",
+        "transcript | role=user | phase=onboarding | mode=free_conversation | text=ML engineer job abroad",
+        "phase_changed | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's start with a real mission, not a separate baseline. Explain your project to a non-technical stakeholder in simple ",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=user | phase=learning_session | mode=free_conversation | text=I built an AI agent and a RAG pipeline for internal support, and it helped the team answer questions faster.",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's keep it focused on one stakeholder-friendly explanation. Explain your project to a non-technical stakeholder in si",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=session_end | mode=free_conversation | text=Thanks for chatting, smoke_947834693! Come back anytime to practice more English!",
+        "audio | phase=session_end | mode=free_conversation"
+      ]
+    },
+    {
+      "slug": "interview_first_value",
+      "description": "Interview-first goal should start with a foundation mission, then persist embedded baseline and evidence.",
+      "passed": false,
+      "score": 88.9,
+      "user_id": 57,
+      "telegram_id": 971963416,
+      "checks": [
+        {
+          "name": "completion_signal_seen",
+          "passed": true,
+          "detail": "farewell/session_end transcript present"
+        },
+        {
+          "name": "first_useful_mission_handoff",
+          "passed": true,
+          "detail": "assistant used first-mission handoff language"
+        },
+        {
+          "name": "primary_context",
+          "passed": true,
+          "detail": "expected=interviews, actual=interviews"
+        },
+        {
+          "name": "recommended_track",
+          "passed": true,
+          "detail": "expected=hr_intro, actual=hr_intro"
+        },
+        {
+          "name": "setup_state",
+          "passed": true,
+          "detail": "expected=ready_for_program, actual=ready_for_program"
+        },
+        {
+          "name": "assessment_source",
+          "passed": true,
+          "detail": "expected=embedded_first_mission, actual=embedded_first_mission"
+        },
+        {
+          "name": "latest_evidence_saved",
+          "passed": true,
+          "detail": "latest session evidence present"
+        },
+        {
+          "name": "latest_evidence_task_type",
+          "passed": false,
+          "detail": "expected=foundation_speaking_drill, actual=technical_project_walkthrough"
+        },
+        {
+          "name": "latest_evidence_summary",
+          "passed": true,
+          "detail": "latest evidence summary present"
+        }
+      ],
+      "snapshot_excerpt": {
+        "primary_context": "interviews",
+        "recommended_track_id": "hr_intro",
+        "setup_state": "ready_for_program",
+        "assessment_source": "embedded_first_mission",
+        "assessment_level": "B1",
+        "latest_evidence_task_type": "technical_project_walkthrough",
+        "latest_evidence_summary": "You turned one rough project explanation into a clearer reusable answer. The coach also captured a working baseline from this real speaking task."
+      },
+      "event_tail": [
+        "audio | phase=onboarding | mode=free_conversation",
+        "transcript | role=user | phase=onboarding | mode=free_conversation | text=I want machine learning interview practice for an ML engineer job abroad",
+        "phase_changed | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's start with a real mission, not a separate baseline. Walk through one recent technical project: problem, approach, ",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=user | phase=learning_session | mode=free_conversation | text=I currently explain my background too vaguely and want a cleaner intro in English.",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's keep it focused on one technical project. Explain one recent ML or technical project: problem, approach, metric, a",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=session_end | mode=free_conversation | text=Thanks for chatting, smoke_971963416! Come back anytime to practice more English!",
+        "audio | phase=session_end | mode=free_conversation"
+      ]
+    },
+    {
+      "slug": "project_first_value",
+      "description": "Project-first goal should start with a technical walkthrough and persist embedded baseline plus evidence.",
+      "passed": true,
+      "score": 100.0,
+      "user_id": 58,
+      "telegram_id": 908548082,
+      "checks": [
+        {
+          "name": "completion_signal_seen",
+          "passed": true,
+          "detail": "farewell/session_end transcript present"
+        },
+        {
+          "name": "first_useful_mission_handoff",
+          "passed": true,
+          "detail": "assistant used first-mission handoff language"
+        },
+        {
+          "name": "primary_context",
+          "passed": true,
+          "detail": "expected=project_walkthrough, actual=project_walkthrough"
+        },
+        {
+          "name": "recommended_track",
+          "passed": true,
+          "detail": "expected=project_walkthrough, actual=project_walkthrough"
+        },
+        {
+          "name": "setup_state",
+          "passed": true,
+          "detail": "expected=ready_for_program, actual=ready_for_program"
+        },
+        {
+          "name": "assessment_source",
+          "passed": true,
+          "detail": "expected=embedded_first_mission, actual=embedded_first_mission"
+        },
+        {
+          "name": "latest_evidence_saved",
+          "passed": true,
+          "detail": "latest session evidence present"
+        },
+        {
+          "name": "latest_evidence_task_type",
+          "passed": true,
+          "detail": "expected=technical_project_walkthrough, actual=technical_project_walkthrough"
+        },
+        {
+          "name": "latest_evidence_summary",
+          "passed": true,
+          "detail": "latest evidence summary present"
+        }
+      ],
+      "snapshot_excerpt": {
+        "primary_context": "project_walkthrough",
+        "recommended_track_id": "project_walkthrough",
+        "setup_state": "ready_for_program",
+        "assessment_source": "embedded_first_mission",
+        "assessment_level": "B1",
+        "latest_evidence_task_type": "technical_project_walkthrough",
+        "latest_evidence_summary": "You turned one rough project explanation into a clearer reusable answer. The coach also captured a working baseline from this real speaking task."
+      },
+      "event_tail": [
+        "audio | phase=onboarding | mode=free_conversation",
+        "transcript | role=user | phase=onboarding | mode=free_conversation | text=I want to explain my machine learning projects more clearly for an ML engineer job abroad",
+        "phase_changed | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's start with a real mission, not a separate baseline. Walk through one recent technical project: problem, approach, ",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=user | phase=learning_session | mode=free_conversation | text=I built a churn model for e-commerce, chose gradient boosting, and improved recall on risky users.",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's keep it focused on one technical project. Explain one recent ML or technical project: problem, approach, metric, a",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=session_end | mode=free_conversation | text=Thanks for chatting, smoke_908548082! Come back anytime to practice more English!",
+        "audio | phase=session_end | mode=free_conversation"
+      ]
+    },
+    {
+      "slug": "workplace_status_update",
+      "description": "A cross-functional workplace user should still land in stakeholder-friendly communication work.",
+      "passed": false,
+      "score": 66.7,
+      "user_id": 59,
+      "telegram_id": 963834889,
+      "checks": [
+        {
+          "name": "completion_signal_seen",
+          "passed": true,
+          "detail": "farewell/session_end transcript present"
+        },
+        {
+          "name": "first_useful_mission_handoff",
+          "passed": true,
+          "detail": "assistant used first-mission handoff language"
+        },
+        {
+          "name": "primary_context",
+          "passed": false,
+          "detail": "expected=workplace_communication, actual=project_walkthrough"
+        },
+        {
+          "name": "recommended_track",
+          "passed": false,
+          "detail": "expected=workplace_communication, actual=project_walkthrough"
+        },
+        {
+          "name": "setup_state",
+          "passed": true,
+          "detail": "expected=ready_for_program, actual=ready_for_program"
+        },
+        {
+          "name": "assessment_source",
+          "passed": true,
+          "detail": "expected=embedded_first_mission, actual=embedded_first_mission"
+        },
+        {
+          "name": "latest_evidence_saved",
+          "passed": true,
+          "detail": "latest session evidence present"
+        },
+        {
+          "name": "latest_evidence_task_type",
+          "passed": false,
+          "detail": "expected=stakeholder_explanation_drill, actual=technical_project_walkthrough"
+        },
+        {
+          "name": "latest_evidence_summary",
+          "passed": true,
+          "detail": "latest evidence summary present"
+        }
+      ],
+      "snapshot_excerpt": {
+        "primary_context": "project_walkthrough",
+        "recommended_track_id": "project_walkthrough",
+        "setup_state": "ready_for_program",
+        "assessment_source": "embedded_first_mission",
+        "assessment_level": "B1",
+        "latest_evidence_task_type": "technical_project_walkthrough",
+        "latest_evidence_summary": "You turned one rough project explanation into a clearer reusable answer. The coach also captured a working baseline from this real speaking task."
+      },
+      "event_tail": [
+        "audio | phase=onboarding | mode=free_conversation",
+        "transcript | role=user | phase=onboarding | mode=free_conversation | text=I work as a data scientist and often speak with product and operations teams",
+        "transcript | role=assistant | phase=onboarding | mode=free_conversation | text=I already heard a direction around workplace communication, project walkthrough. Which role is closest right now: ML eng",
+        "audio | phase=onboarding | mode=free_conversation",
+        "transcript | role=user | phase=onboarding | mode=free_conversation | text=I built a retention model and need to explain impact without too much jargon",
+        "phase_changed | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's start with a real mission, not a separate baseline. Walk through one recent technical project: problem, approach, ",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=session_end | mode=free_conversation | text=Thanks for chatting, smoke_963834889! Come back anytime to practice more English!",
+        "audio | phase=session_end | mode=free_conversation"
+      ]
+    },
+    {
+      "slug": "project_tradeoff_story",
+      "description": "A technical project user with system tradeoffs should land in project walkthrough mode.",
+      "passed": false,
+      "score": 0.0,
+      "user_id": 0,
+      "telegram_id": 984799057,
+      "checks": [
+        {
+          "name": "runtime",
+          "passed": false,
+          "detail": "Assistant response matched forbidden substring 'i'm having trouble right now': I'm having trouble right now. Could you repeat that?"
+        }
+      ],
+      "snapshot_excerpt": {},
+      "event_tail": []
+    },
+    {
+      "slug": "interview_self_intro_gap",
+      "description": "An interview user with a weak self-introduction should start with an interview-safe foundation drill.",
+      "passed": false,
+      "score": 88.9,
+      "user_id": 61,
+      "telegram_id": 985044283,
+      "checks": [
+        {
+          "name": "completion_signal_seen",
+          "passed": true,
+          "detail": "farewell/session_end transcript present"
+        },
+        {
+          "name": "first_useful_mission_handoff",
+          "passed": true,
+          "detail": "assistant used first-mission handoff language"
+        },
+        {
+          "name": "primary_context",
+          "passed": true,
+          "detail": "expected=interviews, actual=interviews"
+        },
+        {
+          "name": "recommended_track",
+          "passed": true,
+          "detail": "expected=hr_intro, actual=hr_intro"
+        },
+        {
+          "name": "setup_state",
+          "passed": true,
+          "detail": "expected=ready_for_program, actual=ready_for_program"
+        },
+        {
+          "name": "assessment_source",
+          "passed": true,
+          "detail": "expected=embedded_first_mission, actual=embedded_first_mission"
+        },
+        {
+          "name": "latest_evidence_saved",
+          "passed": true,
+          "detail": "latest session evidence present"
+        },
+        {
+          "name": "latest_evidence_task_type",
+          "passed": false,
+          "detail": "expected=foundation_speaking_drill, actual=technical_project_walkthrough"
+        },
+        {
+          "name": "latest_evidence_summary",
+          "passed": true,
+          "detail": "latest evidence summary present"
+        }
+      ],
+      "snapshot_excerpt": {
+        "primary_context": "interviews",
+        "recommended_track_id": "hr_intro",
+        "setup_state": "ready_for_program",
+        "assessment_source": "embedded_first_mission",
+        "assessment_level": "B1",
+        "latest_evidence_task_type": "technical_project_walkthrough",
+        "latest_evidence_summary": "You turned one rough project explanation into a clearer reusable answer. The coach also captured a working baseline from this real speaking task."
+      },
+      "event_tail": [
+        "audio | phase=onboarding | mode=free_conversation",
+        "transcript | role=user | phase=onboarding | mode=free_conversation | text=I need to answer tell me about yourself better in ML engineer interviews abroad",
+        "phase_changed | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's start with a real mission, not a separate baseline. Walk through one recent technical project: problem, approach, ",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=user | phase=learning_session | mode=free_conversation | text=I moved from analytics to ML and struggle to describe my background clearly",
+        "transcript | role=assistant | phase=learning_session | mode=free_conversation | text=Let's keep it focused on one technical project. Explain one recent ML or technical project: problem, approach, metric, a",
+        "audio | phase=learning_session | mode=free_conversation",
+        "transcript | role=assistant | phase=session_end | mode=free_conversation | text=Thanks for chatting, smoke_985044283! Come back anytime to practice more English!",
+        "audio | phase=session_end | mode=free_conversation"
+      ]
+    }
+  ],
+  "average_score": 74.1,
+  "pass_rate": 0.333
+}
