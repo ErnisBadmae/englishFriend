@@ -52,6 +52,7 @@ class AssessmentSummary(BaseModel):
     confidence: Optional[float] = None
     status: Optional[str] = None
     provisional: bool = False
+    source: Optional[str] = None
     goal_readiness: Optional[float] = None
     critical_gaps: list[str] = []
     skill_axes: dict[str, Any] = {}

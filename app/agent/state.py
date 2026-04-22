@@ -81,6 +81,7 @@ class AgentState(TypedDict, total=False):
     assessment_status: Optional[str]  # missing, provisional, confirmed
     baseline_provisional: bool
     baseline_confidence: float
+    assessment_source: Optional[str]  # explicit_assessment | embedded_first_mission when captured this session
     assessment_step_index: int
     assessment_answers: dict[str, str]
 
@@ -147,8 +148,8 @@ class AgentState(TypedDict, total=False):
     _skip_goal: bool  # Internal: skip goal discovery in onboarding
     _skip_interests: bool  # Internal: skip interest probe in onboarding
     _skip_assessment: bool  # Internal: skip assessment in onboarding
-    setup_step: Optional[str]  # Internal: goal_setup, baseline_assessment, ready_for_program
-    last_question_type: Optional[str]  # Internal: tracks the latest onboarding question type
+    setup_step: Optional[str]  # Internal: goal_setup, baseline_assessment, first_useful_mission, ready_for_program
+    last_question_type: Optional[str]  # Internal: tracks onboarding question type or first_mission_handoff
 
 
 def create_initial_state(
@@ -200,6 +201,7 @@ def create_initial_state(
         assessment_status=None,
         baseline_provisional=False,
         baseline_confidence=0.0,
+        assessment_source=None,
         assessment_step_index=0,
         assessment_answers={},
 

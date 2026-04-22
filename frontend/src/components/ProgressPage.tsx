@@ -37,10 +37,10 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
       {!hasBaseline ? (
         <section className="content-card">
           <div className="section-label">Progress unlock</div>
-          <h2>Baseline needed first</h2>
+          <h2>First useful mission comes first</h2>
           <p>
-            Progress becomes useful after one baseline assessment. Until then, the coach is still
-            locking your target and deciding what should be trained first.
+            Progress becomes useful after the first guided mission. The coach uses that real answer
+            to infer a working baseline instead of blocking you behind a standalone assessment.
           </p>
           <div className="pill-row">
             <span className="pill">{snapshot.setup.state.replace(/_/g, ' ')}</span>

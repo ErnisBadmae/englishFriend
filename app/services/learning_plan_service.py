@@ -277,6 +277,7 @@ class LearningPlanService:
         notes: Optional[str] = None,
         provisional: bool = False,
         confidence_override: Optional[float] = None,
+        source: str = "explicit_assessment",
     ) -> LearningPlan:
         plan = await self.get_or_create_plan(user_id)
         roadmap = deepcopy(plan.roadmap or {})
@@ -298,6 +299,7 @@ class LearningPlanService:
             notes,
             provisional=provisional,
             confidence_override=confidence_override,
+            source=source,
         )
         roadmap["program_plan"] = self._build_program_plan(
             goal_brief,
@@ -518,6 +520,7 @@ class LearningPlanService:
         vocabulary_reviewed: Optional[list[dict[str, Any]]] = None,
         assessed_level: Optional[str] = None,
         assessment_scores: Optional[dict[str, Any]] = None,
+        assessment_source: Optional[str] = None,
         interview_run: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         plan = await self.get_or_create_plan(user_id)
@@ -561,6 +564,7 @@ class LearningPlanService:
             vocabulary_reviewed=vocabulary_reviewed or [],
             assessed_level=assessed_level,
             assessment_scores=assessment_scores or {},
+            assessment_source=assessment_source,
             interview_run=interview_run,
             weakness_tags=weakness_tags,
             previous_similar_evidence=previous_similar_evidence,
@@ -840,6 +844,7 @@ class LearningPlanService:
         *,
         provisional: bool = False,
         confidence_override: Optional[float] = None,
+        source: str = "explicit_assessment",
     ) -> dict[str, Any]:
         baseline = _LEVEL_BASELINE.get(assessed_level, 5.0)
         fluency = _normalize_score(scores.get("fluency"), baseline)
@@ -864,6 +869,7 @@ class LearningPlanService:
             "notes": notes,
             "status": "provisional" if provisional else "confirmed",
             "provisional": provisional,
+            "source": source,
             "updated_at": _utcnow_iso(),
         }
 
@@ -894,11 +900,11 @@ class LearningPlanService:
         success_metric = "Complete setup so the coach can route practice correctly"
         next_milestone = "Confirm the goal brief"
         if goal_brief.get("status") in {"draft", "confirmed"} and not proficiency_profile:
-            stage_id = "baseline_assessment"
-            stage_label = "Baseline Assessment"
-            weekly_focus = ["Measure your level before building practice intensity"]
-            success_metric = "Get a reliable speaking baseline"
-            next_milestone = "Complete the baseline assessment"
+            stage_id = "first_useful_mission"
+            stage_label = "First Useful Mission"
+            weekly_focus = ["Get one useful career answer first, then let the coach infer the baseline from real speaking."]
+            success_metric = "Unlock the first real career-English win, not just an assessment score"
+            next_milestone = "Finish the first guided mission"
         elif goal_brief.get("status") in {"draft", "confirmed"} and proficiency_profile:
             readiness = float(proficiency_profile.get("goal_readiness") or 0.0)
             grammar = float(proficiency_profile.get("grammar_accuracy") or 0.0)
@@ -924,7 +930,7 @@ class LearningPlanService:
 
         order = [
             ("goal_setup", "Goal Setup"),
-            ("baseline_assessment", "Baseline Assessment"),
+            ("first_useful_mission", "First Useful Mission"),
             ("foundation", "Foundation"),
             ("career_scenarios", "Career Scenarios"),
             ("target_role_simulation", "Target Role Simulation"),
@@ -1484,6 +1490,7 @@ class LearningPlanService:
         vocabulary_reviewed: list[dict[str, Any]],
         assessed_level: Optional[str],
         assessment_scores: dict[str, Any],
+        assessment_source: Optional[str],
         interview_run: Optional[dict[str, Any]],
         weakness_tags: list[str],
         previous_similar_evidence: Optional[dict[str, Any]],
@@ -1583,7 +1590,7 @@ class LearningPlanService:
                 "duration_minutes": duration_minutes,
             }
 
-        if mode == "assessment" or assessed_level:
+        if mode == "assessment" or task_type == "baseline_assessment":
             weakest_axis = self._find_weakest_assessment_axis(assessment_scores)
             next_focus = []
             if weakest_axis:
@@ -1649,7 +1656,14 @@ class LearningPlanService:
                 "duration_minutes": duration_minutes,
             }
 
+        embedded_baseline = assessment_source == "embedded_first_mission" and bool(assessed_level)
         what_went_well = ["You completed a full guided speaking mission."]
+        if task_type in {"technical_project_walkthrough", "project_walkthrough_drill"}:
+            what_went_well.insert(0, "You produced one clearer project answer instead of only completing an abstract assessment.")
+        elif task_type == "stakeholder_explanation_drill":
+            what_went_well.insert(0, "You shaped one clearer stakeholder-friendly explanation of your work.")
+        elif embedded_baseline:
+            what_went_well.insert(0, "The coach captured a working speaking baseline from a real task, not from an isolated test.")
         if user_turns >= 2:
             what_went_well.append("You stayed in English across multiple turns.")
         if corrections_count <= 2 and user_turns >= 2:
@@ -1666,14 +1680,26 @@ class LearningPlanService:
             f"{user_turns} user turn{'s' if user_turns != 1 else ''}",
             f"{corrections_count} correction signal{'s' if corrections_count != 1 else ''}",
         ]
+        if embedded_baseline:
+            evidence_signals.append(f"Working baseline {assessed_level}")
         if vocab_words:
             evidence_signals.append(f"{len(vocab_words)} vocabulary cue{'s' if len(vocab_words) != 1 else ''} reinforced")
 
         summary = "You completed a guided speaking mission with live coaching."
-        if contextual_weakness_tags:
+        if task_type in {"technical_project_walkthrough", "project_walkthrough_drill"}:
+            summary = "You turned one rough project explanation into a clearer reusable answer."
+            if contextual_weakness_tags:
+                summary = f"You produced a clearer project answer and surfaced one repeatable issue around {contextual_weakness_tags[0]}."
+        elif task_type == "stakeholder_explanation_drill":
+            summary = "You practiced a simpler stakeholder-friendly explanation of your work."
+            if contextual_weakness_tags:
+                summary = f"You shaped a clearer stakeholder explanation and surfaced one repeatable issue around {contextual_weakness_tags[0]}."
+        elif contextual_weakness_tags:
             summary = f"You practiced {mode_label} and surfaced a repeatable issue around {contextual_weakness_tags[0]}."
         elif vocab_words:
             summary = f"You practiced {mode_label} and reinforced vocabulary in context."
+        if embedded_baseline:
+            summary = f"{summary} The coach also captured a working baseline from this real speaking task."
 
         return {
             "id": session_id,

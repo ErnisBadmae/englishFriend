@@ -252,6 +252,7 @@ async def persist_session_evidence_if_needed(
     duration_minutes: int = 0,
     assessed_level: Optional[str] = None,
     assessment_scores: Optional[dict] = None,
+    assessment_source: Optional[str] = None,
     interview_run: Optional[dict] = None,
 ) -> Optional[dict]:
     """Persist generic session evidence if there is enough signal to be useful."""
@@ -282,6 +283,7 @@ async def persist_session_evidence_if_needed(
             vocabulary_reviewed=vocabulary_reviewed or [],
             assessed_level=assessed_level,
             assessment_scores=assessment_scores or {},
+            assessment_source=assessment_source,
             interview_run=interview_run,
         )
         if evidence:

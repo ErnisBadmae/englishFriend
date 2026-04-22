@@ -741,6 +741,39 @@ class OpenAIProvider(OpenAICompatibleProvider):
 _providers: dict[str, LLMProvider] = {}
 
 
+def _provider_runtime_metadata(provider_type: str) -> dict[str, Any]:
+    if provider_type == "vllm":
+        return {
+            "base_url": settings.vllm_base_url,
+            "model": settings.vllm_model,
+            "api_key_present": bool(settings.vllm_api_key),
+        }
+    if provider_type == "llama_cpp":
+        return {
+            "base_url": settings.llama_cpp_base_url,
+            "model": settings.llama_cpp_model,
+            "api_key_present": bool(settings.llama_cpp_api_key),
+            "response_mode": settings.llama_cpp_response_mode,
+        }
+    if provider_type == "personaplex":
+        return {
+            "base_url": settings.personaplex_base_url,
+            "model": settings.personaplex_model,
+            "api_key_present": bool(settings.personaplex_api_key),
+        }
+    if provider_type == "groq":
+        return {
+            "model": settings.groq_model,
+            "api_key_present": bool(settings.groq_api_key),
+        }
+    if provider_type == "openai":
+        return {
+            "model": settings.openai_chat_model,
+            "api_key_present": bool(settings.openai_api_key),
+        }
+    return {}
+
+
 def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
     """Получить LLM провайдер."""
     provider_type = provider_type or settings.llm_provider
@@ -759,7 +792,11 @@ def get_llm_provider(provider_type: str | None = None) -> LLMProvider:
         else:
             raise ValueError(f"Unknown LLM provider: {provider_type}")
 
-        logger.info("Initialized LLM provider: %s", provider_type)
+        logger.info(
+            "Initialized LLM provider: %s | config=%s",
+            provider_type,
+            _provider_runtime_metadata(provider_type),
+        )
 
     return _providers[provider_type]
 

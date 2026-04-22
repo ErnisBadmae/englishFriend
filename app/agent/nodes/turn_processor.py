@@ -15,6 +15,7 @@ import logging
 import re
 from typing import Optional
 
+from app.agent.recovery import build_mission_safe_recovery
 from app.agent.state import AgentState, AgentPhase, LearningModeEnum, add_decision_log
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.ai.llm_provider import get_llm_provider
@@ -165,9 +166,9 @@ async def turn_processor_node(state: AgentState) -> AgentState:
 
         except Exception as e:
             logger.error(f"Error generating response: {e}")
-            state["pending_response"] = (
-                "I'm having a bit of trouble right now. "
-                "Could you repeat what you said?"
+            state["pending_response"] = build_mission_safe_recovery(
+                mission_task_type=state.get("mission_task_type"),
+                stage="learning",
             )
             state["needs_user_input"] = True
 

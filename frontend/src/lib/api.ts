@@ -57,6 +57,7 @@ export interface AssessmentSummary {
   confidence?: number | null;
   status?: string | null;
   provisional?: boolean;
+  source?: string | null;
   goal_readiness?: number | null;
   critical_gaps: string[];
   skill_axes: Record<string, number | null>;

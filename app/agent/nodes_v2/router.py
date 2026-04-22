@@ -19,7 +19,7 @@ async def router_node(state: AgentState) -> AgentState:
     Decision logic:
     1. Session end requested -> session_end
     2. New user without goal -> onboarding
-    3. Has goal but no assessment -> onboarding (assessment only)
+    3. Has goal but no assessment -> onboarding handoff into first useful mission
     4. Returning user with profile -> learning
 
     Args:
@@ -37,6 +37,7 @@ async def router_node(state: AgentState) -> AgentState:
     goal_setup_complete = state.get("goal_setup_complete", goal_status in {"draft", "confirmed"})
     has_assessment = bool(state.get("assessed_level"))
     should_end = state.get("should_end_session", False)
+    current_phase = state.get("current_phase")
 
     # Decision 1: Session end requested
     if should_end:
@@ -48,6 +49,22 @@ async def router_node(state: AgentState) -> AgentState:
             reason="Session end requested",
         )
         logger.info(f"[Router] User {state['user_id']}: route=session_end (end requested)")
+        return state
+
+    if current_phase == AgentPhase.LEARNING_SESSION:
+        state["_route"] = "learning"
+        add_decision_log(
+            state,
+            node="router",
+            action="route_learning_resume",
+            reason="Learning session already started in this voice run",
+            data={
+                "goal_status": goal_status,
+                "has_assessment": has_assessment,
+                "setup_step": state.get("setup_step"),
+            },
+        )
+        logger.info(f"[Router] User {state['user_id']}: route=learning (resume)")
         return state
 
     # Decision 2: Missing or incomplete goal brief -> onboarding
@@ -79,18 +96,18 @@ async def router_node(state: AgentState) -> AgentState:
         logger.info(f"[Router] User {state['user_id']}: route=onboarding (goal setup)")
         return state
 
-    # Decision 3: Has routing-ready draft/confirmed goal but no assessment -> assessment only
+    # Decision 3: Has routing-ready draft/confirmed goal but no assessment -> first useful mission handoff
     if goal_status in {"draft", "confirmed"} and not has_assessment:
         state["_route"] = "onboarding"
         state["_skip_goal"] = True
         state["_skip_interests"] = True
-        state["_skip_assessment"] = False
+        state["_skip_assessment"] = True
 
         add_decision_log(
             state,
             node="router",
-            action="route_onboarding_assessment",
-            reason="User has a routing-ready goal but still needs baseline assessment",
+            action="route_onboarding_first_mission",
+            reason="User has a routing-ready goal and should start with a useful mission, not a standalone baseline",
             data={
                 "has_goal": has_goal,
                 "has_assessment": has_assessment,
@@ -98,7 +115,7 @@ async def router_node(state: AgentState) -> AgentState:
                 "goal_status": goal_status,
             },
         )
-        logger.info(f"[Router] User {state['user_id']}: route=onboarding (assessment only)")
+        logger.info(f"[Router] User {state['user_id']}: route=onboarding (first useful mission)")
         return state
 
     # Decision 4: Returning user with routing-ready goal and assessment -> learning

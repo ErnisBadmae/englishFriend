@@ -10,8 +10,8 @@ from typing import Any, Optional
 from fastapi import WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent import AgentPhase, LearningModeEnum, run_agent_turn
-from app.agent.graph_v2 import USE_AGENT_V2, run_agent_turn_v2
+from app.agent import AgentPhase, LearningModeEnum
+from app.agent.graph_v2 import run_agent_turn_v2
 from app.core.metrics import (
     agent_version_onboarding_complete,
     agent_version_sessions,
@@ -101,7 +101,7 @@ class VoiceSessionController:
         self._tts_provider = tts_provider
         self._turn_detector = turn_detector
         self._deps = dependencies or VoiceRuntimeDependencies()
-        self._use_v2_agent = USE_AGENT_V2 if use_v2_agent is None else use_v2_agent
+        self._use_v2_agent = True
 
         self._bootstrap_service = SessionBootstrapService(db, dependencies=self._deps)
         self._persistence_service = SessionPersistenceService(
@@ -113,7 +113,7 @@ class VoiceSessionController:
 
         self._context = BootstrapContext()
         self._agent_state: dict[str, Any] = {}
-        self._agent_version = "v2" if self._use_v2_agent else "v1"
+        self._agent_version = "v2"
         self._final_mode = "unknown"
         self._completion_signal_sent = False
         self._runtime = "realtime"
@@ -495,9 +495,7 @@ class VoiceSessionController:
         return VoiceControllerOutcome(events=events, should_close=True, status="completed")
 
     async def _run_agent_turn(self, user_message: Optional[str]) -> dict[str, Any]:
-        if self._use_v2_agent:
-            return await run_agent_turn_v2(self._agent_state, user_message=user_message)
-        return await run_agent_turn(self._agent_state, user_message=user_message)
+        return await run_agent_turn_v2(self._agent_state, user_message=user_message)
 
     async def _build_assistant_events(
         self,

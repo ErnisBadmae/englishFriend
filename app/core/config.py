@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     llm_provider: Literal["vllm", "llama_cpp", "personaplex", "groq", "openai"] = "vllm"
 
     # vLLM
-    vllm_base_url: str = "http://localhost:8000/v1"
+    vllm_base_url: str = "http://192.168.0.18:8000/v1"
     vllm_api_key: str = ""
     vllm_model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ"
     vllm_timeout: int = 60

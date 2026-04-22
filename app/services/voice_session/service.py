@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -10,7 +11,6 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.graph import initialize_session
 from app.agent.graph_v2 import initialize_session_v2
 from app.api.voice_helpers import (
     award_session_gamification,
@@ -38,6 +38,28 @@ from app.services.voice_observability import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EMBEDDED_BASELINE_MISSION_TYPES = {
+    "technical_project_walkthrough",
+    "project_walkthrough_drill",
+    "stakeholder_explanation_drill",
+    "foundation_speaking_drill",
+}
+_EMBEDDED_BASELINE_TECH_PATTERNS = (
+    "model",
+    "models",
+    "dataset",
+    "pipeline",
+    "metric",
+    "metrics",
+    "stakeholder",
+    "project",
+    "deployment",
+    "latency",
+    "feature",
+    "trade-off",
+    "tradeoff",
+)
 
 
 @dataclass
@@ -77,6 +99,7 @@ class SessionPersistRequest:
     assessment_scores: Optional[dict[str, Any]] = None
     baseline_provisional: bool = False
     baseline_confidence: Optional[float] = None
+    assessment_source: Optional[str] = None
     interview_track_id: Optional[str] = None
     corrections_made: list[dict[str, Any]] = field(default_factory=list)
     vocabulary_reviewed: list[dict[str, Any]] = field(default_factory=list)
@@ -92,8 +115,9 @@ class SessionPersistRequest:
         runtime: str,
         existing_goal: Optional[str],
         agent_state: dict[str, Any],
-    ) -> "SessionPersistRequest":
+        ) -> "SessionPersistRequest":
         """Build a persistence request from the current agent state."""
+        assessment_source = agent_state.get("assessment_source")
         return cls(
             status=status,
             user_id=user_id,
@@ -104,10 +128,11 @@ class SessionPersistRequest:
             agent_state=agent_state,
             conversation_history=list(agent_state.get("conversation_history", []) or []),
             turn_count=int(agent_state.get("turn_count", 0) or 0),
-            assessed_level=agent_state.get("assessed_level"),
-            assessment_scores=agent_state.get("assessment_scores"),
-            baseline_provisional=bool(agent_state.get("baseline_provisional")),
-            baseline_confidence=agent_state.get("baseline_confidence"),
+            assessed_level=agent_state.get("assessed_level") if assessment_source else None,
+            assessment_scores=agent_state.get("assessment_scores") if assessment_source else None,
+            baseline_provisional=bool(agent_state.get("baseline_provisional")) if assessment_source else False,
+            baseline_confidence=agent_state.get("baseline_confidence") if assessment_source else None,
+            assessment_source=assessment_source,
             interview_track_id=agent_state.get("interview_track_id"),
             corrections_made=list(agent_state.get("corrections_made", []) or []),
             vocabulary_reviewed=list(agent_state.get("vocabulary_reviewed", []) or []),
@@ -340,39 +365,7 @@ class SessionBootstrapService:
             due_vocabulary_count=context.due_vocabulary_count,
         )
 
-        if use_v2_agent:
-            return await initialize_session_v2(
-                user_id=resolved_user_id,
-                session_id=context.session_id,
-                username=context.username,
-                is_new_user=context.is_new_user,
-                language_level=context.language_level,
-                confirmed_goal=context.confirmed_goal,
-                confirmed_interests=context.confirmed_interests,
-                roadmap=context.roadmap,
-                due_vocabulary_count=context.due_vocabulary_count,
-                due_vocabulary_words=context.due_vocabulary_words,
-                memory_section=context.memory_section,
-                learner_profile_summary=(
-                    context.learner_profile_summary.to_dict()
-                    if context.learner_profile_summary
-                    else None
-                ),
-                mission_memory_context=(
-                    context.mission_memory_context.to_dict()
-                    if context.mission_memory_context
-                    else None
-                ),
-                explicit_mode=explicit_mode,
-                interview_track_id=interview_track_id,
-                mission_task_type=mission_task_type,
-                mission_title=mission_title,
-                mission_reason=mission_reason,
-                mission_success_signal=mission_success_signal,
-                mission_linked_goal_context=mission_linked_goal_context,
-            )
-
-        return await initialize_session(
+        return await initialize_session_v2(
             user_id=resolved_user_id,
             session_id=context.session_id,
             username=context.username,
@@ -384,6 +377,23 @@ class SessionBootstrapService:
             due_vocabulary_count=context.due_vocabulary_count,
             due_vocabulary_words=context.due_vocabulary_words,
             memory_section=context.memory_section,
+            learner_profile_summary=(
+                context.learner_profile_summary.to_dict()
+                if context.learner_profile_summary
+                else None
+            ),
+            mission_memory_context=(
+                context.mission_memory_context.to_dict()
+                if context.mission_memory_context
+                else None
+            ),
+            explicit_mode=explicit_mode,
+            interview_track_id=interview_track_id,
+            mission_task_type=mission_task_type,
+            mission_title=mission_title,
+            mission_reason=mission_reason,
+            mission_success_signal=mission_success_signal,
+            mission_linked_goal_context=mission_linked_goal_context,
         )
 
 
@@ -405,6 +415,73 @@ class SessionPersistenceService:
         )
         self._memory_pipeline = memory_pipeline or self._deps.memory_pipeline_factory(db)
         self._persistence_done = False
+
+    def _has_existing_proficiency(self, request: SessionPersistRequest) -> bool:
+        roadmap = request.agent_state.get("roadmap") or {}
+        return bool((roadmap or {}).get("proficiency_profile"))
+
+    def _should_capture_embedded_baseline(self, request: SessionPersistRequest) -> bool:
+        if request.assessment_source or request.assessed_level:
+            return False
+        if self._has_existing_proficiency(request):
+            return False
+        mission_task_type = str(request.agent_state.get("mission_task_type") or "")
+        if mission_task_type not in _EMBEDDED_BASELINE_MISSION_TYPES:
+            return False
+        user_messages = [
+            str(message.get("content") or "").strip()
+            for message in request.conversation_history
+            if message.get("role") == "user" and str(message.get("content") or "").strip()
+        ]
+        return len(user_messages) >= 1
+
+    def _infer_embedded_baseline(
+        self,
+        request: SessionPersistRequest,
+    ) -> tuple[str, dict[str, float], bool, float]:
+        user_messages = [
+            str(message.get("content") or "").strip()
+            for message in request.conversation_history
+            if message.get("role") == "user" and str(message.get("content") or "").strip()
+        ]
+        combined = " ".join(user_messages)
+        token_count = len(re.findall(r"[A-Za-z']+|\d+", combined))
+        user_turns = len(user_messages)
+        normalized = combined.lower()
+        has_technical_signal = any(pattern in normalized for pattern in _EMBEDDED_BASELINE_TECH_PATTERNS)
+
+        if token_count < 10:
+            level = "A2"
+            scores = {
+                "fluency": 3.9,
+                "grammar": 3.8,
+                "vocabulary": 4.1,
+                "comprehension": 4.5,
+            }
+        elif token_count < 28:
+            level = "B1"
+            scores = {
+                "fluency": 4.9,
+                "grammar": 4.7,
+                "vocabulary": 5.1,
+                "comprehension": 5.2,
+            }
+        else:
+            level = "B1"
+            scores = {
+                "fluency": 5.6,
+                "grammar": 5.2,
+                "vocabulary": 5.7,
+                "comprehension": 5.6,
+            }
+
+        if has_technical_signal:
+            scores["vocabulary"] = min(9.5, round(scores["vocabulary"] + 0.4, 1))
+
+        provisional = user_turns < 2 or token_count < 18
+        confidence = 0.44 if provisional else 0.63
+        normalized_scores = {key: round(float(value), 1) for key, value in scores.items()}
+        return level, normalized_scores, provisional, confidence
 
     async def persist(self, request: SessionPersistRequest) -> SessionCompletion:
         """Run the shared post-session pipeline once."""
@@ -447,13 +524,28 @@ class SessionPersistenceService:
                 learning_plan_service=self._learning_plan_service,
             )
 
-            if request.assessed_level:
+            if self._should_capture_embedded_baseline(request):
+                (
+                    request.assessed_level,
+                    request.assessment_scores,
+                    request.baseline_provisional,
+                    request.baseline_confidence,
+                ) = self._infer_embedded_baseline(request)
+                request.assessment_source = "embedded_first_mission"
+                request.agent_state["assessment_source"] = "embedded_first_mission"
+                request.agent_state["assessed_level"] = request.assessed_level
+                request.agent_state["assessment_scores"] = request.assessment_scores
+                request.agent_state["baseline_provisional"] = request.baseline_provisional
+                request.agent_state["baseline_confidence"] = request.baseline_confidence
+
+            if request.assessed_level and request.assessment_source:
                 await self._learning_plan_service.record_assessment(
                     request.user_id,
                     assessed_level=request.assessed_level,
                     scores=request.assessment_scores,
                     provisional=request.baseline_provisional,
                     confidence_override=request.baseline_confidence,
+                    source=request.assessment_source,
                 )
 
             await self._learning_plan_service.increment_session_count(
@@ -540,6 +632,7 @@ class SessionPersistenceService:
                 duration_minutes=request.turn_count * 2,
                 assessed_level=request.assessed_level,
                 assessment_scores=request.assessment_scores or {},
+                assessment_source=request.assessment_source,
                 interview_run=interview_run,
             )
             if request.turn_count > 0:

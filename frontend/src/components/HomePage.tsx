@@ -32,18 +32,18 @@ export function HomePage({
   const setupState = snapshot.setup.state;
   const setupIncomplete = snapshot.setup.needs_attention;
   const readyForProgram = setupState === 'ready_for_program';
-  const needsAssessment = setupState === 'needs_assessment';
+  const needsFirstMission = setupState === 'needs_first_mission' || setupState === 'needs_assessment';
   const needsGoal = setupState === 'needs_goal';
-  const earlySetup = needsGoal || needsAssessment;
+  const earlySetup = needsGoal || needsFirstMission;
   const baselineStatus = snapshot.assessment?.status || (snapshot.assessment ? 'confirmed' : 'missing');
   const missionLabel = setupIncomplete ? 'Next step' : "Today's mission";
-  const heroTitle = needsAssessment
-    ? 'Take one quick baseline'
+  const heroTitle = needsFirstMission
+    ? 'Start your first useful mission'
     : needsGoal
       ? 'Complete your career English setup'
       : snapshot.program.title;
-  const heroCopy = needsAssessment
-    ? 'The target is already clear enough. One short baseline unlocks the first useful mission.'
+  const heroCopy = needsFirstMission
+    ? 'The target is already clear enough. The first mission will produce a useful answer and the coach will infer a working baseline from real speaking.'
     : needsGoal
       ? 'Turn vague English practice into a concrete career target.'
       : (goalBrief?.summary || 'Turn vague English practice into a concrete career program.');
@@ -54,10 +54,10 @@ export function HomePage({
     : 'Career target not locked yet';
   const targetCopy = goalBrief?.primary_goal
     || (draftGoal
-      ? 'The coach already has a draft career target and can move you into baseline assessment.'
+      ? 'The coach already has a draft career target and can move you into the first useful mission.'
       : 'The coach is still turning your goal into a concrete target.');
-  const setupActionLabel = snapshot.setup.state === 'needs_assessment'
-    ? 'Take baseline assessment'
+  const setupActionLabel = needsFirstMission
+    ? 'Start first useful mission'
     : 'Continue setup';
   const showVacancyCard = readyForProgram;
   const careerContext = snapshot.career_context;
@@ -146,10 +146,10 @@ export function HomePage({
       {earlySetup && (
         <section className="content-card">
           <div className="section-label">What happens next</div>
-          <h2>{needsAssessment ? 'One short baseline unlocks your first mission' : 'The coach still needs a sharper target'}</h2>
+          <h2>{needsFirstMission ? 'The first mission comes before any standalone assessment' : 'The coach still needs a sharper target'}</h2>
           <p>
-            {needsAssessment
-              ? 'You already have a draft target. The next session only needs a short baseline so the coach can choose the first useful mission.'
+            {needsFirstMission
+              ? 'You already have a draft target. The next session starts with a real guided task, and the coach will infer the working baseline from that answer instead of sending you into a separate exam.'
               : 'The next session will lock the role, company context, and speaking situations the program should optimize for.'}
           </p>
           {(goalBrief?.current_blockers?.length || goalBrief?.main_contexts?.length) ? (
@@ -251,8 +251,12 @@ export function HomePage({
           </h2>
           <p>
             {snapshot.assessment
-              ? `${snapshot.assessment.provisional ? 'This is a low-confidence first baseline, but it is enough to route your next mission.' : 'The coach is routing from your measured baseline, not generic conversation.'} Goal readiness ${snapshot.assessment.goal_readiness}/10.`
-              : 'Complete the baseline so the coach can decide whether to focus on grammar, clarity, or career scenarios first.'}
+              ? `${snapshot.assessment.source === 'embedded_first_mission'
+                ? 'This baseline was inferred from a real guided mission, not from a separate test.'
+                : snapshot.assessment.provisional
+                  ? 'This is a low-confidence first baseline, but it is enough to route your next mission.'
+                  : 'The coach is routing from your measured baseline, not generic conversation.'} Goal readiness ${snapshot.assessment.goal_readiness}/10.`
+              : 'Start the first useful mission and the coach will infer a working baseline from real speaking.'}
           </p>
           <div className="pill-row">
             <span className="pill">{snapshot.program.stage_label}</span>

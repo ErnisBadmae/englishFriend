@@ -105,15 +105,12 @@ from app.services.ai.personaplex_provider import PersonaPlexProvider, PersonaPle
 from app.services.ai.personaplex_health import check_personaplex_health
 from app.services.ai.base import VoiceSession
 
-# LangGraph agent (v1 - original 11-node architecture)
 from app.agent import AgentState, AgentPhase, LearningModeEnum
-from app.agent.graph import run_agent_turn, initialize_session
 
 # LangGraph agent v2 (simplified 4-node LLM-driven architecture)
 from app.agent.graph_v2 import (
     initialize_session_v2,
     run_agent_turn_v2,
-    USE_AGENT_V2,
 )
 from app.services.voice_runtime import (
     EdgeTTSTTSProvider,
@@ -836,8 +833,7 @@ async def voice_chat_v2(
         session_id = session_context.session_id
         resolved_user_id = int(session_context.user_id or user_id)
 
-        use_v2 = USE_AGENT_V2
-        agent_version = "v2" if use_v2 else "v1"
+        agent_version = "v2"
         session_scope = VoiceSessionScope(
             runtime=runtime_label,
             session_id=session_id,
@@ -854,7 +850,7 @@ async def voice_chat_v2(
         agent_state = await bootstrap_service.initialize_agent_state(
             user_id=resolved_user_id,
             context=session_context,
-            use_v2_agent=use_v2,
+            use_v2_agent=True,
             explicit_mode=mode,
             interview_track_id=interview_track,
             mission_task_type=mission_task_type,
@@ -867,10 +863,7 @@ async def voice_chat_v2(
         )
         tts = get_tts_service()
 
-        if use_v2:
-            agent_state = await run_agent_turn_v2(agent_state, user_message=None)
-        else:
-            agent_state = await run_agent_turn(agent_state, user_message=None)
+        agent_state = await run_agent_turn_v2(agent_state, user_message=None)
 
         initial_response = agent_state.get("pending_response", "")
         current_phase = agent_state.get("current_phase", AgentPhase.START)
@@ -1132,10 +1125,7 @@ async def voice_chat_v2(
 
                     old_phase = agent_state.get("current_phase", AgentPhase.START)
                     agent_start = time.perf_counter()
-                    if use_v2:
-                        agent_state = await run_agent_turn_v2(agent_state, user_message=user_text)
-                    else:
-                        agent_state = await run_agent_turn(agent_state, user_message=user_text)
+                    agent_state = await run_agent_turn_v2(agent_state, user_message=user_text)
                     agent_duration = time.perf_counter() - agent_start
                     observe_voice_stage(
                         runtime=runtime_label,
@@ -1218,11 +1208,10 @@ async def voice_chat_v2(
                             time.time() - turn_start
                         )
 
-                    await emit_session_complete_if_needed()
-
                     if agent_state.get("should_end_session"):
                         session_status = "completed"
                         await persist_session("completed")
+                        await emit_session_complete_if_needed()
                         break
 
                 elif message.get("type") == "end":
@@ -1239,10 +1228,7 @@ async def voice_chat_v2(
                     )
 
                     agent_state["should_end_session"] = True
-                    if use_v2:
-                        agent_state = await run_agent_turn_v2(agent_state, user_message=None)
-                    else:
-                        agent_state = await run_agent_turn(agent_state, user_message=None)
+                    agent_state = await run_agent_turn_v2(agent_state, user_message=None)
 
                     farewell = agent_state.get("pending_response", "")
                     current_mode = agent_state.get("current_mode", current_mode)
@@ -1267,8 +1253,8 @@ async def voice_chat_v2(
                             mode_value=final_mode,
                         )
 
-                    await emit_session_complete_if_needed()
                     await persist_session("completed")
+                    await emit_session_complete_if_needed()
                     break
 
             except WebSocketDisconnect:
@@ -1498,36 +1484,20 @@ async def voice_chat_plex(
             logger.warning(f"Could not load learning context: {e}")
             voice_errors_total.labels(stage="db").inc()
 
-        # Initialize LangGraph agent state
-        use_v2 = USE_AGENT_V2
-        if use_v2:
-            agent_state = await initialize_session_v2(
-                user_id=user_id,
-                session_id=session_id,
-                username=username,
-                is_new_user=is_new_user,
-                language_level=language_level,
-                confirmed_goal=confirmed_goal,
-                confirmed_interests=confirmed_interests,
-                roadmap=roadmap,
-                due_vocabulary_count=due_vocabulary_count,
-                due_vocabulary_words=due_vocabulary_words,
-                memory_section=memory_section,
-            )
-        else:
-            agent_state = await initialize_session(
-                user_id=user_id,
-                session_id=session_id,
-                username=username,
-                is_new_user=is_new_user,
-                language_level=language_level,
-                confirmed_goal=confirmed_goal,
-                confirmed_interests=confirmed_interests,
-                roadmap=roadmap,
-                due_vocabulary_count=due_vocabulary_count,
-                due_vocabulary_words=due_vocabulary_words,
-                memory_section=memory_section,
-            )
+        # Initialize LangGraph agent state.
+        agent_state = await initialize_session_v2(
+            user_id=user_id,
+            session_id=session_id,
+            username=username,
+            is_new_user=is_new_user,
+            language_level=language_level,
+            confirmed_goal=confirmed_goal,
+            confirmed_interests=confirmed_interests,
+            roadmap=roadmap,
+            due_vocabulary_count=due_vocabulary_count,
+            due_vocabulary_words=due_vocabulary_words,
+            memory_section=memory_section,
+        )
 
         current_phase = agent_state.get("current_phase", AgentPhase.START)
         current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
@@ -1669,10 +1639,7 @@ async def voice_chat_plex(
 
                     # Run pedagogical analysis via LangGraph
                     old_phase = agent_state.get("current_phase", AgentPhase.START)
-                    if use_v2:
-                        updated = await run_agent_turn_v2(agent_state, user_message=user_text)
-                    else:
-                        updated = await run_agent_turn(agent_state, user_message=user_text)
+                    updated = await run_agent_turn_v2(agent_state, user_message=user_text)
                     agent_state.update(updated)
 
                     new_phase = agent_state.get("current_phase", AgentPhase.START)
@@ -1750,13 +1717,14 @@ async def voice_chat_plex(
                 duration_minutes=int((time.time() - session_start_time) / 60),
             )
 
-            if agent_state.get("assessed_level"):
+            if agent_state.get("assessed_level") and agent_state.get("assessment_source"):
                 await learning_plan_service.record_assessment(
                     user_id,
                     assessed_level=agent_state["assessed_level"],
                     scores=agent_state.get("assessment_scores"),
                     provisional=bool(agent_state.get("baseline_provisional")),
                     confidence_override=agent_state.get("baseline_confidence"),
+                    source=agent_state.get("assessment_source") or "explicit_assessment",
                 )
 
             if conversation_history:
@@ -1792,6 +1760,7 @@ async def voice_chat_plex(
                 duration_minutes=int((time.time() - session_start_time) / 60),
                 assessed_level=agent_state.get("assessed_level"),
                 assessment_scores=agent_state.get("assessment_scores", {}),
+                assessment_source=agent_state.get("assessment_source"),
                 interview_run=interview_run,
             )
         except Exception as e:
