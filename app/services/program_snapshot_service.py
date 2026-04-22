@@ -14,6 +14,10 @@ from app.services.gamification import StreakService, XPService
 from app.services.interview_service import build_interview_summary
 from app.services.learning_plan_service import LearningPlanService
 from app.services.pronunciation_assessment_service import build_pronunciation_summary
+from app.services.routing import (
+    GoalRoutingProfile,
+    build_goal_routing_from_goal_brief,
+)
 
 _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
     "structure": {
@@ -286,6 +290,7 @@ def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[
             "confidence": profile.get("confidence"),
             "status": profile.get("status") or ("provisional" if profile.get("provisional") else "confirmed"),
             "provisional": bool(profile.get("provisional")),
+            "source": profile.get("source") or "explicit_assessment",
             "goal_readiness": profile.get("goal_readiness"),
             "critical_gaps": profile.get("critical_gaps") or [],
             "skill_axes": {
@@ -307,6 +312,7 @@ def build_latest_assessment(roadmap: Optional[dict[str, Any]]) -> Optional[dict[
             "confidence": None,
             "status": "confirmed",
             "provisional": False,
+            "source": "explicit_assessment",
             "goal_readiness": None,
             "critical_gaps": [],
             "skill_axes": {},
@@ -333,7 +339,7 @@ def build_setup_state(goal_status: Optional[str], assessment_complete: bool) -> 
     if goal_status not in {"draft", "confirmed"}:
         return "needs_goal"
     if not assessment_complete:
-        return "needs_assessment"
+        return "needs_first_mission"
     return "ready_for_program"
 
 
@@ -355,7 +361,7 @@ def build_next_question_type(goal_status: Optional[str], assessment: Optional[di
     if goal_status not in {"draft", "confirmed"}:
         return "goal_setup"
     if not assessment:
-        return "baseline"
+        return "mission"
     return "mission"
 
 
@@ -580,10 +586,11 @@ def _build_entry_main_loop_mission(
     program_plan: Optional[dict[str, Any]],
     error_patterns: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Pick the first main-loop mission using the canonical routing profile."""
     weekly_focus = (program_plan or {}).get("weekly_focus") or []
-    primary_context = str(((goal_brief.get("main_contexts") or [None])[0] or "")).strip().lower()
+    profile = build_goal_routing_from_goal_brief(goal_brief)
 
-    if primary_context == "workplace_communication":
+    if profile.first_mission_task_type == "stakeholder_explanation_drill":
         return _mission_payload(
             mode="free_conversation",
             launch_mode="free_conversation",
@@ -598,7 +605,7 @@ def _build_entry_main_loop_mission(
             success_signal="You can explain the project in simple business language for a stakeholder.",
         )
 
-    if primary_context == "project_walkthrough":
+    if profile.first_mission_task_type == "technical_project_walkthrough":
         return _mission_payload(
             mode="free_conversation",
             launch_mode="free_conversation",
@@ -625,6 +632,79 @@ def _build_entry_main_loop_mission(
         expected_outcome="One cleaner interview-aligned answer about your background, fit, or motivation.",
         estimated_minutes=9,
         success_signal="You can answer a simple interview question in English with fewer corrections and clearer delivery.",
+    )
+
+
+def _build_first_useful_mission_without_assessment(
+    goal_brief: dict[str, Any],
+    program_plan: Optional[dict[str, Any]],
+    error_patterns: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Pick the first useful mission strictly from ``primary_context``.
+
+    Mapping is owned by :mod:`app.services.routing.goal_routing` so
+    ``recommended_track_id`` and ``first_mission_task_type`` cannot drift.
+    Domain and secondary contexts influence wording only — never the task type.
+    """
+    weekly_focus = (program_plan or {}).get("weekly_focus") or []
+    profile = build_goal_routing_from_goal_brief(goal_brief)
+    return _first_mission_payload_for_profile(
+        profile,
+        weekly_focus=weekly_focus,
+        error_patterns=error_patterns,
+    )
+
+
+def _first_mission_payload_for_profile(
+    profile: GoalRoutingProfile,
+    *,
+    weekly_focus: list[Any],
+    error_patterns: list[dict[str, Any]],
+) -> dict[str, Any]:
+    task_type = profile.first_mission_task_type
+
+    if task_type == "stakeholder_explanation_drill":
+        return _mission_payload(
+            mode="free_conversation",
+            launch_mode="free_conversation",
+            title="Explain the project to a stakeholder",
+            reason=weekly_focus[0] if weekly_focus else "Start with one concrete explanation of your work for a non-technical listener.",
+            why_now="The fastest way to create a first win is a clearer explanation of what you already do. The coach will also estimate your speaking baseline from this real task.",
+            linked_goal_context="workplace_communication",
+            linked_skill_gap="stakeholder_clarity",
+            task_type="stakeholder_explanation_drill",
+            expected_outcome="One simpler stakeholder-friendly explanation of your work that already sounds more reusable.",
+            estimated_minutes=8,
+            success_signal="You can explain the problem, your contribution, and the business value without collapsing into jargon.",
+        )
+
+    if task_type == "technical_project_walkthrough":
+        return _mission_payload(
+            mode="free_conversation",
+            launch_mode="free_conversation",
+            title="Walk through one technical project",
+            reason=weekly_focus[0] if weekly_focus else "Start with the project answer that best proves your value.",
+            why_now="The fastest way to create a first career-English win is a clearer project answer. The coach will also capture a working baseline from this real mission.",
+            linked_goal_context="project_walkthrough",
+            linked_skill_gap="technical_clarity",
+            task_type="technical_project_walkthrough",
+            expected_outcome="One clearer project walkthrough with problem, approach, metric, and impact.",
+            estimated_minutes=10,
+            success_signal="You can explain one project in one clean flow with less drift and more concrete value.",
+        )
+
+    return _mission_payload(
+        mode="free_conversation",
+        launch_mode="free_conversation",
+        title="Run an interview-aligned foundation speaking drill",
+        reason=weekly_focus[0] if weekly_focus else "Start with one lower-pressure answer about your background and fit.",
+        why_now="You still need a first useful speaking win, but the coach can estimate the baseline from a real answer instead of a separate test.",
+        linked_goal_context="interviews",
+        linked_skill_gap="grammar_accuracy" if error_patterns else "fluency",
+        task_type="foundation_speaking_drill",
+        expected_outcome="One cleaner career-aligned answer you can already reuse in future speaking practice.",
+        estimated_minutes=9,
+        success_signal="You can answer a simple career question in English with fewer corrections and clearer delivery.",
     )
 
 
@@ -677,18 +757,10 @@ def recommend_next_mission(
         )
 
     if not has_assessment:
-        return _mission_payload(
-            mode="assessment",
-            launch_mode="assessment",
-            title="Take your baseline assessment",
-            reason="You need a measured starting point before the coach can route practice well.",
-            why_now="Without a baseline, the program cannot know whether to focus on fluency, grammar, or career scenarios first.",
-            linked_goal_context="baseline",
-            linked_skill_gap=None,
-            task_type="baseline_assessment",
-            expected_outcome="A clear starting level and the first program stage.",
-            estimated_minutes=8,
-            success_signal="You finish with a CEFR estimate and a first mission tied to your goal.",
+        return _build_first_useful_mission_without_assessment(
+            goal_brief=goal_brief,
+            program_plan=program_plan,
+            error_patterns=error_patterns,
         )
 
     if weakest_interview_area and weakest_interview_area in _WEAKEST_AREA_MISSIONS:
