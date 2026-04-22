@@ -248,6 +248,25 @@ agent_intent_classifier_latency_seconds = Histogram(
     buckets=[0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.3, 0.5, 1.0]
 )
 
+agent_career_routing_classifier_total = Counter(
+    'agent_career_routing_classifier_total',
+    'Career routing classifier outcomes by rollout mode',
+    ['mode', 'outcome', 'source']
+)
+
+agent_career_routing_classifier_latency_seconds = Histogram(
+    'agent_career_routing_classifier_latency_seconds',
+    'Latency of career routing classifier calls',
+    ['source'],
+    buckets=[0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+)
+
+agent_career_routing_classifier_disagreements_total = Counter(
+    'agent_career_routing_classifier_disagreements_total',
+    'Disagreements between legacy routing and classifier routing',
+    ['mode']
+)
+
 # ============ PERSONAPLEX METRICS ============
 
 personaplex_connections_active = Gauge(

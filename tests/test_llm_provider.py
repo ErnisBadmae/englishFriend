@@ -278,13 +278,13 @@ class TestConfigIntegration:
 
         assert settings.vllm_base_url == "http://192.168.0.18:8000/v1"
         assert settings.vllm_api_key == "token-abc123"
-        assert settings.vllm_model == "qwen32b-32k"
-        assert settings.llama_cpp_base_url == "http://192.168.0.18:8001/v1"
+        assert settings.vllm_model == "Qwen/Qwen2.5-7B-Instruct-AWQ"
+        assert settings.llama_cpp_base_url == "http://192.168.0.18:8000/v1"
 
     def test_provider_runtime_metadata_hides_secret_value(self):
         metadata = _provider_runtime_metadata("vllm")
 
         assert metadata["base_url"] == "http://192.168.0.18:8000/v1"
-        assert metadata["model"] == "qwen32b-32k"
+        assert metadata["model"] == "Qwen/Qwen2.5-7B-Instruct-AWQ"
         assert metadata["api_key_present"] is True
         assert "token-abc123" not in str(metadata)

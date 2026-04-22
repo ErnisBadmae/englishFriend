@@ -18,6 +18,11 @@ from app.services.ai.memory_extraction_service import (
     MemoryExtractionSoftFailure,
     get_memory_extraction_service,
 )
+from app.services.goal_brief_contract import (
+    is_goal_brief_complete,
+    is_goal_brief_routing_ready,
+    goal_brief_missing_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +94,6 @@ GOAL_TEMPLATES = {
 
 
 _LEVEL_BASELINE = {"A1": 2.0, "A2": 3.5, "B1": 5.0, "B2": 6.8, "C1": 8.3, "C2": 9.2}
-_GOAL_BRIEF_REQUIRED_FIELDS = {
-    "primary_goal": "goal",
-    "target_role": "target role",
-    "domain": "domain",
-    "target_market": "target company context",
-    "deadline_type": "timeline",
-    "main_contexts": "practice contexts",
-}
 _ROLE_KEYWORDS = {
     "ml engineer": ("ML Engineer", "machine_learning"),
     "machine learning": ("ML Engineer", "machine_learning"),
@@ -599,12 +596,8 @@ class LearningPlanService:
         return bool(goal_brief and goal_brief.get("status") in {"draft", "confirmed"})
 
     def get_goal_setup_missing(self, plan: LearningPlan) -> list[str]:
-        goal_brief = self.get_goal_brief(plan) or {}
-        missing: list[str] = []
-        for key, label in _GOAL_BRIEF_REQUIRED_FIELDS.items():
-            if not goal_brief.get(key):
-                missing.append(label)
-        return missing
+        goal_brief = self.get_goal_brief(plan)
+        return goal_brief_missing_labels(goal_brief, mode="routing")
 
     def get_focus_areas(self, plan: LearningPlan) -> list[str]:
         areas = (plan.roadmap or {}).get("focus_areas", [])
@@ -1137,20 +1130,10 @@ class LearningPlanService:
         return min(score, 0.95)
 
     def _is_goal_brief_routing_ready(self, goal_brief: dict[str, Any]) -> bool:
-        return bool(
-            goal_brief.get("primary_goal")
-            and goal_brief.get("target_role")
-            and goal_brief.get("domain")
-            and goal_brief.get("target_market")
-            and goal_brief.get("main_contexts")
-            and "general_fluency" not in (goal_brief.get("main_contexts") or [])
-        )
+        return is_goal_brief_routing_ready(goal_brief)
 
     def _is_goal_brief_complete(self, goal_brief: dict[str, Any]) -> bool:
-        return bool(
-            self._is_goal_brief_routing_ready(goal_brief)
-            and goal_brief.get("deadline_type")
-        )
+        return is_goal_brief_complete(goal_brief)
 
     def _build_goal_summary(self, goal_brief: dict[str, Any]) -> str:
         role = goal_brief.get("target_role") or "target role"

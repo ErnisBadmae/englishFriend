@@ -75,6 +75,38 @@ def test_infer_goal_brief_keeps_explicit_workplace_context_first():
 
 
 @pytest.mark.asyncio
+async def test_onboarding_project_tradeoff_goal_becomes_routing_ready_without_company_context():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_question_type"] = "goal_setup"
+    state["last_user_message"] = (
+        "I want to explain system design tradeoffs in my machine learning project better in English"
+    )
+
+    with patch(
+        "app.agent.nodes_v2.onboarding.classify_career_routing",
+        AsyncMock(return_value=None),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock(return_value="{}")),
+    ):
+        updated = await onboarding_node(state)
+
+    assert updated["goal_setup_complete"] is True
+    assert updated["goal_brief"]["status"] == "draft"
+    assert updated["goal_brief"]["main_contexts"][0] == "project_walkthrough"
+    assert updated["goal_brief"].get("target_market") is None
+    assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
+    assert updated["mission_task_type"] == "technical_project_walkthrough"
+    assert "real mission" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
 async def test_transition_to_learning_moves_routing_ready_goal_to_first_useful_mission():
     state = create_initial_state(user_id=1, session_id="session-1")
     state["goal_brief"] = {

@@ -32,16 +32,27 @@ from app.agent.response_parser import (
     parse_llm_response,
 )
 from app.agent.state import AgentPhase, AgentState, LearningModeEnum, add_decision_log
+from app.core.config import settings
 from app.core.metrics import (
     agent_guardrail_fallbacks,
     agent_v2_goal_detection,
     agent_v2_llm_latency,
     agent_v2_parse_success,
 )
+from app.services.goal_brief_contract import (
+    goal_brief_missing_keys,
+    goal_brief_missing_labels,
+    is_goal_brief_routing_ready,
+)
 from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
 from app.services.program_snapshot_service import recommend_next_mission
+from app.services.routing.career_classifier import (
+    CareerRoutingArbiterDecision,
+    arbitrate_career_routing,
+    classify_career_routing,
+)
 from app.services.routing.goal_routing import (
     INTERVIEW_SIGNAL_PATTERNS as _ROUTING_INTERVIEW_PATTERNS,
     PROJECT_SIGNAL_PATTERNS as _ROUTING_PROJECT_PATTERNS,
@@ -405,16 +416,31 @@ async def onboarding_node(state: AgentState) -> AgentState:
 
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
     goal_became_routing_ready_this_turn = False
-    inferred_goal_brief = _filter_goal_brief_update_for_turn(
+    cumulative_transcript = _collect_user_transcript(state, current_message=user_message)
+    routing_turn_decision = await _prepare_goal_brief_turn_update(
         state,
-        _infer_goal_brief_from_message(
-            user_message,
-            state.get("goal_brief") or {},
-            cumulative_text=_collect_user_transcript(state, current_message=user_message),
-        ),
+        user_message=user_message,
+        cumulative_text=cumulative_transcript,
     )
+    inferred_goal_brief = routing_turn_decision.goal_brief_update
+    if settings.career_routing_classifier_mode != "off" and (
+        routing_turn_decision.classifier_result is not None
+        or routing_turn_decision.mode != "off"
+    ):
+        add_decision_log(
+            state,
+            node="onboarding",
+            action="career_routing_arbiter",
+            reason=(
+                f"mode={routing_turn_decision.mode}, "
+                f"applied={routing_turn_decision.applied_source}"
+            ),
+            data=routing_turn_decision.to_observability_payload(),
+        )
     if inferred_goal_brief:
-        normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+        normalized_goal_brief = _finalize_goal_brief_after_merge(
+            _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+        )
         state["goal_brief"] = normalized_goal_brief
         state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
         state["setup_step"] = "first_useful_mission" if state["goal_setup_complete"] else "goal_setup"
@@ -483,7 +509,9 @@ async def onboarding_node(state: AgentState) -> AgentState:
         if inferred_goal_brief or (
             _should_retry_first_turn_llm(state) and _is_transient_llm_connection_error(exc)
         ):
-            normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+            normalized_goal_brief = _finalize_goal_brief_after_merge(
+                _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+            )
             state["goal_brief"] = normalized_goal_brief
             state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
             if state["goal_setup_complete"] and not state.get("assessed_level"):
@@ -538,7 +566,12 @@ async def onboarding_node(state: AgentState) -> AgentState:
         latency_ms=latency_ms,
     )
 
-    state = await _apply_onboarding_action(state, action, pedagogy)
+    state = await _apply_onboarding_action(
+        state,
+        action,
+        pedagogy,
+        preseed_goal_brief=inferred_goal_brief,
+    )
 
     add_decision_log(
         state,
@@ -567,20 +600,24 @@ async def _apply_onboarding_action(
     state: AgentState,
     action: dict,
     pedagogy,
+    *,
+    preseed_goal_brief: Optional[dict[str, Any]] = None,
 ) -> AgentState:
     action_type = action.get("action", "")
     response_text = action.get("response_text", "")
     goal_brief = _filter_llm_goal_brief_extraction(state, extract_goal_brief_from_action(action))
     goal_value = extract_goal_from_action(action)
-    inferred_goal_brief = _filter_goal_brief_update_for_turn(
-        state,
-        _infer_goal_brief_from_message(
-            state.get("last_user_message", ""),
-            state.get("goal_brief") or {},
+    inferred_goal_brief = preseed_goal_brief
+    if inferred_goal_brief is None:
+        routing_decision = await _prepare_goal_brief_turn_update(
+            state,
+            user_message=state.get("last_user_message", "") or "",
             cumulative_text=_collect_user_transcript(state),
-        ),
+        )
+        inferred_goal_brief = routing_decision.goal_brief_update
+    merged_goal_brief = _finalize_goal_brief_after_merge(
+        _merge_goal_brief(state.get("goal_brief") or {}, goal_brief, inferred_goal_brief)
     )
-    merged_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, goal_brief, inferred_goal_brief)
     if not goal_value:
         goal_value = merged_goal_brief.get("primary_goal")
 
@@ -632,7 +669,9 @@ async def _apply_onboarding_action(
                 agent_v2_goal_detection.labels(detected="false").inc()
 
     elif action_type == "goal_skipped":
-        normalized_goal_brief = _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+        normalized_goal_brief = _finalize_goal_brief_after_merge(
+            _merge_goal_brief(state.get("goal_brief") or {}, inferred_goal_brief)
+        )
         state["goal_brief"] = normalized_goal_brief
         state["goal_setup_complete"] = _is_goal_brief_routing_ready(normalized_goal_brief)
         state["goal_needs_confirmation"] = False
@@ -721,31 +760,11 @@ async def _apply_onboarding_action(
 
 
 def _goal_brief_missing_fields(goal_brief: dict[str, Any]) -> list[str]:
-    required = {
-        "primary_goal": "goal",
-        "target_role": "target role",
-        "domain": "domain",
-        "target_market": "company context",
-        "deadline_type": "timeline",
-        "main_contexts": "practice context",
-    }
-    missing: list[str] = []
-    for key, label in required.items():
-        if not goal_brief.get(key):
-            missing.append(label)
-    return missing
+    return goal_brief_missing_labels(goal_brief, mode="routing")
 
 
 def _is_goal_brief_routing_ready(goal_brief: dict[str, Any]) -> bool:
-    contexts = goal_brief.get("main_contexts") or []
-    return bool(
-        goal_brief.get("primary_goal")
-        and goal_brief.get("target_role")
-        and goal_brief.get("domain")
-        and goal_brief.get("target_market")
-        and contexts
-        and "general_fluency" not in contexts
-    )
+    return is_goal_brief_routing_ready(goal_brief)
 
 
 def _coerce_goal_brief_state(goal_brief: dict[str, Any]) -> dict[str, Any]:
@@ -856,20 +875,16 @@ def _get_fallback_prompt(state: AgentState) -> str:
     goal_setup_complete = state.get("goal_setup_complete", False)
     skip_goal = state.get("_skip_goal", False)
     skip_assessment = state.get("_skip_assessment", False)
-    missing_goal_fields = [
-        name
-        for name in ["primary_goal", "target_role", "domain", "target_market", "deadline_type", "main_contexts"]
-        if not goal_brief.get(name)
-    ]
+    missing_goal_fields = goal_brief_missing_keys(goal_brief, mode="full")
 
     if not skip_goal and not goal_setup_complete:
         next_hint = {
             "primary_goal": "Synthesize a draft ML/AI career goal from noisy speech. If you hear job, abroad, ML, interview, project, or vocabulary signals, form a draft instead of asking a generic goal question again.",
             "target_role": "Ask what role they are aiming for, for example ML engineer, data scientist, or applied scientist.",
             "domain": "Ask which domain matters most for the program: machine learning, data science, or software engineering.",
+            "main_contexts": "Ask which situations matter most right now: interviews, project walkthroughs, or workplace communication.",
             "target_market": "Ask what company context they target: western company, international startup, or global remote team.",
             "deadline_type": "Ask for the timeline: 1-3 months, 3-6 months, or open-ended.",
-            "main_contexts": "Ask which situations matter most right now: interviews, project walkthroughs, or workplace communication.",
         }.get(missing_goal_fields[0] if missing_goal_fields else "primary_goal")
         return f"""You are English Friend, a proactive career-English coach for Russian-speaking ML/AI professionals.
 Student: {username}
@@ -1082,6 +1097,65 @@ def _filter_goal_brief_update_for_turn(
         return None
 
     return {"target_role": target_role}
+
+
+def _should_run_goal_routing_classifier(state: AgentState) -> bool:
+    if settings.career_routing_classifier_mode == "off":
+        return False
+    if state.get("goal_setup_complete"):
+        return False
+    if _should_run_explicit_assessment(state):
+        return False
+    current_phase = state.get("current_phase")
+    if current_phase not in {None, AgentPhase.START, AgentPhase.ONBOARDING}:
+        return False
+    return bool(str(state.get("last_user_message") or "").strip())
+
+
+def _finalize_goal_brief_after_merge(goal_brief: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(goal_brief or {})
+    if (
+        normalized.get("target_role")
+        and normalized.get("main_contexts")
+        and not normalized.get("primary_goal")
+    ):
+        normalized["primary_goal"] = _build_primary_goal_from_brief(normalized)
+    if normalized.get("main_contexts") and not normalized.get("deadline_type"):
+        normalized["deadline_type"] = "open_ended"
+    if normalized.get("main_contexts") and not normalized.get("motivation"):
+        normalized["motivation"] = "Use English to move closer to an international role."
+    return _coerce_goal_brief_state(normalized)
+
+
+async def _prepare_goal_brief_turn_update(
+    state: AgentState,
+    *,
+    user_message: str,
+    cumulative_text: str,
+) -> CareerRoutingArbiterDecision:
+    lexical_goal_brief = _filter_goal_brief_update_for_turn(
+        state,
+        _infer_goal_brief_from_message(
+            user_message,
+            state.get("goal_brief") or {},
+            cumulative_text=cumulative_text,
+        ),
+    )
+    classifier_result = None
+    if _should_run_goal_routing_classifier(state):
+        classifier_result = await classify_career_routing(
+            transcript_text=cumulative_text,
+            latest_user_message=user_message,
+            existing_goal_brief=state.get("goal_brief") or {},
+        )
+    return arbitrate_career_routing(
+        existing_goal_brief=state.get("goal_brief") or {},
+        lexical_goal_brief=lexical_goal_brief,
+        classifier_result=classifier_result,
+        transcript_text=cumulative_text,
+        mode=settings.career_routing_classifier_mode,
+        min_confidence=float(settings.career_routing_classifier_min_confidence),
+    )
 
 
 def _is_meta_progress_message(message: str) -> bool:
@@ -1711,10 +1785,12 @@ def _apply_goal_brief_to_state(
     goal_text: Optional[str],
     confirmed: bool,
 ) -> dict[str, Any]:
-    normalized_goal_brief = _merge_goal_brief(
-        state.get("goal_brief") or {},
-        goal_brief,
-        confirmed=confirmed,
+    normalized_goal_brief = _finalize_goal_brief_after_merge(
+        _merge_goal_brief(
+            state.get("goal_brief") or {},
+            goal_brief,
+            confirmed=confirmed,
+        )
     )
     if goal_text:
         if confirmed:

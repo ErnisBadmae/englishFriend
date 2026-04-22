@@ -126,8 +126,26 @@ def test_get_goal_setup_missing_returns_human_labels():
 
     assert "target role" in missing
     assert "domain" in missing
-    assert "target company context" in missing
-    assert "timeline" in missing
+    assert "practice context" in missing
+
+
+def test_get_goal_setup_missing_ignores_non_blocking_profile_fields_after_routing_ready():
+    plan = MagicMock()
+    plan.roadmap = {
+        "goal": "Explain my project in English",
+        "goal_brief": {
+            "primary_goal": "Explain my project in English",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "main_contexts": ["project_walkthrough"],
+            "status": "draft",
+        },
+    }
+    service = LearningPlanService(AsyncMock())
+
+    missing = service.get_goal_setup_missing(plan)
+
+    assert missing == []
 
 
 def test_get_program_plan_returns_default_shell_for_empty_roadmap():

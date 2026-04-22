@@ -7,6 +7,7 @@ from app.services.program_snapshot_service import (
     build_latest_assessment,
     build_improvement_signals,
     build_setup_state,
+    build_setup_progress,
     extract_focus_areas,
     recommend_next_mission,
 )
@@ -496,6 +497,22 @@ def test_build_setup_state_guides_user_through_sequence():
     assert build_setup_state(goal_status="incomplete", assessment_complete=False) == "needs_goal"
     assert build_setup_state(goal_status="draft", assessment_complete=False) == "needs_first_mission"
     assert build_setup_state(goal_status="confirmed", assessment_complete=True) == "ready_for_program"
+
+
+def test_build_setup_progress_keeps_enrichment_optional_but_visible():
+    progress = build_setup_progress(
+        goal_brief={
+            "primary_goal": "Explain my ML project in English",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "deadline_type": "open_ended",
+            "main_contexts": ["project_walkthrough"],
+            "status": "draft",
+        },
+        assessment={"level": "B1"},
+    )
+
+    assert progress == 86
 
 
 def test_build_improvement_signals_combines_product_evidence():

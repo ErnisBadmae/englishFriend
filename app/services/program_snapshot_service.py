@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.core_tables import Correction, Feedback, Session, User
+from app.services.goal_brief_contract import (
+    goal_brief_missing_labels,
+    goal_brief_setup_progress,
+)
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.gamification import StreakService, XPService
 from app.services.interview_service import build_interview_summary
@@ -344,17 +348,10 @@ def build_setup_state(goal_status: Optional[str], assessment_complete: bool) -> 
 
 
 def build_setup_progress(goal_brief: Optional[dict[str, Any]], assessment: Optional[dict[str, Any]]) -> int:
-    filled_slots = 0
-    total_slots = 7
-    goal_brief = goal_brief or {}
-    for key in ("primary_goal", "target_role", "domain", "target_market", "deadline_type"):
-        if goal_brief.get(key):
-            filled_slots += 1
-    if goal_brief.get("main_contexts"):
-        filled_slots += 1
-    if assessment:
-        filled_slots += 1
-    return int(round((filled_slots / total_slots) * 100))
+    return goal_brief_setup_progress(
+        goal_brief,
+        assessment_complete=assessment is not None,
+    )
 
 
 def build_next_question_type(goal_status: Optional[str], assessment: Optional[dict[str, Any]]) -> str:
@@ -727,18 +724,7 @@ def recommend_next_mission(
     )
 
     if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
-        missing = []
-        if goal_brief:
-            if not goal_brief.get("target_role"):
-                missing.append("target role")
-            if not goal_brief.get("domain"):
-                missing.append("domain")
-            if not goal_brief.get("target_market"):
-                missing.append("company context")
-            if not goal_brief.get("deadline_type"):
-                missing.append("timeline")
-            if not goal_brief.get("main_contexts"):
-                missing.append("practice context")
+        missing = goal_brief_missing_labels(goal_brief, mode="routing")
         why_now = "The coach still needs a concrete role and context before it can build a useful program."
         if missing:
             why_now = f"Missing: {', '.join(missing)}."

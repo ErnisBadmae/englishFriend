@@ -157,6 +157,11 @@ Rules for Claude Code in this repo:
 - Prefer the LAN-hosted local Qwen endpoint for mainline LLM work: `VLLM_BASE_URL=http://192.168.0.18:8000/v1`, `VLLM_API_KEY=token-abc123`.
 - Treat `scripts/run_product_synthetic_eval.py --scenario-set mainline` as the canonical product regression gate.
 - Treat websocket `session_complete` as a post-persistence signal: if it is emitted, snapshot state should already be fresh enough for immediate validation.
+- Current routing-classifier rollout order is fixed: `shadow live run -> disagreement report -> gate for ambiguous cases -> mainline later`.
+- Do not move the next layer to LLM yet. The next candidate is in-session intent, but only if live evidence shows that the current bounded fast rules miss important cases.
+- If routing is still noisy in live runs, improve arbiter/eval/observability first instead of expanding model scope.
+- If `project_tradeoff_story` or another clearly technical project scenario stalls in `needs_goal`, treat it as a routing/product-contract bug first, not as a reason to expand LLM scope.
+- Keep the goal-brief contract canonical: `routing-ready` fields and richer profile fields must not drift across onboarding, learning-plan, snapshot, or UI missing-field logic.
 
 ### PersonaPlex Setup (Linux GPU Server)
 ```bash
