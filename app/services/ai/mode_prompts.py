@@ -8,7 +8,16 @@
 """
 
 from enum import Enum
+import logging
 from typing import Optional
+
+from app.services.skills.registry import (
+    get_skill_registry,
+    render_skill_instructions,
+    render_skill_template,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class LearningMode(str, Enum):
@@ -17,6 +26,14 @@ class LearningMode(str, Enum):
     MOCK_INTERVIEW = "mock_interview"
     VOCABULARY_DRILL = "vocabulary_drill"
     FREE_CONVERSATION = "free_conversation"
+
+
+MODE_SKILL_IDS = {
+    LearningMode.ASSESSMENT: "baseline_assessment",
+    LearningMode.MOCK_INTERVIEW: "mock_interview",
+    LearningMode.VOCABULARY_DRILL: "vocabulary_drill",
+    LearningMode.FREE_CONVERSATION: "free_conversation",
+}
 
 
 # =============================================================================
@@ -349,6 +366,27 @@ def build_mode_prompt(
     if vocabulary_list:
         vocabulary_section = f"\n## Words to practice this session:\n{vocabulary_list}"
 
+    skill_context = {
+        "username": username,
+        "level": level,
+        "goal": goal,
+        "interests": interests,
+        "focus_area": focus_area,
+        "vocabulary_list": vocabulary_list or "No specific words - focus on conversation",
+        "memory_section": memory_section or "",
+        "vocabulary_section": vocabulary_section,
+        "goal_field": goal_field,
+    }
+
+    skill_registry = get_skill_registry()
+    skill_id = MODE_SKILL_IDS.get(mode)
+    skill = skill_registry.get(skill_id) if skill_id else skill_registry.get_for_mode(mode.value)
+    if skill:
+        rendered_prompt = render_skill_instructions(skill, skill_context).strip()
+        if rendered_prompt:
+            return rendered_prompt
+        logger.warning("Internal mode skill %s rendered an empty prompt, using fallback", skill.id)
+
     if mode == LearningMode.ASSESSMENT:
         return ASSESSMENT_PROMPT.format(
             username=username,
@@ -393,6 +431,17 @@ def get_session_greeting(mode: LearningMode, username: str = "there") -> str:
     Returns:
         Приветственное сообщение
     """
+    skill_registry = get_skill_registry()
+    skill_id = MODE_SKILL_IDS.get(mode)
+    skill = skill_registry.get(skill_id) if skill_id else skill_registry.get_for_mode(mode.value)
+    if skill:
+        rendered_greeting = render_skill_template(
+            skill.greeting_template,
+            {"username": username},
+        )
+        if rendered_greeting:
+            return rendered_greeting
+
     greetings = {
         LearningMode.ASSESSMENT: (
             f"Hi {username}! I'm going to help assess your English level today. "

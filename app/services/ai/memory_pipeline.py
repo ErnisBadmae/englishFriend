@@ -1,34 +1,34 @@
-"""Unified Memory Pipeline для EnglishFriend.
+"""Unified Memory Pipeline для EnglishFriend."""
 
-Полный цикл работы с памятью:
-1. Извлечение фактов из диалога (MemoryExtractionService)
-2. Генерация эмбеддингов (EmbeddingService)
-3. Сохранение в PostgreSQL + Qdrant (MemoryService + QdrantService)
-4. Семантический поиск для RAG (QdrantService)
+from __future__ import annotations
 
-Этот сервис связывает все компоненты в единый pipeline.
-"""
-
+import asyncio
 import logging
-from typing import Optional
-from datetime import datetime
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.extended_tables import Memory
 from app.models.enums_and_dimensions import MemoryKind
-from app.services.ai.embedding_service import get_embedding_service, EmbeddingService
+from app.models.extended_tables import Memory
+from app.services.ai.memory_contracts import (
+    MemoryCandidate,
+    consolidate_memory_candidates,
+    normalize_temporal_references,
+)
+from app.services.ai.embedding_service import (
+    EmbeddingService,
+    EmbeddingUnavailableError,
+    get_embedding_service,
+)
 from app.services.ai.memory_extraction_service import (
-    get_memory_extraction_service,
     MemoryExtractionService,
-    ExtractedMemory,
+    MemoryExtractionSoftFailure,
+    get_memory_extraction_service,
 )
-from app.services.ai.qdrant_service import (
-    get_qdrant_service,
-    QdrantService,
-    MemorySearchResult,
-)
+from app.services.ai.qdrant_service import QdrantService, get_qdrant_service
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +36,21 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MemoryContext:
     """Контекст памяти для использования в промптах."""
-    facts: list[str]  # Факты о пользователе
-    preferences: list[str]  # Предпочтения
-    goals: list[str]  # Цели обучения
-    error_patterns: list[str]  # Паттерны ошибок
-    relevant_memories: list[str]  # Релевантные воспоминания для текущего контекста
+
+    facts: list[str]
+    preferences: list[str]
+    goals: list[str]
+    error_patterns: list[str]
+    relevant_memories: list[str]
+
+
+@dataclass
+class MemoryProcessingOutcome:
+    saved_memories: list[Memory]
+    status: str
+    reason: Optional[str] = None
+    error_type: Optional[str] = None
+    error: Optional[str] = None
 
 
 class MemoryPipeline:
@@ -52,18 +62,45 @@ class MemoryPipeline:
         embedding_service: Optional[EmbeddingService] = None,
         extraction_service: Optional[MemoryExtractionService] = None,
         qdrant_service: Optional[QdrantService] = None,
+        vector_sync_scheduler: Optional[Callable[..., None]] = None,
     ):
-        """
-        Args:
-            db: Async database session
-            embedding_service: Сервис эмбеддингов (optional, создаётся автоматически)
-            extraction_service: Сервис извлечения (optional)
-            qdrant_service: Сервис Qdrant (optional)
-        """
         self.db = db
         self._embedding = embedding_service or get_embedding_service()
         self._extraction = extraction_service or get_memory_extraction_service()
         self._qdrant = qdrant_service or get_qdrant_service()
+        self._vector_sync_scheduler = vector_sync_scheduler or self._schedule_qdrant_upsert
+
+    async def _extract_memories_with_retry(
+        self,
+        *,
+        messages: list[dict],
+        existing_memories: list[str],
+        user_id: int,
+    ) -> list:
+        attempts = 2
+        last_exc: MemoryExtractionSoftFailure | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._extraction.extract_from_conversation(
+                    messages=messages,
+                    existing_memories=existing_memories,
+                )
+            except MemoryExtractionSoftFailure as exc:
+                last_exc = exc
+                if exc.reason != "provider_connection_error" or attempt >= attempts:
+                    raise
+                logger.info(
+                    "Retrying memory extraction for user %s after transient provider failure (%s/%s)",
+                    user_id,
+                    attempt,
+                    attempts,
+                )
+                await asyncio.sleep(0.2)
+
+        if last_exc:
+            raise last_exc
+        return []
 
     async def process_conversation(
         self,
@@ -71,47 +108,87 @@ class MemoryPipeline:
         messages: list[dict],
         session_id: Optional[str] = None,
     ) -> list[Memory]:
-        """Обработать диалог и сохранить извлечённые воспоминания.
+        """Обработать диалог и сохранить извлечённые воспоминания."""
+        outcome = await self.process_conversation_with_outcome(
+            user_id=user_id,
+            messages=messages,
+            session_id=session_id,
+        )
+        if outcome.status == "soft_failed":
+            logger.info(
+                "Skipped memory extraction for user %s due to transient provider failure: %s",
+                user_id,
+                outcome.reason,
+            )
+        elif outcome.status == "failed":
+            logger.error("Failed to process conversation for user %s: %s", user_id, outcome.error)
+        return outcome.saved_memories
 
-        Args:
-            user_id: ID пользователя
-            messages: Список сообщений диалога
-            session_id: ID сессии (для привязки)
-
-        Returns:
-            Список созданных Memory объектов
-        """
+    async def process_conversation_with_outcome(
+        self,
+        user_id: int,
+        messages: list[dict],
+        session_id: Optional[str] = None,
+    ) -> MemoryProcessingOutcome:
+        """Process conversation and report whether extraction saved, no-oped, soft-failed, or failed."""
         if not messages:
-            return []
+            return MemoryProcessingOutcome(saved_memories=[], status="noop", reason="no_messages")
 
         try:
-            # 1. Получаем существующие воспоминания (чтобы не дублировать)
             existing = await self._get_existing_memories(user_id)
-            existing_contents = [m.content for m in existing]
-
-            # 2. Извлекаем новые факты из диалога
-            extracted = await self._extraction.extract_from_conversation(
+            extracted = await self._extract_memories_with_retry(
                 messages=messages,
-                existing_memories=existing_contents,
+                existing_memories=[memory.content for memory in existing],
+                user_id=user_id,
             )
-
             if not extracted:
-                logger.debug(f"No new memories extracted for user {user_id}")
-                return []
+                logger.debug("No new memories extracted for user %s", user_id)
+                return MemoryProcessingOutcome(saved_memories=[], status="noop", reason="no_new_memories")
 
-            # 3. Генерируем эмбеддинги для всех извлечённых фактов
-            contents = [e.content for e in extracted]
-            embeddings = await self._embedding.embed_texts(contents)
+            consolidation = consolidate_memory_candidates(
+                candidates=[
+                    MemoryCandidate(
+                        kind=memory.kind,
+                        content=memory.content,
+                        salience=memory.salience,
+                        meta=memory.meta or {},
+                    )
+                    for memory in extracted
+                ],
+                existing_memories=existing,
+            )
+            if consolidation.dropped_duplicates:
+                logger.debug(
+                    "Dropped %s duplicate memory candidates for user %s",
+                    len(consolidation.dropped_duplicates),
+                    user_id,
+                )
+            if consolidation.conflicts:
+                logger.debug(
+                    "Detected %s memory conflicts for user %s during consolidation",
+                    len(consolidation.conflicts),
+                    user_id,
+                )
+            if not consolidation.accepted_candidates:
+                logger.debug("All extracted memories were dropped during consolidation for user %s", user_id)
+                return MemoryProcessingOutcome(saved_memories=[], status="noop", reason="all_candidates_dropped")
 
-            # 4. Сохраняем в PostgreSQL и Qdrant
+            contents = [memory.content for memory in consolidation.accepted_candidates]
+            embeddings: list[list[float]] | None = None
+            if self._embedding.is_available():
+                embeddings = await self._embedding.embed_texts(contents)
+            else:
+                logger.info("Vector memory unavailable, saving extracted memories in DB-only mode")
+
             created_memories = []
-            for i, ext_memory in enumerate(extracted):
+            for index, extracted_memory in enumerate(consolidation.accepted_candidates):
+                embedding = embeddings[index] if embeddings else None
                 memory = await self._save_memory(
                     user_id=user_id,
-                    content=ext_memory.content,
-                    kind=ext_memory.kind,
-                    salience=ext_memory.salience,
-                    embedding=embeddings[i],
+                    content=extracted_memory.content,
+                    kind=extracted_memory.kind,
+                    salience=extracted_memory.salience,
+                    embedding=embedding,
                     meta={
                         "session_id": session_id,
                         "extracted_at": datetime.utcnow().isoformat(),
@@ -120,12 +197,28 @@ class MemoryPipeline:
                 if memory:
                     created_memories.append(memory)
 
-            logger.info(f"Saved {len(created_memories)} new memories for user {user_id}")
-            return created_memories
-
-        except Exception as e:
-            logger.error(f"Failed to process conversation for user {user_id}: {e}")
-            return []
+            logger.info("Saved %s new memories for user %s", len(created_memories), user_id)
+            return MemoryProcessingOutcome(
+                saved_memories=created_memories,
+                status="saved" if created_memories else "noop",
+                reason=None if created_memories else "memory_save_noop",
+            )
+        except MemoryExtractionSoftFailure as exc:
+            return MemoryProcessingOutcome(
+                saved_memories=[],
+                status="soft_failed",
+                reason=exc.reason,
+                error_type=type(exc.original_exception).__name__,
+                error=str(exc.original_exception),
+            )
+        except Exception as exc:
+            return MemoryProcessingOutcome(
+                saved_memories=[],
+                status="failed",
+                reason="unexpected_exception",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     async def get_relevant_context(
         self,
@@ -133,16 +226,7 @@ class MemoryPipeline:
         current_message: str,
         limit: int = 5,
     ) -> MemoryContext:
-        """Получить релевантный контекст памяти для текущего сообщения.
-
-        Args:
-            user_id: ID пользователя
-            current_message: Текущее сообщение (для семантического поиска)
-            limit: Максимум релевантных воспоминаний
-
-        Returns:
-            MemoryContext с категоризированными воспоминаниями
-        """
+        """Получить релевантный контекст памяти для текущего сообщения."""
         context = MemoryContext(
             facts=[],
             preferences=[],
@@ -152,35 +236,34 @@ class MemoryPipeline:
         )
 
         try:
-            # 1. Получаем все воспоминания пользователя из PostgreSQL
             existing = await self._get_existing_memories(user_id)
+            for memory in existing:
+                if memory.kind == MemoryKind.FACT:
+                    context.facts.append(memory.content)
+                elif memory.kind == MemoryKind.PREFERENCE:
+                    context.preferences.append(memory.content)
+                elif memory.kind == MemoryKind.GOAL:
+                    context.goals.append(memory.content)
+                elif memory.kind == MemoryKind.ERROR_PATTERN:
+                    context.error_patterns.append(memory.content)
 
-            # Категоризируем
-            for mem in existing:
-                if mem.kind == MemoryKind.FACT:
-                    context.facts.append(mem.content)
-                elif mem.kind == MemoryKind.PREFERENCE:
-                    context.preferences.append(mem.content)
-                elif mem.kind == MemoryKind.GOAL:
-                    context.goals.append(mem.content)
-                elif mem.kind == MemoryKind.ERROR_PATTERN:
-                    context.error_patterns.append(mem.content)
-
-            # 2. Семантический поиск релевантных воспоминаний через Qdrant
-            if current_message and await self._qdrant.health_check():
+            if (
+                current_message
+                and self._embedding.is_available()
+                and await self._qdrant.health_check()
+            ):
                 similar = await self._qdrant.search_by_text(
                     query_text=current_message,
                     user_id=user_id,
                     embedding_service=self._embedding,
                     limit=limit,
-                    min_score=0.6,  # Чуть ниже порог для большего контекста
+                    min_score=0.6,
                 )
-                context.relevant_memories = [m.content for m in similar]
+                context.relevant_memories = [memory.content for memory in similar]
 
             return context
-
-        except Exception as e:
-            logger.error(f"Failed to get memory context for user {user_id}: {e}")
+        except Exception as exc:
+            logger.error("Failed to get memory context for user %s: %s", user_id, exc)
             return context
 
     async def format_memory_for_prompt(
@@ -188,41 +271,20 @@ class MemoryPipeline:
         user_id: int,
         current_message: Optional[str] = None,
     ) -> str:
-        """Сформировать секцию памяти для системного промпта.
-
-        Args:
-            user_id: ID пользователя
-            current_message: Текущее сообщение для контекстного поиска
-
-        Returns:
-            Отформатированная строка для включения в промпт
-        """
+        """Сформировать секцию памяти для системного промпта."""
         context = await self.get_relevant_context(user_id, current_message or "")
-
         sections = []
 
         if context.facts:
-            sections.append("## Known facts about the student:\n" +
-                          "\n".join(f"- {f}" for f in context.facts[:5]))
-
+            sections.append("## Known facts about the student:\n" + "\n".join(f"- {item}" for item in context.facts[:5]))
         if context.goals:
-            sections.append("## Student's learning goals:\n" +
-                          "\n".join(f"- {g}" for g in context.goals[:3]))
-
+            sections.append("## Student's learning goals:\n" + "\n".join(f"- {item}" for item in context.goals[:3]))
         if context.preferences:
-            sections.append("## Preferences:\n" +
-                          "\n".join(f"- {p}" for p in context.preferences[:3]))
-
+            sections.append("## Preferences:\n" + "\n".join(f"- {item}" for item in context.preferences[:3]))
         if context.error_patterns:
-            sections.append("## Common mistakes to address:\n" +
-                          "\n".join(f"- {e}" for e in context.error_patterns[:3]))
-
+            sections.append("## Common mistakes to address:\n" + "\n".join(f"- {item}" for item in context.error_patterns[:3]))
         if context.relevant_memories:
-            sections.append("## Relevant context from previous sessions:\n" +
-                          "\n".join(f"- {m}" for m in context.relevant_memories[:3]))
-
-        if not sections:
-            return ""
+            sections.append("## Relevant context from previous sessions:\n" + "\n".join(f"- {item}" for item in context.relevant_memories[:3]))
 
         return "\n\n".join(sections)
 
@@ -234,36 +296,38 @@ class MemoryPipeline:
         salience: float = 0.5,
         meta: Optional[dict] = None,
     ) -> Optional[Memory]:
-        """Сохранить одно воспоминание напрямую.
-
-        Args:
-            user_id: ID пользователя
-            content: Текст воспоминания
-            kind: Тип памяти
-            salience: Важность
-            meta: Метаданные
-
-        Returns:
-            Созданный Memory объект или None
-        """
+        """Сохранить одно воспоминание напрямую."""
+        normalized_content = normalize_temporal_references(content)
         try:
-            # Генерируем эмбеддинг
-            embedding = await self._embedding.embed_text(content)
+            embedding = None
+            if self._embedding.is_available():
+                embedding = await self._embedding.embed_text(normalized_content)
+            else:
+                logger.info("Skipping vector upsert for single memory because embeddings are unavailable")
 
             return await self._save_memory(
                 user_id=user_id,
-                content=content,
+                content=normalized_content,
                 kind=kind,
                 salience=salience,
                 embedding=embedding,
                 meta=meta,
             )
-        except Exception as e:
-            logger.error(f"Failed to save single memory: {e}")
+        except EmbeddingUnavailableError as exc:
+            logger.warning("Embeddings unavailable while saving single memory: %s", exc)
+            return await self._save_memory(
+                user_id=user_id,
+                content=normalized_content,
+                kind=kind,
+                salience=salience,
+                embedding=None,
+                meta=meta,
+            )
+        except Exception as exc:
+            logger.error("Failed to save single memory: %s", exc)
             return None
 
     async def _get_existing_memories(self, user_id: int, limit: int = 50) -> list[Memory]:
-        """Получить существующие воспоминания из PostgreSQL."""
         from sqlalchemy import select
 
         result = await self.db.execute(
@@ -280,14 +344,13 @@ class MemoryPipeline:
         content: str,
         kind: MemoryKind,
         salience: float,
-        embedding: list[float],
+        embedding: Optional[list[float]],
         meta: Optional[dict] = None,
     ) -> Optional[Memory]:
-        """Сохранить воспоминание в PostgreSQL и Qdrant."""
+        """Сохранить воспоминание в PostgreSQL и, при наличии embedding, в Qdrant."""
         import uuid
 
         try:
-            # 1. Сохраняем в PostgreSQL
             memory = Memory(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
@@ -299,9 +362,17 @@ class MemoryPipeline:
             self.db.add(memory)
             await self.db.commit()
             await self.db.refresh(memory)
+        except Exception as exc:
+            logger.error("Failed to save memory in PostgreSQL: %s", exc)
+            await self.db.rollback()
+            return None
 
-            # 2. Сохраняем в Qdrant (с эмбеддингом)
-            await self._qdrant.upsert_memory(
+        if embedding is None:
+            logger.debug("Saved memory %s without vector embedding", memory.id)
+            return memory
+
+        try:
+            self._vector_sync_scheduler(
                 memory_id=memory.id,
                 user_id=user_id,
                 content=content,
@@ -310,23 +381,71 @@ class MemoryPipeline:
                 salience=salience,
                 meta=meta,
             )
+            logger.debug("Saved memory %s in PostgreSQL and scheduled vector sync", memory.id)
+        except Exception as exc:
+            logger.warning(
+                "Saved memory %s in PostgreSQL but failed to schedule vector sync: %s",
+                memory.id,
+                exc,
+            )
 
-            logger.debug(f"Saved memory {memory.id}: {content[:50]}...")
-            return memory
+        return memory
 
-        except Exception as e:
-            logger.error(f"Failed to save memory: {e}")
-            await self.db.rollback()
-            return None
+    def _schedule_qdrant_upsert(
+        self,
+        *,
+        memory_id: str,
+        user_id: int,
+        content: str,
+        embedding: list[float],
+        kind: str,
+        salience: float,
+        meta: Optional[dict] = None,
+    ) -> None:
+        asyncio.create_task(
+            self._sync_memory_to_qdrant(
+                memory_id=memory_id,
+                user_id=user_id,
+                content=content,
+                embedding=embedding,
+                kind=kind,
+                salience=salience,
+                meta=meta,
+            )
+        )
+
+    async def _sync_memory_to_qdrant(
+        self,
+        *,
+        memory_id: str,
+        user_id: int,
+        content: str,
+        embedding: list[float],
+        kind: str,
+        salience: float,
+        meta: Optional[dict] = None,
+    ) -> None:
+        try:
+            qdrant_saved = await self._qdrant.upsert_memory(
+                memory_id=memory_id,
+                user_id=user_id,
+                content=content,
+                embedding=embedding,
+                kind=kind,
+                salience=salience,
+                meta=meta,
+            )
+        except Exception as exc:
+            logger.warning("Background vector sync failed for memory %s: %s", memory_id, exc)
+            return
+
+        if not qdrant_saved:
+            logger.warning("Saved memory %s in PostgreSQL but Qdrant sync did not complete", memory_id)
+            return
+
+        logger.debug("Background Qdrant sync completed for memory %s", memory_id)
 
 
 def create_memory_pipeline(db: AsyncSession) -> MemoryPipeline:
-    """Создать экземпляр MemoryPipeline.
-
-    Args:
-        db: Async database session
-
-    Returns:
-        Настроенный MemoryPipeline
-    """
+    """Создать экземпляр MemoryPipeline."""
     return MemoryPipeline(db=db)

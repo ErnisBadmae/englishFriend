@@ -15,8 +15,11 @@ def _get_session_maker():
     if _engine is None:
         _engine = create_async_engine(
             settings.database_url,
-            echo=settings.debug,
-            future=True
+            echo=False,
+            future=True,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_pre_ping=settings.db_pool_pre_ping,
         )
 
         @event.listens_for(_engine.sync_engine, "connect")
@@ -81,3 +84,18 @@ async def init_db():
 
 # Экспорт для тестов
 async_session_maker = _get_session_maker
+
+
+def get_async_session():
+    """
+    Получить контекстный менеджер для создания async сессии.
+
+    Используется в сервисах для прямого создания сессий:
+
+    async with get_async_session()() as session:
+        result = await session.execute(...)
+
+    Returns:
+        Фабрика async_sessionmaker
+    """
+    return _get_session_maker()

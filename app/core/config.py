@@ -1,57 +1,132 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Настройки приложения"""
+    """Настройки приложения."""
 
-    # База данных - берётся из .env, дефолт для docker-compose
+    # База данных
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/englishfriend_dev"
     database_url_sync: str = "postgresql://postgres:postgres@localhost:5432/englishfriend_dev"
 
-    # API настройки
+    # Database pool
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_pre_ping: bool = True
+
+    # API
     api_title: str = "English Friend API"
     api_version: str = "3.0.0"
-    debug: bool = True
+    debug: bool = False
 
-    # CORS настройки
-    allowed_origins: list = ["*"]
+    # CORS
+    allowed_origins: list[str] = [
+        "*",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
 
-    # Proxy (для России)
+    # Proxy
     proxy_url: Optional[str] = None
 
-    # ======= LLM Provider (для /chat endpoint) =======
-    # vllm - свой сервер (по умолчанию, для разработки)
-    # groq - бесплатно 30 req/min (для демо)
-    # openai - премиум
-    llm_provider: Literal["vllm", "groq", "openai"] = "vllm"
+    # ======= LLM Provider =======
+    # vllm - OpenAI-compatible endpoint (self-hosted or corporate)
+    # llama_cpp - CPU fallback endpoint with large context
+    # personaplex - vLLM-compatible remote endpoint
+    # groq - external fast fallback
+    # openai - external OpenAI API
+    llm_provider: Literal["vllm", "llama_cpp", "personaplex", "groq", "openai"] = "vllm"
 
-    # vLLM настройки (свой сервер)
-    vllm_base_url: str = "http://192.168.0.88:8000/v1"
+    # vLLM
+    vllm_base_url: str = "http://192.168.0.18:8000/v1"
+    vllm_api_key: str = "token-abc123"
     vllm_model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ"
-    vllm_timeout: int = 60  # секунды
+    vllm_timeout: int = 60
     vllm_max_retries: int = 3
 
-    # Groq API (бесплатно, быстро ~200ms)
-    # Получить ключ: https://console.groq.com/keys
+    # llama.cpp
+    llama_cpp_base_url: str = "http://192.168.0.18:8000/v1"
+    llama_cpp_api_key: str = ""
+    llama_cpp_model: str = "qwen3.5-35b"
+    llama_cpp_timeout: int = 120
+    llama_cpp_response_mode: Literal["final_only", "raw"] = "final_only"
+    llama_cpp_extra_body_json: str = ""
+
+    # PersonaPlex text endpoint
+    personaplex_base_url: str = ""
+    personaplex_model: str = "PersonaPlex"
+    personaplex_api_key: str = ""
+    personaplex_timeout: int = 90
+
+    # Groq
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
-    groq_timeout: int = 30  # секунды
+    groq_timeout: int = 30
 
     # OpenAI
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o-mini"
-    openai_timeout: int = 30  # секунды
+    openai_embedding_model: str = "text-embedding-3-small"
+    openai_timeout: int = 30
 
-    # ======= Общие LLM параметры =======
+    # Shared LLM / RAG
     llm_temperature: float = 0.7
     llm_max_retries: int = 3
+    vector_memory_enabled: bool = True
 
-    # ======= TTS настройки (edge-tts - бесплатно) =======
-    # Доступные голоса: american_female, american_male, british_female, british_male, australian_female
+    # Career routing classifier rollout
+    career_routing_classifier_mode: Literal["off", "shadow", "gate", "mainline"] = "shadow"
+    career_routing_classifier_min_confidence: float = 0.72
+    career_routing_classifier_max_tokens: int = 220
+    career_routing_classifier_timeout_seconds: float = 6.0
+    career_routing_classifier_model_version: str = "active_llm"
+
+    # TTS
     tts_voice: str = "american_female"
 
-    # ======= Legacy настройки (для /stream endpoint) =======
+    # Experimental modular voice runtime
+    realtime_runtime_enabled: bool = False
+
+    # Backend STT
+    stt_backend_default: Literal["browser_vosk", "parakeet_v3", "composer"] = "browser_vosk"
+    parakeet_base_url: str = ""
+    parakeet_api_key: str = ""
+    parakeet_model: str = "parakeet-v3"
+    parakeet_timeout: int = 30
+
+    # Pronunciation assessment
+    pronunciation_provider: Literal["heuristic", "azure"] = "heuristic"
+    pronunciation_locale: str = "en-US"
+    azure_speech_key: str = ""
+    azure_speech_region: str = ""
+
+    # Langfuse
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_enabled: bool = True
+
+    # PersonaPlex speech-to-speech
+    personaplex_enabled: bool = False
+    personaplex_host: str = "192.168.0.18"
+    personaplex_port: int = 8998
+    personaplex_ws_url: str = ""
+    personaplex_default_voice: str = "NATM0"
+    personaplex_quantization: Literal["fp16", "int8"] = "int8"
+    personaplex_health_cache_ttl: int = 30
+
+    @field_validator("personaplex_ws_url", mode="before")
+    @classmethod
+    def _build_personaplex_url(cls, v: str, info: Any) -> str:
+        if v:
+            return v
+        host = info.data.get("personaplex_host", "192.168.0.18")
+        port = info.data.get("personaplex_port", 8998)
+        return f"ws://{host}:{port}/api/chat"
+
+    # Legacy realtime settings
     openai_realtime_model: str = "gpt-4o-realtime-preview-2024-12-17"
     openai_realtime_voice: str = "alloy"
     openai_whisper_model: str = "whisper-1"

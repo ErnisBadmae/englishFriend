@@ -22,17 +22,90 @@ User → PostgreSQL → Debezium → Kafka → [sync-vector → Qdrant]
 
 ### Key Components
 1. **FastAPI Application** (`app/`): Main API service with routers for users, sessions, utterances, memories
-2. **Database Migrations** (`db/migrations/postgres/`): Flyway-compatible SQL migrations
-3. **CDC Layer** (`cdc/`): Debezium connectors and Kafka topic definitions
-4. **Sync Services**:
+2. **LangGraph Agent** (`app/agent/`): State machine for pedagogical conversations
+3. **PersonaPlex Provider** (`app/services/ai/personaplex_provider.py`): Full-duplex speech-to-speech via NVIDIA Moshi 7B
+4. **Database Migrations** (`db/migrations/postgres/`): Flyway-compatible SQL migrations
+5. **CDC Layer** (`cdc/`): Debezium connectors and Kafka topic definitions
+6. **Sync Services**:
    - `sync-vector/`: Syncs memories from Kafka to Qdrant
    - `sync-graph/`: Syncs sessions/utterances from Kafka to Neo4j
-5. **Graph Layer** (`graph/`): Neo4j schema, queries, and Cypher scripts
+7. **Graph Layer** (`graph/`): Neo4j schema, queries, and Cypher scripts
 
 ### Database Features
 - **Partitioning**: `sessions` (by month), `utterances` (by hash), `xp_events` (by date)
 - **Row-Level Security (RLS)**: User data isolation at PostgreSQL level
 - **Materialized Views**: For analytics queries
+
+### LangGraph Agent Architecture (NEW)
+
+The conversational AI is implemented as a LangGraph state machine with explicit phases and pedagogical logging.
+
+**Conversation Flow**:
+```
+START → GOAL_DISCOVERY (with confirmation) → INTEREST_PROBE → ASSESSMENT
+  → PROGRAM_BUILD → LEARNING_SESSION (turn_processor loop) → SESSION_END
+```
+
+**Key Nodes** (`app/agent/nodes/`):
+- `start.py`: Routes new vs returning users
+- `goal_discovery.py`: LLM-based goal extraction with user confirmation
+- `interest_probe.py`: Discovers user interests for personalization
+- `assessment.py`: 3-question CEFR level evaluation
+- `program_build.py`: Generates personalized learning roadmap
+- `mode_router.py`: Selects learning mode (mock_interview, vocab_drill, etc.)
+- `turn_processor.py`: Handles conversation turns with Socratic recast
+- `session_end.py`: Session termination and persistence
+
+**API Endpoints**:
+- `/api/v1/voice/chat`: Legacy endpoint (redirects to v2)
+- `/api/v1/voice/chat/v2`: LangGraph-based endpoint (Vosk + Groq + edge-tts)
+- `/api/v1/voice/chat/plex`: PersonaPlex full-duplex speech-to-speech (recommended)
+
+**Logging**: All pedagogical decisions logged with `[PEDAGOGY]` prefix via `app/services/pedagogy_logger.py`
+
+**State**: `AgentState` (TypedDict) flows through nodes, loaded from PostgreSQL at session start
+
+### PersonaPlex Integration
+
+Full-duplex speech-to-speech provider using NVIDIA Moshi 7B, self-hosted on Linux server (RTX 5060 Ti 16GB VRAM, INT8 quantization).
+
+**Architecture**:
+```
+Student audio → EnglishFriend → PersonaPlex (ws://192.168.0.18:8998/api/chat)
+Student audio ← EnglishFriend ← PersonaPlex
+                     ↕
+              LangGraph Agent (pedagogy, memories, vocabulary)
+```
+
+**Key Principle**: PersonaPlex = voice (blackbox), EnglishFriend = brain (we control)
+- PersonaPlex follows our `system_prompt` for generation
+- We build the prompt from user context (goals, memories, vocabulary, interests)
+- We analyze transcripts for errors, vocabulary, progress
+- We update the prompt dynamically when mode/phase changes
+
+**Advantages over Vosk+Groq+edge-tts**:
+- Latency: 200-400ms vs 800-1200ms (3-4x faster)
+- Full-duplex: student can interrupt mentor
+- Neural voice quality: 16 built-in personas
+- Cost: $0 (self-hosted) vs ~$0.002/reply (Groq)
+
+**Fallback**: If PersonaPlex is unavailable, `/chat/plex` automatically falls back to `/chat/v2`
+
+**Configuration** (`.env`):
+```bash
+PERSONAPLEX_ENABLED=true
+PERSONAPLEX_HOST=192.168.0.18
+PERSONAPLEX_PORT=8998
+PERSONAPLEX_DEFAULT_VOICE=NATM0
+PERSONAPLEX_QUANTIZATION=int8
+```
+
+**Key Files**:
+- `app/services/ai/personaplex_provider.py`: WebSocket client (`PersonaPlexProvider`)
+- `app/services/ai/personaplex_health.py`: Health check with TTL cache
+- `app/core/config.py`: PersonaPlex settings block
+- `app/api/voice.py`: `/chat/plex` endpoint + `_build_personaplex_system_prompt()`
+- `docker-compose.personaplex.yml`: Docker Compose for Linux GPU server
 
 ## Development Commands
 
@@ -51,13 +124,57 @@ docker compose -f docker-compose.cdc.yml up -d
 ### Running the Application
 ```bash
 # Start FastAPI application
-python main.py
+venv\Scripts\python.exe main.py
 
 # Or using Makefile
 make start
 
 # Application runs on http://localhost:8000
 # API docs: http://localhost:8000/docs
+```
+
+### Canonical Local Runbook
+```bash
+# Start infra once
+docker compose -f docker-compose.cdc.yml up -d
+
+# Keep API alive in a dedicated terminal
+venv\Scripts\python.exe main.py
+
+# Verify API health from a second terminal
+curl http://127.0.0.1:8000/health
+
+# Verify local LLM connectivity
+venv\Scripts\python.exe scripts/test_voice_backend.py
+
+# Run the blocking product regression gate
+venv\Scripts\python.exe scripts/run_product_synthetic_eval.py --base-url http://127.0.0.1:8000 --scenario-set mainline --turn-timeout 20 --session-timeout 30
+```
+
+Rules for Claude Code in this repo:
+- On Windows, prefer `venv\Scripts\python.exe main.py` as the canonical local API launch command.
+- Keep the API alive in its own terminal tab for live validation; do not rely on detached background launch tricks.
+- Prefer the LAN-hosted local Qwen endpoint for mainline LLM work: `VLLM_BASE_URL=http://192.168.0.18:8000/v1`, `VLLM_API_KEY=token-abc123`.
+- Treat `scripts/run_product_synthetic_eval.py --scenario-set mainline` as the canonical product regression gate.
+- Treat websocket `session_complete` as a post-persistence signal: if it is emitted, snapshot state should already be fresh enough for immediate validation.
+- Current routing-classifier rollout order is fixed: `shadow live run -> disagreement report -> gate for ambiguous cases -> mainline later`.
+- Do not move the next layer to LLM yet. The next candidate is in-session intent, but only if live evidence shows that the current bounded fast rules miss important cases.
+- If routing is still noisy in live runs, improve arbiter/eval/observability first instead of expanding model scope.
+- If `project_tradeoff_story` or another clearly technical project scenario stalls in `needs_goal`, treat it as a routing/product-contract bug first, not as a reason to expand LLM scope.
+- Keep the goal-brief contract canonical: `routing-ready` fields and richer profile fields must not drift across onboarding, learning-plan, snapshot, or UI missing-field logic.
+
+### PersonaPlex Setup (Linux GPU Server)
+```bash
+# Deploy PersonaPlex on Linux server (RTX 5060 Ti)
+scp docker-compose.personaplex.yml nero@192.168.0.18:~/personaplex/
+ssh nero@192.168.0.18 "cd ~/personaplex && docker compose up -d"
+
+# Verify health
+curl http://192.168.0.18:8998/health
+
+# Enable in .env on Windows laptop
+PERSONAPLEX_ENABLED=true
+PERSONAPLEX_HOST=192.168.0.18
 ```
 
 ### Database Management
@@ -98,6 +215,12 @@ pytest sync-vector/tests/test_integration.py -v
 
 # Sync-graph tests
 pytest sync-graph/tests/test_transform.py
+
+# LangGraph Agent tests
+pytest tests/agent/ -v
+
+# PersonaPlex tests
+pytest tests/test_personaplex.py -v
 ```
 
 ### Code Quality
@@ -147,11 +270,16 @@ docker compose -f docker-compose.cdc.yml up load-postgres-demo load-neo4j-demo l
 ```
 englishFriend/
 ├── app/
+│   ├── agent/            # LangGraph state machine (NEW)
+│   │   ├── nodes/        # Conversation flow nodes
+│   │   ├── state.py      # AgentState TypedDict
+│   │   └── graph.py      # State machine assembly
 │   ├── api/              # FastAPI routers (users, sessions, utterances, etc.)
 │   ├── core/             # Config and database initialization
 │   ├── models/           # SQLAlchemy ORM models
 │   ├── schemas/          # Pydantic schemas
-│   └── services/         # Business logic
+│   └── services/         # Business logic (including pedagogy_logger.py)
+│       └── ai/           # AI providers (LLM, TTS, PersonaPlex)
 ├── db/
 │   ├── migrations/postgres/  # SQL migrations (ordered 000-007)
 │   ├── seed/                 # Reference data seeds
@@ -178,8 +306,15 @@ englishFriend/
 
 - `main.py`: FastAPI application entry point
 - `app/core/database.py`: Database connection and initialization
+- `app/core/config.py`: Settings (including PersonaPlex config)
+- `app/core/metrics.py`: Prometheus metrics (voice, agent, PersonaPlex)
 - `app/models/core_tables.py`: Core SQLAlchemy models (users, sessions, utterances)
 - `app/models/extended_tables.py`: Extended models (memories, learning_plan, xp_events)
+- `app/api/voice.py`: WebSocket endpoints (`/chat`, `/chat/v2`, `/chat/plex`)
+- `app/services/ai/personaplex_provider.py`: PersonaPlex WebSocket client
+- `app/services/ai/personaplex_health.py`: PersonaPlex health check with cache
+- `app/services/ai/base.py`: AIProvider base class (with `update_persona()`)
+- `app/services/data_flow_logger.py`: Data flow logger (includes PersonaPlex events)
 - `Makefile`: Development shortcuts
 - `pyproject.toml`: Black, isort, mypy configuration
 - `pytest.ini`: Pytest configuration
@@ -211,6 +346,7 @@ englishFriend/
 - `docker-compose.vector.yml`: Vector stack (Postgres + Kafka + Qdrant + sync-vector)
 - `docker-compose.graph.yml`: Graph stack (Postgres + Kafka + Neo4j + sync-graph)
 - `docker-compose.partitions.yml`: Partition management cron job
+- `docker-compose.personaplex.yml`: PersonaPlex on Linux GPU server (NVIDIA Moshi 7B, INT8)
 
 ## Important Patterns
 
@@ -250,6 +386,90 @@ Relationships: `PARTICIPATED_IN`, `INTEREST_IN`, `EXPRESSES`, `RELATED_TO`
 3. **Database Tests**: pgTAP for PostgreSQL, Cypher for Neo4j
 4. **CDC Tests**: Generate events with `cdc_batch_sessions.py`, verify sync
 
+## Observability & Logging
+
+### Log Levels Strategy
+
+| Level | Что логируем | Пример |
+|-------|-------------|--------|
+| DEBUG | Детали для отладки | State dumps, raw responses |
+| INFO | Бизнес-события | router → onboarding, LLM=1123ms |
+| WARNING | Recoverable issues | Parse failed, using fallback |
+| ERROR | Критические ошибки | WebSocketDisconnect |
+
+### Log Format
+
+Логи форматируются с Request ID для корреляции:
+
+```
+HH:MM:SS [request_id] LEVEL [logger] message
+22:16:31 [a1b2c3d4] INFO  [app.agent] router → onboarding (new_user)
+22:16:32 [a1b2c3d4] INFO  [app.agent] onboarding LLM=1123ms action=ask_goal
+```
+
+### Где смотреть логи
+
+**Console (development):**
+```bash
+python main.py
+# Логи идут в stdout с Request ID
+```
+
+**Langfuse (LLM tracing):**
+1. Настроить в `.env`:
+   ```
+   LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+   LANGFUSE_SECRET_KEY=sk-lf-xxx
+   LANGFUSE_HOST=https://cloud.langfuse.com
+   ```
+2. Открыть https://cloud.langfuse.com
+3. Видны traces: prompts, responses, tokens, latency
+
+### Silenced Loggers
+
+Следующие loggers установлены на WARNING для снижения шума:
+- `sqlalchemy.engine` - SQL queries (echo=False в database.py)
+- `httpx`, `httpcore` - HTTP client internals
+- `websockets`, `asyncio` - WebSocket/async internals
+- `langgraph`, `langchain`, `langchain_core` - LangGraph/LangChain internals
+- `groq`, `openai` - LLM provider logs
+- `langfuse` - Observability client logs
+- `urllib3` - HTTP connection logs
+
+### Как включить verbose логи
+
+```bash
+# В .env:
+DEBUG=true  # Включает DEBUG level для app.agent
+
+# Или в коде:
+import logging
+logging.getLogger("app.agent").setLevel(logging.DEBUG)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)  # SQL queries
+```
+
+### Request ID
+
+Каждый HTTP запрос получает уникальный ID (8 символов):
+- Виден в логах: `[a1b2c3d4]`
+- Виден в response headers: `X-Request-ID: a1b2c3d4`
+- Используется для корреляции в Langfuse
+
+### Prometheus Metrics
+
+Доступны на `/metrics`:
+- `voice_sessions_active` - Активные WebSocket сессии
+- `voice_llm_latency_seconds` - Latency LLM запросов
+- `voice_tts_latency_seconds` - Latency TTS синтеза
+- `voice_errors_total` - Счётчик ошибок по stage
+- `personaplex_connections_active` - Активные PersonaPlex соединения
+- `personaplex_latency_seconds` - Latency PersonaPlex по операциям (connect, audio_in, audio_out)
+- `personaplex_sessions_total` - Счётчик PersonaPlex сессий по статусу
+- `personaplex_turns_total` - Счётчик conversation turns по mode/phase
+- `personaplex_pedagogical_events` - Педагогические события (error_detected, vocabulary_used, memory_extracted)
+- `personaplex_errors_total` - Ошибки PersonaPlex по типу
+- `personaplex_fallback_total` - Количество fallback на legacy стек
+
 ## Health Check Endpoints
 
 - FastAPI: `http://localhost:8000/health`
@@ -257,6 +477,7 @@ Relationships: `PARTICIPATED_IN`, `INTEREST_IN`, `EXPRESSES`, `RELATED_TO`
 - sync-graph: `http://localhost:8091/health`
 - Qdrant: `http://localhost:6333/health`
 - Neo4j: `http://localhost:7474`
+- PersonaPlex: `http://192.168.0.18:8998/health` (Linux GPU server)
 
 ## Running Single Tests
 
@@ -289,9 +510,25 @@ pytest sync-graph/tests/test_transform.py::TestEventMapping
 
 ## Documentation References
 
+- **Session Progress Log**: `!DOC/CLAUDE_SESSION_LOG.md` ← **READ THIS FIRST** for context between sessions
 - System Overview: `SYSTEM_OVERVIEW.md`
 - Database: `db/README.md`, `db/PARTITION_MANAGEMENT.md`, `db/CI_INTEGRATION.md`
 - CDC: `cdc/README.md`
 - Graph Layer: `graph/README.md`, `graph/docs/RUNBOOK.md`
 - Sync Vector: `sync-vector/README.md`, `sync-vector/docs/`
 - Sync Graph: `sync-graph/README.md`, `sync-graph/docs/`
+
+## Session Continuity
+
+При начале новой сессии:
+1. Читай `!DOC/CLAUDE_SESSION_LOG.md` для контекста
+2. В конце сессии обновляй этот файл с прогрессом
+
+Формат записи:
+```markdown
+### YYYY-MM-DD - Краткое описание
+**Агент**: Claude Model
+**Задача**: Что делали
+**Что сделано**: Список изменений
+**Результат**: Итог
+```

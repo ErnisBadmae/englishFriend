@@ -10,11 +10,20 @@ from app.schemas.additional_schemas import (
     XPEventCreate, XPEventResponse, XPEventListResponse
 )
 from app.services.memory_and_interests import (
-    UserInterestService, MemoryService, LearningPlanService, 
+    UserInterestService, MemoryService, LearningPlanService,
     XPEventService
 )
 from app.core.database import get_db
 from app.models.enums_and_dimensions import MemoryKind
+from app.api.response_mappers import (
+    map_interest_to_response,
+    map_interests_to_list_response,
+    map_memory_to_response,
+    map_memories_to_list_response,
+    map_xp_event_to_response,
+    map_xp_events_to_list_response,
+    map_learning_plan_to_response,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["interests", "memory", "learning", "xp"])
 
@@ -33,12 +42,7 @@ async def create_user_interest(
     try:
         interest_service = UserInterestService(db)
         interest = await interest_service.create_interest(interest_data)
-        return UserInterestResponse(
-            user_id=interest.user_id,
-            topic_id=interest.topic_id,
-            weight=interest.weight,
-            last_mentioned=interest.last_mentioned
-        )
+        return map_interest_to_response(interest)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка создания интереса: {str(e)}")
 
@@ -56,17 +60,7 @@ async def get_user_interests(
     """
     interest_service = UserInterestService(db)
     interests = await interest_service.get_user_interests(user_id, skip=skip, limit=limit)
-    return UserInterestListResponse(
-        interests=[
-            UserInterestResponse(
-                user_id=interest.user_id,
-                topic_id=interest.topic_id,
-                weight=interest.weight,
-                last_mentioned=interest.last_mentioned
-            ) for interest in interests
-        ],
-        total=len(interests)
-    )
+    return map_interests_to_list_response(interests)
 
 @router.get("/users/{user_id}/interests/top", response_model=UserInterestListResponse)
 async def get_top_user_interests(
@@ -81,17 +75,7 @@ async def get_top_user_interests(
     """
     interest_service = UserInterestService(db)
     interests = await interest_service.get_top_interests(user_id, limit=limit)
-    return UserInterestListResponse(
-        interests=[
-            UserInterestResponse(
-                user_id=interest.user_id,
-                topic_id=interest.topic_id,
-                weight=interest.weight,
-                last_mentioned=interest.last_mentioned
-            ) for interest in interests
-        ],
-        total=len(interests)
-    )
+    return map_interests_to_list_response(interests)
 
 @router.put("/users/{user_id}/interests/{topic_id}", response_model=UserInterestResponse)
 async def update_interest_weight(
@@ -110,12 +94,7 @@ async def update_interest_weight(
     if not updated_interest:
         raise HTTPException(status_code=404, detail="Интерес не найден")
     
-    return UserInterestResponse(
-        user_id=updated_interest.user_id,
-        topic_id=updated_interest.topic_id,
-        weight=updated_interest.weight,
-        last_mentioned=updated_interest.last_mentioned
-    )
+    return map_interest_to_response(updated_interest)
 
 # Endpoints для памяти
 @router.post("/memories/", response_model=MemoryResponse, status_code=201)
@@ -128,16 +107,7 @@ async def create_memory(memory_data: MemoryCreate, db: AsyncSession = Depends(ge
     try:
         memory_service = MemoryService(db)
         memory = await memory_service.create_memory(memory_data)
-        return MemoryResponse(
-            id=memory.id,
-            user_id=memory.user_id,
-            kind=memory.kind,
-            content=memory.content,
-            meta=memory.meta,
-            salience=memory.salience,
-            created_at=memory.created_at,
-            last_refreshed=memory.last_refreshed
-        )
+        return map_memory_to_response(memory)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка создания памяти: {str(e)}")
 
@@ -155,17 +125,8 @@ async def get_memory(memory_id: str, db: AsyncSession = Depends(get_db)):
     
     # Обновляем время доступа (triggers in DB will handle last_refreshed)
     await memory_service.update_memory_access(memory_id)
-    
-    return MemoryResponse(
-        id=memory.id,
-        user_id=memory.user_id,
-        kind=memory.kind,
-        content=memory.content,
-        meta=memory.meta,
-        salience=memory.salience,
-        created_at=memory.created_at,
-        last_refreshed=memory.last_refreshed
-    )
+
+    return map_memory_to_response(memory)
 
 @router.get("/users/{user_id}/memories", response_model=MemoryListResponse)
 async def get_user_memories(
@@ -182,21 +143,7 @@ async def get_user_memories(
     """
     memory_service = MemoryService(db)
     memories = await memory_service.get_user_memories(user_id, kind=kind, skip=skip, limit=limit)
-    return MemoryListResponse(
-        memories=[
-            MemoryResponse(
-                id=memory.id,
-                user_id=memory.user_id,
-                kind=memory.kind,
-                content=memory.content,
-                meta=memory.meta,
-                salience=memory.salience,
-                created_at=memory.created_at,
-                last_refreshed=memory.last_refreshed
-            ) for memory in memories
-        ],
-        total=len(memories)
-    )
+    return map_memories_to_list_response(memories)
 
 @router.get("/users/{user_id}/memories/search", response_model=MemoryListResponse)
 async def search_user_memories(
@@ -212,21 +159,7 @@ async def search_user_memories(
     """
     memory_service = MemoryService(db)
     memories = await memory_service.search_memories(user_id, query, limit=limit)
-    return MemoryListResponse(
-        memories=[
-            MemoryResponse(
-                id=memory.id,
-                user_id=memory.user_id,
-                kind=memory.kind,
-                content=memory.content,
-                meta=memory.meta,
-                salience=memory.salience,
-                created_at=memory.created_at,
-                last_refreshed=memory.last_refreshed
-            ) for memory in memories
-        ],
-        total=len(memories)
-    )
+    return map_memories_to_list_response(memories)
 
 # Endpoints для планов обучения
 @router.post("/learning-plans/", response_model=LearningPlanResponse, status_code=201)
@@ -239,14 +172,7 @@ async def create_learning_plan(plan_data: LearningPlanCreate, db: AsyncSession =
     try:
         plan_service = LearningPlanService(db)
         plan = await plan_service.create_plan(plan_data)
-        return LearningPlanResponse(
-            id=plan.id,
-            user_id=plan.user_id,
-            level_target=plan.level_target,
-            next_review_at=plan.next_review_at,
-            roadmap=plan.roadmap,
-            updated_at=plan.updated_at
-        )
+        return map_learning_plan_to_response(plan)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка создания плана обучения: {str(e)}")
 
@@ -261,15 +187,8 @@ async def get_learning_plan(plan_id: str, db: AsyncSession = Depends(get_db)):
     plan = await plan_service.get_plan(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="План обучения не найден")
-    
-    return LearningPlanResponse(
-        id=plan.id,
-        user_id=plan.user_id,
-        level_target=plan.level_target,
-        next_review_at=plan.next_review_at,
-        roadmap=plan.roadmap,
-        updated_at=plan.updated_at
-    )
+
+    return map_learning_plan_to_response(plan)
 
 @router.get("/users/{user_id}/learning-plan", response_model=LearningPlanResponse)
 async def get_user_active_plan(user_id: int, db: AsyncSession = Depends(get_db)):
@@ -282,15 +201,8 @@ async def get_user_active_plan(user_id: int, db: AsyncSession = Depends(get_db))
     plan = await plan_service.get_user_active_plan(user_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Активный план обучения не найден")
-    
-    return LearningPlanResponse(
-        id=plan.id,
-        user_id=plan.user_id,
-        level_target=plan.level_target,
-        next_review_at=plan.next_review_at,
-        roadmap=plan.roadmap,
-        updated_at=plan.updated_at
-    )
+
+    return map_learning_plan_to_response(plan)
 
 # Endpoints для событий XP
 @router.post("/xp-events/", response_model=XPEventResponse, status_code=201)
@@ -303,14 +215,7 @@ async def create_xp_event(event_data: XPEventCreate, db: AsyncSession = Depends(
     try:
         xp_service = XPEventService(db)
         event = await xp_service.create_xp_event(event_data)
-        return XPEventResponse(
-            id=event.id,
-            user_id=event.user_id,
-            session_id=event.session_id,
-            kind=event.kind,
-            points=event.points,
-            happened_at=event.happened_at
-        )
+        return map_xp_event_to_response(event)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка создания события XP: {str(e)}")
 
@@ -328,19 +233,7 @@ async def get_user_xp_events(
     """
     xp_service = XPEventService(db)
     events = await xp_service.get_user_xp_events(user_id, skip=skip, limit=limit)
-    return XPEventListResponse(
-        events=[
-            XPEventResponse(
-                id=event.id,
-                user_id=event.user_id,
-                session_id=event.session_id,
-                kind=event.kind,
-                points=event.points,
-                happened_at=event.happened_at
-            ) for event in events
-        ],
-        total=len(events)
-    )
+    return map_xp_events_to_list_response(events)
 
 @router.get("/users/{user_id}/xp-total", response_model=dict)
 async def get_user_total_xp(user_id: int, db: AsyncSession = Depends(get_db)):

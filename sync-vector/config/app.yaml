@@ -1,7 +1,7 @@
 kafka:
   brokers:
     - kafka:29092
-  topic: memories_public
+  topic: memories.public.memories
   consumer_group: sync-vector
   dlq_topic: vector_failures
   max_poll_records: 500

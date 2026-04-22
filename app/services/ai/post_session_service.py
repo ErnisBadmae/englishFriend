@@ -11,15 +11,18 @@
 """
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.ai.llm_provider import get_llm_provider
+from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.learning_plan_service import LearningPlanService
 from app.services.data_flow_logger import data_logger
+
+logger = logging.getLogger(__name__)
 
 
 # Промпт для анализа сессии
@@ -122,8 +125,11 @@ class PostSessionService:
                 data={"vocabulary_count": len(analysis.get("vocabulary", []))},
                 user_id=user_id,
             )
+        except LLMEmptyContentError as e:
+            logger.warning(f"Session analysis returned no final content: {e}")
+            return result
         except Exception as e:
-            print(f"[PostSession] Analysis failed: {e}")
+            logger.warning(f"Session analysis failed: {e}")
             return result
 
         # 1. Создаём флеш-карточки из новых слов
@@ -146,7 +152,7 @@ class PostSessionService:
                         source="session_analysis",
                     )
             except Exception as e:
-                print(f"[PostSession] Failed to create card for '{item.get('word')}': {e}")
+                logger.warning(f"Failed to create card for '{item.get('word')}': {e}")
 
         # 2. Обновляем уровень если это assessment или первая сессия
         assessed_level = analysis.get("assessed_level")
@@ -168,7 +174,7 @@ class PostSessionService:
                     new_value=assessed_level,
                 )
             except Exception as e:
-                print(f"[PostSession] Failed to record assessment: {e}")
+                logger.warning(f"Failed to record assessment: {e}")
 
         # 3. Обновляем цель если определена и не была установлена
         detected_goal = analysis.get("detected_goal")
@@ -182,7 +188,7 @@ class PostSessionService:
                     detected_goal=detected_goal,
                 )
             except Exception as e:
-                print(f"[PostSession] Failed to set goal: {e}")
+                logger.warning(f"Failed to set goal: {e}")
 
         # 4. Сохраняем рекомендации
         result["recommendations"] = analysis.get("recommendations", [])
@@ -200,7 +206,7 @@ class PostSessionService:
             xp_earned=result["xp_bonus"],
         )
 
-        print(f"[PostSession] Completed: {result}")
+        logger.info(f"Post-session completed: cards={result['cards_created']}, level={result['level_assessed']}")
         return result
 
     async def _analyze_session(self, conversation_history: list[dict]) -> dict:
@@ -258,7 +264,7 @@ class PostSessionService:
 
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            print(f"[PostSession] Failed to parse LLM response as JSON: {response[:200]}...")
+            logger.warning(f"Failed to parse LLM response as JSON: {response[:100]}...")
             return {
                 "vocabulary": [],
                 "grammar_errors": [],
@@ -308,7 +314,7 @@ async def create_initial_vocabulary_cards(
                     source="goal_template",
                 )
         except Exception as e:
-            print(f"[PostSession] Failed to create initial card for '{word}': {e}")
+            logger.warning(f"Failed to create initial card for '{word}': {e}")
 
-    print(f"[PostSession] Created {created} initial vocabulary cards for user {user_id}")
+    logger.info(f"Created {created} initial vocabulary cards for user {user_id}")
     return created

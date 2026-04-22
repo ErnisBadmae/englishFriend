@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_
 from sqlalchemy.dialects.postgresql import insert
 
-from fsrs import FSRS, Card, Rating, State
+from fsrs import Scheduler, Card, Rating, State
 
 from app.models.extended_tables import VocabularyCard, VocabularyReview
 
@@ -44,7 +44,7 @@ class VocabularyService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.scheduler = FSRS()
+        self.scheduler = Scheduler()
 
     async def add_word(
         self,

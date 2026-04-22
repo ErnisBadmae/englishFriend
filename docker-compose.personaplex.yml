@@ -1,0 +1,68 @@
+# Docker Compose for PersonaPlex (NVIDIA Moshi 7B) on Linux GPU server
+#
+# Deploy on the Linux server (RTX 5060 Ti 16GB):
+#   scp docker-compose.personaplex.yml altadmin@192.168.0.18:~/personaplex/
+#   ssh altadmin@192.168.0.18 "cd ~/personaplex && docker compose up -d"
+#
+# Requirements:
+#   - NVIDIA Container Toolkit (nvidia-docker2)
+#   - RTX 5060 Ti 16GB VRAM (INT8 quantization ~ 9-10GB)
+#   - Docker 24+ with Compose V2
+#
+# Ports:
+#   8998: PersonaPlex WebSocket API
+#
+# Health check from Windows laptop:
+#   curl http://192.168.0.18:8998/health
+
+services:
+  personaplex:
+    image: cultrix/personaplex:latest
+    container_name: personaplex
+    restart: unless-stopped
+    ports:
+      - "8998:8998"
+    environment:
+      # Hugging Face token (required for gated model download).
+      # Prefer exporting HF_TOKEN in shell or injecting via your deployment secrets.
+      - HF_TOKEN=${HF_TOKEN}
+      # INT8 quantization to fit in 16GB VRAM
+      - QUANTIZATION=int8
+      # Low VRAM mode for better stability
+      - LOW_VRAM=true
+      # Max concurrent sessions. Lower to 1-2 if node3 GPU contention appears.
+      - MAX_SESSIONS=1
+      # Helps avoid VRAM fragmentation OOM during model load
+      - PYTORCH_ALLOC_CONF=expandable_segments:True
+      # WebSocket settings
+      - WS_PORT=8998
+      - WS_HOST=0.0.0.0
+      # Logging
+      - LOG_LEVEL=info
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      # Cache model weights to avoid re-downloading
+      - personaplex-models:/app/models
+      # Voice prompts (custom voices can be added here)
+      - personaplex-voices:/app/voices
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8998/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Model loading takes time
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  personaplex-models:
+  personaplex-voices:

@@ -6,6 +6,8 @@ from app.api.voice_helpers import (
     handle_goal_setting,
     rebuild_system_prompt,
     award_session_gamification,
+    persist_goal_state_if_needed,
+    persist_session_evidence_if_needed,
 )
 from app.services.ai.mode_prompts import LearningMode
 from app.services.ai.mode_selector import SessionContext
@@ -147,3 +149,189 @@ async def test_award_session_gamification_handles_errors():
         await award_session_gamification(db, user_id, session_id)
         # If we get here, error was handled correctly
         assert True
+        db.rollback.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# persist_interview_run_if_needed tests
+# ---------------------------------------------------------------------------
+
+from app.api.voice_helpers import persist_interview_run_if_needed
+
+
+@pytest.mark.asyncio
+async def test_persist_noop_non_interview_mode():
+    """Returns None without calling InterviewService for non-interview modes."""
+    db = AsyncMock()
+    result = await persist_interview_run_if_needed(
+        db=db,
+        user_id=1,
+        session_id="s1",
+        current_mode="free_conversation",
+        interview_track_id=None,
+        conversation_history=[
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "Hi"},
+            {"role": "user", "content": "I want to practice"},
+        ],
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_noop_insufficient_history():
+    """Returns None when fewer than 2 user messages."""
+    db = AsyncMock()
+    result = await persist_interview_run_if_needed(
+        db=db,
+        user_id=1,
+        session_id="s1",
+        current_mode="mock_interview",
+        interview_track_id="hr_intro",
+        conversation_history=[
+            {"role": "assistant", "content": "Tell me about yourself."},
+            {"role": "user", "content": "Sure."},  # only 1 user message
+        ],
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_saves_mock_interview_run():
+    """Calls InterviewService.record_run and returns the run for mock_interview."""
+    db = AsyncMock()
+    fake_run = {"id": "run-1", "track_id": "hr_intro", "scores": {"overall": 7.0}}
+
+    with patch('app.api.voice_helpers.InterviewService') as MockService:
+        mock_instance = AsyncMock()
+        mock_instance.record_run = AsyncMock(return_value=fake_run)
+        MockService.return_value = mock_instance
+
+        result = await persist_interview_run_if_needed(
+            db=db,
+            user_id=1,
+            session_id="s1",
+            current_mode="mock_interview",
+            interview_track_id="hr_intro",
+            conversation_history=[
+                {"role": "assistant", "content": "Tell me about yourself."},
+                {"role": "user", "content": "I am a software engineer."},
+                {"role": "assistant", "content": "Great, what projects?"},
+                {"role": "user", "content": "I built a recommendation system."},
+            ],
+            corrections_made=2,
+            vocabulary_reviewed=[{"word": "scalability"}],
+        )
+
+    assert result == fake_run
+    mock_instance.record_run.assert_called_once_with(
+        user_id=1,
+        session_id="s1",
+        conversation_history=[
+            {"role": "assistant", "content": "Tell me about yourself."},
+            {"role": "user", "content": "I am a software engineer."},
+            {"role": "assistant", "content": "Great, what projects?"},
+            {"role": "user", "content": "I built a recommendation system."},
+        ],
+        corrections_count=2,
+        reviewed_words=[{"word": "scalability"}],
+        track_id="hr_intro",
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_goal_state_saves_routing_ready_draft():
+    learning_plan_service = MagicMock()
+    learning_plan_service.set_goal = AsyncMock()
+
+    persisted = await persist_goal_state_if_needed(
+        user_id=1,
+        existing_goal=None,
+        agent_state={
+            "detected_goal": "Build English for an international ML role",
+            "goal_brief": {
+                "primary_goal": "Build English for an international ML role",
+                "target_role": "ML Engineer",
+                "domain": "machine_learning",
+                "target_market": "international_company",
+                "deadline_type": "open_ended",
+                "main_contexts": ["interviews"],
+                "status": "draft",
+            },
+        },
+        learning_plan_service=learning_plan_service,
+    )
+
+    assert persisted == "Build English for an international ML role"
+    learning_plan_service.set_goal.assert_called_once_with(
+        1,
+        "Build English for an international ML role",
+        goal_brief={
+            "primary_goal": "Build English for an international ML role",
+            "target_role": "ML Engineer",
+            "domain": "machine_learning",
+            "target_market": "international_company",
+            "deadline_type": "open_ended",
+            "main_contexts": ["interviews"],
+            "status": "draft",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_persist_goal_state_skips_incomplete_draft():
+    learning_plan_service = MagicMock()
+    learning_plan_service.set_goal = AsyncMock()
+
+    persisted = await persist_goal_state_if_needed(
+        user_id=1,
+        existing_goal=None,
+        agent_state={
+            "detected_goal": "Improve English",
+            "goal_brief": {
+                "primary_goal": "Improve English",
+                "status": "incomplete",
+            },
+        },
+        learning_plan_service=learning_plan_service,
+    )
+
+    assert persisted is None
+    learning_plan_service.set_goal.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_persist_session_evidence_noop_without_signal():
+    db = AsyncMock()
+    result = await persist_session_evidence_if_needed(
+        db=db,
+        user_id=1,
+        session_id="s-empty",
+        current_mode="free_conversation",
+        conversation_history=[],
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_persist_session_evidence_calls_learning_plan_service():
+    db = AsyncMock()
+    fake_evidence = {"session_id": "s2", "mission_type": "assessment"}
+
+    with patch('app.api.voice_helpers.LearningPlanService') as MockService:
+        mock_instance = AsyncMock()
+        mock_instance.record_session_evidence = AsyncMock(return_value=fake_evidence)
+        MockService.return_value = mock_instance
+
+        result = await persist_session_evidence_if_needed(
+            db=db,
+            user_id=1,
+            session_id="s2",
+            current_mode="assessment",
+            conversation_history=[{"role": "user", "content": "hello"}],
+            assessed_level="B1",
+            assessment_scores={"fluency": 0.5},
+        )
+
+    assert result == fake_evidence
+    mock_instance.record_session_evidence.assert_called_once()

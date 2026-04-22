@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import Any, Optional
 from functools import wraps
 
+from app.services.logger_helpers import format_user_info, format_data_preview
+
 # Создаём специальный логгер для data flow
 logger = logging.getLogger("data_flow")
 logger.setLevel(logging.INFO)
@@ -41,7 +43,16 @@ class DataFlowLogger:
             "qdrant_reads": 0,
             "neo4j_writes": 0,
             "neo4j_reads": 0,
+            "personaplex_connections": 0,
+            "personaplex_turns": 0,
         }
+
+    @staticmethod
+    def _safe_text(value: Any, limit: int = 120) -> str:
+        text = str(value)
+        if len(text) > limit:
+            text = f"{text[:limit]}..."
+        return text.encode("ascii", errors="backslashreplace").decode("ascii")
 
     def log_postgres_write(
         self,
@@ -54,11 +65,12 @@ class DataFlowLogger:
         self.stats["postgres_writes"] += 1
 
         # Форматируем данные для читаемости
-        data_preview = self._format_data_preview(data)
+        data_preview = format_data_preview(data)
 
-        user_info = f" [user={user_id}]" if user_id else ""
+        user_info = format_user_info(user_id)
         logger.info(
-            f"📝 POSTGRES {operation}{user_info} → {table}: {data_preview}"
+            f"POSTGRES WRITE {self._safe_text(operation)}{self._safe_text(user_info)} "
+            f"-> {self._safe_text(table)}: {self._safe_text(data_preview)}"
         )
 
     def log_postgres_read(
@@ -71,9 +83,10 @@ class DataFlowLogger:
         """Логировать чтение из PostgreSQL."""
         self.stats["postgres_reads"] += 1
 
-        user_info = f" [user={user_id}]" if user_id else ""
+        user_info = format_user_info(user_id)
         logger.info(
-            f"📖 POSTGRES READ{user_info} ← {table}: {query_info} ({result_count} rows)"
+            f"POSTGRES READ{self._safe_text(user_info)} <- {self._safe_text(table)}: "
+            f"{self._safe_text(query_info)} ({result_count} rows)"
         )
 
     def log_qdrant_write(
@@ -86,12 +99,13 @@ class DataFlowLogger:
         """Логировать запись в Qdrant."""
         self.stats["qdrant_writes"] += 1
 
-        data_preview = self._format_data_preview(data)
-        user_info = f" [user={user_id}]" if user_id else ""
+        data_preview = format_data_preview(data)
+        user_info = format_user_info(user_id)
         vector_info = f" id={vector_id}" if vector_id else ""
 
         logger.info(
-            f"🧠 QDRANT WRITE{user_info}{vector_info} → {collection}: {data_preview}"
+            f"QDRANT WRITE{self._safe_text(user_info)}{self._safe_text(vector_info)} "
+            f"-> {self._safe_text(collection)}: {self._safe_text(data_preview)}"
         )
 
     def log_qdrant_search(
@@ -104,9 +118,10 @@ class DataFlowLogger:
         """Логировать поиск в Qdrant."""
         self.stats["qdrant_reads"] += 1
 
-        user_info = f" [user={user_id}]" if user_id else ""
+        user_info = format_user_info(user_id)
         logger.info(
-            f"🔍 QDRANT SEARCH{user_info} ← {collection}: '{query_preview[:50]}...' ({result_count} results)"
+            f"QDRANT SEARCH{self._safe_text(user_info)} <- {self._safe_text(collection)}: "
+            f"'{self._safe_text(query_preview, 50)}' ({result_count} results)"
         )
 
     def log_neo4j_write(
@@ -119,11 +134,12 @@ class DataFlowLogger:
         """Логировать запись в Neo4j."""
         self.stats["neo4j_writes"] += 1
 
-        data_preview = self._format_data_preview(data)
-        user_info = f" [user={user_id}]" if user_id else ""
+        data_preview = format_data_preview(data)
+        user_info = format_user_info(user_id)
 
         logger.info(
-            f"🕸️  NEO4J {operation}{user_info} → {node_type}: {data_preview}"
+            f"NEO4J {self._safe_text(operation)}{self._safe_text(user_info)} "
+            f"-> {self._safe_text(node_type)}: {self._safe_text(data_preview)}"
         )
 
     def log_learning_plan_update(
@@ -135,7 +151,8 @@ class DataFlowLogger:
     ):
         """Логировать обновление плана обучения."""
         logger.info(
-            f"📚 LEARNING_PLAN [user={user_id}] {field}: {old_value} → {new_value}"
+            f"LEARNING_PLAN [user={user_id}] {self._safe_text(field)}: "
+            f"{self._safe_text(old_value)} -> {self._safe_text(new_value)}"
         )
 
     def log_goal_detected(
@@ -146,7 +163,8 @@ class DataFlowLogger:
     ):
         """Логировать определение цели."""
         logger.info(
-            f"🎯 GOAL DETECTED [user={user_id}] from '{message[:50]}...' → {detected_goal}"
+            f"GOAL DETECTED [user={user_id}] from '{self._safe_text(message, 50)}' "
+            f"-> {self._safe_text(detected_goal)}"
         )
 
     def log_vocabulary_card_created(
@@ -157,7 +175,8 @@ class DataFlowLogger:
     ):
         """Логировать создание карточки."""
         logger.info(
-            f"🃏 VOCAB CARD [user={user_id}] created: '{word}' (source: {source})"
+            f"VOCAB CARD [user={user_id}] created: '{self._safe_text(word)}' "
+            f"(source: {self._safe_text(source)})"
         )
 
     def log_fsrs_review(
@@ -169,7 +188,8 @@ class DataFlowLogger:
     ):
         """Логировать FSRS повторение."""
         logger.info(
-            f"🔄 FSRS REVIEW [user={user_id}] '{word}' rated={rating} → next: {next_review}"
+            f"FSRS REVIEW [user={user_id}] '{self._safe_text(word)}' "
+            f"rated={self._safe_text(rating)} -> next: {self._safe_text(next_review)}"
         )
 
     def log_session_summary(
@@ -182,30 +202,70 @@ class DataFlowLogger:
     ):
         """Логировать итоги сессии."""
         logger.info(
-            f"📊 SESSION END [user={user_id}] session={session_id[:8]}... "
+            f"SESSION END [user={user_id}] session={self._safe_text(session_id[:8])}... "
             f"duration={duration_minutes}min, new_words={new_words}, xp={xp_earned}"
+        )
+
+    # === PersonaPlex Events ===
+
+    def log_personaplex_connect(
+        self,
+        user_id: int,
+        session_id: str,
+        voice: str,
+        mode: str,
+    ):
+        """Log PersonaPlex session start."""
+        self.stats["personaplex_connections"] += 1
+        logger.info(
+            f"PERSONAPLEX CONNECT [user={user_id}] "
+            f"session={self._safe_text(session_id[:8])}... voice={self._safe_text(voice)} "
+            f"mode={self._safe_text(mode)}"
+        )
+
+    def log_personaplex_turn(
+        self,
+        session_id: str,
+        role: str,
+        text_preview: str,
+        latency_ms: int,
+    ):
+        """Log each PersonaPlex conversation turn."""
+        self.stats["personaplex_turns"] += 1
+        preview = text_preview[:50] + "..." if len(text_preview) > 50 else text_preview
+        logger.info(
+            f"PERSONAPLEX TURN session={self._safe_text(session_id[:8])}... "
+            f"role={self._safe_text(role)} latency={latency_ms}ms "
+            f"text={self._safe_text(preview)}"
+        )
+
+    def log_personaplex_disconnect(
+        self,
+        session_id: str,
+        turns: int,
+        duration_seconds: float,
+    ):
+        """Log PersonaPlex session end."""
+        minutes = int(duration_seconds // 60)
+        seconds = int(duration_seconds % 60)
+        logger.info(
+            f"PERSONAPLEX DISCONNECT session={self._safe_text(session_id[:8])}... "
+            f"turns={turns} duration={minutes}m{seconds}s"
+        )
+
+    def log_personaplex_fallback(
+        self,
+        user_id: int,
+        reason: str,
+    ):
+        """Log fallback from PersonaPlex to legacy stack."""
+        logger.warning(
+            f"PERSONAPLEX FALLBACK [user={user_id}] reason={self._safe_text(reason)}"
         )
 
     def get_stats(self) -> dict:
         """Получить статистику операций."""
         return self.stats.copy()
-
-    def _format_data_preview(self, data: dict, max_len: int = 100) -> str:
-        """Форматировать превью данных."""
-        # Убираем длинные поля
-        preview = {}
-        for key, value in data.items():
-            if isinstance(value, str) and len(value) > 50:
-                preview[key] = f"{value[:50]}..."
-            elif isinstance(value, (list, dict)) and len(str(value)) > 50:
-                preview[key] = f"{type(value).__name__}[{len(value)}]"
-            else:
-                preview[key] = value
-
-        result = str(preview)
-        if len(result) > max_len:
-            return result[:max_len] + "..."
-        return result
 
 
 # Глобальный экземпляр

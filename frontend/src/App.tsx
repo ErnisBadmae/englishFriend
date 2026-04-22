@@ -1,32 +1,138 @@
 import { useEffect, useState } from 'react';
+import { HomePage } from './components/HomePage';
+import { InterviewPage } from './components/InterviewPage';
+import { InterviewResultsPage } from './components/InterviewResultsPage';
+import { ProgressPage } from './components/ProgressPage';
+import { ReviewPage } from './components/ReviewPage';
+import { SessionResultsPage } from './components/SessionResultsPage';
 import { VoiceChatV2 } from './components/VoiceChatV2';
+import {
+  API_BASE,
+  WS_BASE,
+  getProgramSnapshot,
+  resolveOrCreateUser,
+  submitPaidIntent,
+  submitProjectNotes,
+  submitVacancy,
+  type InterviewRun,
+  type InterviewTrack,
+  type MissionSummary,
+  type ProgramSnapshot,
+  type SessionEvidence
+} from './lib/api';
 import './App.css';
 
-// Конфигурация
-const API_URL = import.meta.env.VITE_API_URL || 'ws://localhost:8000';
-const WS_URL = `${API_URL.replace('http', 'ws')}/api/v1/voice/chat`;
+type Screen =
+  | 'home'
+  | 'session'
+  | 'interview'
+  | 'review'
+  | 'progress'
+  | 'interview_results'
+  | 'session_results';
+
+interface SessionConfig {
+  wsUrl: string;
+  mode?: string;
+  interviewTrackId?: string;
+  sttProvider?: string;
+  title?: string;
+  subtitle?: string;
+  reviewBeforeSend?: boolean;
+  mission?: MissionSummary;
+  returnScreen: Screen;
+}
+
+const DEFAULT_STT_PROVIDER = import.meta.env.VITE_STT_PROVIDER || 'browser_vosk';
+
+function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
+  if (!mission) {
+    return false;
+  }
+  return (
+    mission.mode === 'assessment' ||
+    mission.mode === 'guided_setup' ||
+    mission.task_type === 'foundation_speaking_drill' ||
+    mission.task_type === 'grammar_rescue'
+  );
+}
+
+function buildMissionSessionConfig(
+  mission: MissionSummary,
+  returnScreen: Screen
+): SessionConfig {
+  const mode =
+    mission.mode === 'guided_setup'
+      ? undefined
+      : mission.launch_mode ?? mission.mode;
+  return {
+    wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
+    mode,
+    interviewTrackId: mission.interview_track_id ?? undefined,
+    sttProvider: DEFAULT_STT_PROVIDER,
+    title: mission.title,
+    subtitle: mission.reason,
+    reviewBeforeSend: shouldForceGuidedReview(mission),
+    mission,
+    returnScreen
+  };
+}
+
+function readScreenFromHash(): Screen {
+  const normalized = window.location.hash.replace('#', '');
+  if (
+    normalized === 'session' ||
+    normalized === 'interview' ||
+    normalized === 'review' ||
+    normalized === 'progress' ||
+    normalized === 'interview_results' ||
+    normalized === 'session_results'
+  ) {
+    return normalized as Screen;
+  }
+  return 'home';
+}
 
 function App() {
-  const [userId, setUserId] = useState<number>(1); // Default user ID
+  const [telegramId, setTelegramId] = useState<number>(17);
+  const [telegramUsername, setTelegramUsername] =
+    useState<string>('Local User');
+  const [userId, setUserId] = useState<number | null>(null);
+  const [snapshot, setSnapshot] = useState<ProgramSnapshot | null>(null);
+  const [screen, setScreen] = useState<Screen>(readScreenFromHash());
+  const [sessionConfig, setSessionConfig] = useState<SessionConfig>({
+    wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
+    sttProvider: DEFAULT_STT_PROVIDER,
+    reviewBeforeSend: false,
+    returnScreen: 'progress'
+  });
+  const [lastInterviewRun, setLastInterviewRun] = useState<InterviewRun | null>(
+    null
+  );
+  const [lastSessionEvidence, setLastSessionEvidence] =
+    useState<SessionEvidence | null>(null);
+  const [lastMission, setLastMission] = useState<MissionSummary | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const [isResolvingUser, setIsResolvingUser] = useState(true);
+  const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Проверяем Telegram WebApp
     const tg = (window as any).Telegram?.WebApp;
 
     if (tg) {
-      // Инициализируем Telegram WebApp
       tg.ready();
-      tg.expand(); // Разворачиваем на весь экран
+      tg.expand();
 
-      // Получаем user_id из Telegram
-      const tgUserId = tg.initDataUnsafe?.user?.id;
-      if (tgUserId) {
-        setUserId(tgUserId);
-        console.log('Telegram user ID:', tgUserId);
+      const tgUser = tg.initDataUnsafe?.user;
+      if (tgUser?.id) {
+        setTelegramId(tgUser.id);
+        setTelegramUsername(
+          tgUser.username || tgUser.first_name || `tg_${tgUser.id}`
+        );
+        console.log('Telegram user ID:', tgUser.id);
       }
 
-      // Настраиваем тему
       document.documentElement.style.setProperty(
         '--tg-theme-bg-color',
         tg.themeParams?.bg_color || '#ffffff'
@@ -60,6 +166,180 @@ function App() {
     setIsReady(true);
   }, []);
 
+  useEffect(() => {
+    const onHashChange = () => {
+      setScreen(readScreenFromHash());
+    };
+
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const nextHash = screen === 'home' ? '' : `#${screen}`;
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  }, [screen]);
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function resolveUser() {
+      setIsResolvingUser(true);
+      setError(null);
+      try {
+        const resolved = await resolveOrCreateUser(
+          telegramId,
+          telegramUsername
+        );
+        if (!cancelled) {
+          setUserId(resolved.id);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to resolve user identity'
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsResolvingUser(false);
+        }
+      }
+    }
+
+    void resolveUser();
+    return () => {
+      cancelled = true;
+    };
+  }, [isReady, telegramId, telegramUsername]);
+
+  async function refreshSnapshot(): Promise<ProgramSnapshot | null> {
+    if (!userId) {
+      return null;
+    }
+
+    setIsLoadingSnapshot(true);
+    setError(null);
+    try {
+      const data = await getProgramSnapshot(userId);
+      setSnapshot(data);
+      return data;
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to load program snapshot'
+      );
+      return null;
+    } finally {
+      setIsLoadingSnapshot(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshSnapshot();
+  }, [userId]);
+
+  useEffect(() => {
+    if (screen === 'home' || screen === 'progress' || screen === 'interview') {
+      void refreshSnapshot();
+    }
+  }, [screen]);
+
+  function startGuidedSession() {
+    if (!snapshot) {
+      return;
+    }
+
+    if (snapshot.mission.mode === 'mock_interview') {
+      const recommendedTrackId =
+        snapshot.mission.interview_track_id ??
+        snapshot.interview.recommended_track.id;
+      const track: InterviewTrack = {
+        id: recommendedTrackId,
+        title: snapshot.mission.title,
+        subtitle: snapshot.mission.reason,
+        description: '',
+        prompt_focus: '',
+        starter_question: '',
+        rubric_focus: [],
+        recommended:
+          recommendedTrackId === snapshot.interview.recommended_track.id,
+        completed_runs: 0
+      };
+      startInterviewTrack(track);
+      return;
+    }
+
+    if (snapshot.mission.mode === 'guided_setup') {
+      setSessionConfig(buildMissionSessionConfig(snapshot.mission, 'home'));
+      setScreen('session');
+      return;
+    }
+
+    setSessionConfig(buildMissionSessionConfig(snapshot.mission, 'progress'));
+    setScreen('session');
+  }
+
+  function startInterviewTrack(track: InterviewTrack) {
+    setSessionConfig({
+      wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
+      mode: 'mock_interview',
+      interviewTrackId: track.id,
+      sttProvider: DEFAULT_STT_PROVIDER,
+      title: track.title,
+      subtitle: track.subtitle,
+      reviewBeforeSend: false,
+      returnScreen: 'interview'
+    });
+    setScreen('session');
+  }
+
+  async function handleSessionEnded(_payload: {
+    sessionId: string | null;
+    messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+    completionReason?: string;
+    returnScreen?: Screen | string;
+  }) {
+    const fresh = await refreshSnapshot();
+    const requestedReturnScreen =
+      _payload.returnScreen === 'home' ||
+      _payload.returnScreen === 'session' ||
+      _payload.returnScreen === 'interview' ||
+      _payload.returnScreen === 'review' ||
+      _payload.returnScreen === 'progress' ||
+      _payload.returnScreen === 'interview_results' ||
+      _payload.returnScreen === 'session_results'
+        ? _payload.returnScreen
+        : undefined;
+    if (_payload.completionReason === 'baseline_complete') {
+      setScreen(requestedReturnScreen ?? 'home');
+      return;
+    }
+    if (
+      sessionConfig.mode === 'mock_interview' &&
+      fresh?.interview.latest_run
+    ) {
+      setLastInterviewRun(fresh.interview.latest_run);
+      setLastMission(fresh.mission);
+      setScreen('interview_results');
+    } else if (fresh?.session_evidence.latest) {
+      setLastSessionEvidence(fresh.session_evidence.latest);
+      setLastMission(fresh.mission);
+      setScreen('session_results');
+    } else {
+      setScreen(requestedReturnScreen ?? sessionConfig.returnScreen);
+    }
+  }
+
   if (!isReady) {
     return (
       <div className="loading">
@@ -69,7 +349,229 @@ function App() {
     );
   }
 
-  return <VoiceChatV2 userId={userId} wsUrl={WS_URL} />;
+  if (isResolvingUser || !userId) {
+    return (
+      <div className="loading">
+        <div className="loading-spinner"></div>
+        <p>Resolving profile...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <div>
+          <span className="header-kicker">Telegram Mini App</span>
+          <h1>EnglishFriend</h1>
+        </div>
+        <div className="header-meta">
+          <span>{snapshot?.user.username || telegramUsername}</span>
+          <span className="header-endpoint">{API_BASE}</span>
+        </div>
+      </header>
+
+      {error && <div className="app-error">{error}</div>}
+
+      <main
+        className={`app-content ${
+          screen === 'session' ? 'session-layout' : ''
+        }`}
+      >
+        {isLoadingSnapshot && !snapshot ? (
+          <div className="loading page-loading">
+            <div className="loading-spinner"></div>
+            <p>Loading your program...</p>
+          </div>
+        ) : null}
+
+        {snapshot ? (
+          <>
+            {screen === 'home' && (
+              <HomePage
+                snapshot={snapshot}
+                onStartSession={startGuidedSession}
+                onOpenProgress={() => setScreen('progress')}
+                onRefresh={() => {
+                  void refreshSnapshot();
+                }}
+                onSubmitVacancy={async (vacancyText) => {
+                  if (!userId) return;
+                  try {
+                    setError(null);
+                    await submitVacancy(userId, { vacancy_text: vacancyText });
+                    await refreshSnapshot();
+                  } catch (err) {
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Failed to save vacancy'
+                    );
+                  }
+                }}
+                onSubmitProjectNotes={async (projectNotes) => {
+                  if (!userId) return;
+                  try {
+                    setError(null);
+                    await submitProjectNotes(userId, { project_notes: projectNotes });
+                    await refreshSnapshot();
+                  } catch (err) {
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Failed to save project notes'
+                    );
+                  }
+                }}
+                onSubmitPaidIntent={async () => {
+                  if (!userId) return;
+                  try {
+                    setError(null);
+                    await submitPaidIntent(userId, { source: 'home_cta' });
+                    await refreshSnapshot();
+                  } catch (err) {
+                    setError(
+                      err instanceof Error
+                        ? err.message
+                        : 'Failed to save paid beta intent'
+                    );
+                  }
+                }}
+              />
+            )}
+            {screen === 'session' && (
+              <VoiceChatV2
+                userId={userId}
+                wsUrl={sessionConfig.wsUrl}
+                mode={sessionConfig.mode}
+                interviewTrackId={sessionConfig.interviewTrackId}
+                sttProvider={sessionConfig.sttProvider}
+                mission={sessionConfig.mission}
+                title={sessionConfig.title}
+                subtitle={sessionConfig.subtitle}
+                reviewBeforeSend={sessionConfig.reviewBeforeSend}
+                onSessionEnded={(payload) => {
+                  void handleSessionEnded(payload);
+                }}
+              />
+            )}
+            {screen === 'interview' && (
+              <InterviewPage
+                userId={userId}
+                onStartTrack={startInterviewTrack}
+              />
+            )}
+            {screen === 'interview_results' && lastInterviewRun && (
+              <InterviewResultsPage
+                run={lastInterviewRun}
+                mission={lastMission ?? undefined}
+                onRunAgain={() => {
+                  const track: InterviewTrack = {
+                    id: lastInterviewRun.track_id,
+                    title: lastInterviewRun.track_title,
+                    subtitle: lastInterviewRun.track_subtitle,
+                    description: '',
+                    prompt_focus: '',
+                    starter_question: '',
+                    rubric_focus: [],
+                    recommended: false,
+                    completed_runs: 0
+                  };
+                  startInterviewTrack(track);
+                }}
+                onBack={() => setScreen('interview')}
+                onStartMission={() => {
+                  if (!lastMission) return;
+                  if (lastMission.mode === 'mock_interview') {
+                    setScreen('interview');
+                  } else {
+                    setSessionConfig(
+                      buildMissionSessionConfig(lastMission, 'progress')
+                    );
+                    setScreen('session');
+                  }
+                }}
+              />
+            )}
+            {screen === 'session_results' && lastSessionEvidence && (
+              <SessionResultsPage
+                evidence={lastSessionEvidence}
+                mission={lastMission ?? undefined}
+                onBack={() => setScreen('home')}
+                onStartMission={() => {
+                  if (!lastMission) return;
+                  if (lastMission.mode === 'mock_interview') {
+                    setScreen('interview');
+                    return;
+                  }
+                  setSessionConfig(
+                    buildMissionSessionConfig(lastMission, 'progress')
+                  );
+                  setScreen('session');
+                }}
+              />
+            )}
+            {screen === 'review' && (
+              <ReviewPage
+                userId={userId}
+                onReviewed={() => {
+                  void refreshSnapshot();
+                }}
+              />
+            )}
+            {screen === 'progress' && <ProgressPage snapshot={snapshot} />}
+          </>
+        ) : (
+          <div className="empty-state-card">
+            <h2>Program data unavailable</h2>
+            <p>
+              Could not load your snapshot yet. Try refreshing or open a session
+              to bootstrap your profile.
+            </p>
+            <button
+              className="primary-action"
+              onClick={() => void refreshSnapshot()}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+      </main>
+
+      <nav className="bottom-nav">
+        <button
+          className={screen === 'home' ? 'nav-item active' : 'nav-item'}
+          onClick={() => setScreen('home')}
+        >
+          Home
+        </button>
+        {snapshot?.vocabulary?.stats?.due_now ? (
+          <button
+            className={screen === 'review' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setScreen('review')}
+          >
+            Review
+          </button>
+        ) : null}
+        {snapshot?.setup?.assessment_complete ? (
+          <button
+            className={screen === 'progress' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setScreen('progress')}
+          >
+            Progress
+          </button>
+        ) : null}
+        {snapshot?.setup?.state === 'ready_for_program' ? (
+          <button
+            className={screen === 'interview' ? 'nav-item active' : 'nav-item'}
+            onClick={() => setScreen('interview')}
+          >
+            Career
+          </button>
+        ) : null}
+      </nav>
+    </div>
+  );
 }
 
 export default App;

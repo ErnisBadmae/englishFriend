@@ -1,7 +1,13 @@
 """
-Middleware для автоматического сбора HTTP метрик Prometheus
+Middleware для HTTP метрик и observability.
+
+Includes:
+- PrometheusMiddleware: Automatic HTTP metrics collection
+- RequestIDMiddleware: Adds request ID for log correlation
+- MetricsLogFilter: Filters /metrics spam from access logs
 """
 
+import logging
 import time
 from typing import Callable
 from fastapi import Request, Response
@@ -15,6 +21,94 @@ from app.core.metrics import (
     http_response_size_bytes,
     normalize_endpoint
 )
+from app.core.observability import (
+    set_request_context,
+    clear_request_context,
+    get_request_id,
+    get_session_id,
+    get_turn_id,
+    get_runtime,
+)
+
+
+# ============== Logging Filter ==============
+
+
+class MetricsLogFilter(logging.Filter):
+    """Filter to suppress /metrics and /health endpoint logs.
+
+    These endpoints are called frequently by Prometheus scraper
+    and health checks, creating noise in logs.
+    """
+
+    FILTERED_PATHS = {"/metrics", "/health", "/docs", "/redoc", "/openapi.json"}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        # Filter uvicorn access logs for noisy endpoints
+        for path in self.FILTERED_PATHS:
+            if f'"{path}' in message or f" {path} " in message:
+                return False
+        return True
+
+
+# ============== Request ID Middleware ==============
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Middleware that assigns a unique request ID to each request.
+
+    The request ID is:
+    - Set in request context (accessible via get_request_id())
+    - Added to response headers (X-Request-ID)
+    - Used for log correlation
+
+    Usage in logs:
+        22:16:31 [abc12345] INFO router → onboarding
+    """
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Generate and set request ID
+        request_id = set_request_context()
+
+        # Store in request state for access in endpoints
+        request.state.request_id = request_id
+
+        try:
+            response = await call_next(request)
+            # Add request ID to response headers
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            # Clear context after request completes
+            clear_request_context()
+
+
+# ============== Request ID Log Formatter ==============
+
+
+class RequestIDFormatter(logging.Formatter):
+    """Log formatter that includes request ID.
+
+    Format: 22:16:31 [abc12345] INFO  message
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        request_id = get_request_id()
+        session_id = get_session_id()
+        turn_id = get_turn_id()
+        runtime = get_runtime()
+
+        parts: list[str] = [request_id] if request_id else []
+        if session_id:
+            parts.append(f"s={session_id[:8]}")
+        if turn_id:
+            parts.append(f"t={turn_id}")
+        if runtime:
+            parts.append(f"rt={runtime}")
+
+        record.request_id = f"[{' '.join(parts)}]" if parts else "[-]"
+        return super().format(record)
 
 
 class PrometheusMiddleware(BaseHTTPMiddleware):

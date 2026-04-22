@@ -154,6 +154,7 @@ class TestXPServiceAwardXP:
 
         # Проверяем что add был вызван
         mock_db.add.assert_called_once()
+        assert mock_db.execute.await_count >= 2
 
         # Проверяем что commit был вызван
         mock_db.commit.assert_called_once()

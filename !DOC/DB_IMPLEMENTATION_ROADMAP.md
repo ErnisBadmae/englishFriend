@@ -1,0 +1,33 @@
+# Database Implementation Roadmap
+
+**Last Updated**: 2026-02-09  
+**Status**: Active Implementation Guide  
+**Source**: Based on [DB.md](./DB.md)
+
+---
+
+---
+
+## Sprint Status
+
+- [x] Sprint 1 - Postgres bootstrap (Completed)
+- [x] Sprint 2 - Sessions and utterances storage (Completed)
+- [x] Sprint 3 - Memory, progress, and reports (Completed)
+
+---
+
+Sprint 1 – Postgres bootstrap (!DOC/DB.md:48-122): подготовить базовые миграции: расширения, enum-типы, справочники, таблицы users, user_channel_identity, user_interest. Tests: 1) прогнать миграции на пустой и наполненной БД (Flyway/Liquibase up/down) и убедиться в идемпотентности (!DOC/DB.md:520); 2) pgTAP-проверки уникальности user_channel_identity и валидности access_channel; 3) seed-скрипт для dim_emotion/dim_topic/dim_accent сверяется с эталонными данными.
+
+Sprint 2 – Хранилище сессий и реплик (!DOC/DB.md:124-188): реализовать партиционированные sessions, utterances, feedback, corrections, добавить индексы (btree + GIN). Tests: 1) автоматическое создание месячных/хэш-партиций и проверка их наличия через каталоги; 2) EXPLAIN ANALYZE запросов по session_id и topics подтверждает использование индексов (!DOC/DB.md:522); 3) тесты RLS на sessions/utterances с set local app.user_id показывают, что чужие строки недоступны.
+
+Sprint 3 – Память, прогресс и отчёты (!DOC/DB.md:190-283): внедрить memories, опциональный embedding, learning_plan, xp_events с партициями и матвью mv_weekly_user_summary. Tests: 1) вставка/обновление memories проверяет триггеры, индексы и meta-GIN; 2) проверка xp_events партиций на автогенерацию + корректный happened_at диапазон; 3) refresh materialized view concurrently выполняется <5 мин и возвращает ожидаемые агрегаты (!DOC/DB.md:512).
+
+Sprint 4 – VectorDB слой (!DOC/DB.md:287-377): подготовить сервис `sync-vector` — документацию (overview/api/runbook/testing), пример конфигурации, Qdrant schema JSON и вспомогательные скрипты (`scripts/qdrant_recreate.sh`). Tests: 1) ручной прогон чек-листа из `sync-vector/docs/testing.md` (создание коллекции, upsert, поиск, удаление); 2) валидация CDC-пейлоада и маппинга полей с Postgres; 3) pgvector fallback — запрос `memories` с `<=>` сравнивается с Qdrant результатами.
+
+Sprint 5 – GraphDB слой (!DOC/DB.md:380-459): подготовить каталог `graph/` со схемой (constraints, reference seed, ingest MERGE), примерами запросов, runbook и тестами для Neo4j. Tests: 1) `cypher-shell -f graph/schema/constraints.cypher` завершается без ошибок; 2) `graph/tests/schema_checks.cypher` подтверждает наличие ограничений; 3) `graph/tests/query_checks.cypher` демонстрирует корректную работу recommendation/emotion запросов, укладываясь в p95 ≤200 мс на тестовом стенде (!DOC/DB.md:508-510, !DOC/DB.md:529 шаг 4).
+
+Sprint 6 – CDC и синхронизация (!DOC/DB.md:463-478): настроить Debezium/Kafka темы, сервисы sync-vector и sync-graph, DLQ. Реализация включает `docker-compose.cdc.yml`, коннекторы в `cdc/connectors/`, скрипты регистрации/эмуляции (`scripts/register_connector.sh`, `scripts/cdc_insert_memory.sh`, `scripts/cdc_batch_sessions.py`, `scripts/cdc_dlq_retry.sh`), а также сервис `sync-graph` (код + доки + тесты). Tests: 1) `scripts/cdc_insert_memory.sh` + `sync-vector/docs/testing.md` подтверждают upsert/delete в Qdrant по `memories.id`; 2) `scripts/cdc_batch_sessions.py --events 1000` + `sync-graph/docs/testing.md` демонстрируют корректный MERGE в Neo4j; 3) остановка Neo4j с последующим запуском `scripts/cdc_dlq_retry.sh graph_failures` показывает, что DLQ сообщения подхватываются ретраем.
+
+Sprint 7 – Политики, наблюдаемость и SLO (!DOC/DB.md:481-513): автоматизировать ретенцию, процедуры «право быть забытым», метрики, бэкапы и алёрты. Tests: 1) сценарий удаления пользователя проходит через все шаги (PG → Vector → Graph → S3) и логируется (!DOC/DB.md:486-493); 2) ретенционный джоб удаляет аудио старше 90 дней и фиксирует отчёт; 3) нагрузочный тест на 1e6 точек/узлов подтверждает p95 латентности из раздела 8.
+
+Sprint 8 – E2E проверка и поставка (!DOC/DB.md:516-613): собрать репозитории /db, /sync, /graph, docker-compose, документацию. Tests: 1) четыре E2E сценария из раздела 9.2 проходят на локальном стенде; 2) нагрузочный тест из 9.3 достигает целевых p50/p95; 3) Makefile «up + migrate + seed + tests» успешно прогоняет весь пайплайн, что является финальным критерием приёмки (!DOC/DB.md:606-613).

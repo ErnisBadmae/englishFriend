@@ -1,7 +1,7 @@
 #!/bin/bash
 # manage_partitions.sh
 # Automatic partition management for English Friend database
-# Usage: ./manage_partitions.sh [create|cleanup] [months_ahead] [retention_months]
+# Usage: ./manage_partitions.sh [create|cleanup|show|verify|both] [months_ahead] [retention_months]
 
 set -euo pipefail
 
@@ -56,20 +56,63 @@ create_partitions() {
     
     log "Creating partitions for next $months_ahead months"
     
-    local result
-    result=$(execute_sql \
+    local sessions_result
+    sessions_result=$(execute_sql \
         "SELECT create_sessions_partitions_ahead($months_ahead);" \
         "Creating sessions partitions")
     
     if [ $? -eq 0 ]; then
-        log "Partition creation completed successfully"
-        echo "$result" | while IFS= read -r line; do
+        echo "$sessions_result" | while IFS= read -r line; do
             if [ -n "$line" ]; then
                 log "  $line"
             fi
         done
     else
-        error "Failed to create partitions"
+        error "Failed to create sessions partitions"
+        return 1
+    fi
+
+    local xp_result
+    xp_result=$(execute_sql \
+        "DO \$\$
+        DECLARE
+            start_month date := date_trunc('month', current_date)::date;
+            start_date date;
+            end_date date;
+            partition_name text;
+            i int;
+        BEGIN
+            FOR i IN 0..$months_ahead LOOP
+                start_date := (start_month + (i || ' months')::interval)::date;
+                end_date := (start_month + ((i + 1) || ' months')::interval)::date;
+                partition_name := 'xp_events_' || to_char(start_date, 'YYYY_MM');
+
+                EXECUTE format(
+                    'CREATE TABLE IF NOT EXISTS %I PARTITION OF xp_events FOR VALUES FROM (%L) TO (%L)',
+                    partition_name,
+                    start_date,
+                    end_date
+                );
+
+                EXECUTE format(
+                    'CREATE INDEX IF NOT EXISTS %I ON %I (user_id, happened_at DESC)',
+                    partition_name || '_user_idx',
+                    partition_name
+                );
+            END LOOP;
+        END
+        \$\$;" \
+        "Creating xp_events partitions")
+
+    if [ $? -eq 0 ]; then
+        log "Partition creation completed successfully"
+        echo "$xp_result" | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                log "  $line"
+            fi
+        done
+    else
+        error "Failed to create xp_events partitions"
         return 1
     fi
 }
@@ -80,20 +123,59 @@ cleanup_partitions() {
     
     log "Cleaning up partitions older than $retention_months months"
     
-    local result
-    result=$(execute_sql \
+    local sessions_result
+    sessions_result=$(execute_sql \
         "SELECT drop_old_sessions_partitions($retention_months);" \
         "Cleaning up old partitions")
     
     if [ $? -eq 0 ]; then
-        log "Partition cleanup completed successfully"
-        echo "$result" | while IFS= read -r line; do
+        echo "$sessions_result" | while IFS= read -r line; do
             if [ -n "$line" ]; then
                 log "  $line"
             fi
         done
     else
-        error "Failed to cleanup partitions"
+        error "Failed to cleanup sessions partitions"
+        return 1
+    fi
+
+    local xp_result
+    xp_result=$(execute_sql \
+        "DO \$\$
+        DECLARE
+            cutoff_date date := date_trunc('month', current_date - ($retention_months || ' months')::interval)::date;
+            partition_record record;
+            partition_date date;
+        BEGIN
+            FOR partition_record IN
+                SELECT tablename
+                FROM pg_tables
+                WHERE schemaname = 'public'
+                  AND tablename LIKE 'xp_events_%'
+                  AND tablename ~ '^xp_events_[0-9]{4}_[0-9]{2}$'
+            LOOP
+                partition_date := to_date(
+                    regexp_replace(partition_record.tablename, 'xp_events_([0-9]{4})_([0-9]{2})', '\1-\2-01'),
+                    'YYYY-MM-DD'
+                );
+
+                IF partition_date < cutoff_date THEN
+                    EXECUTE format('DROP TABLE IF EXISTS %I CASCADE', partition_record.tablename);
+                END IF;
+            END LOOP;
+        END
+        \$\$;" \
+        "Cleaning up old xp_events partitions")
+
+    if [ $? -eq 0 ]; then
+        log "Partition cleanup completed successfully"
+        echo "$xp_result" | while IFS= read -r line; do
+            if [ -n "$line" ]; then
+                log "  $line"
+            fi
+        done
+    else
+        error "Failed to cleanup xp_events partitions"
         return 1
     fi
 }
@@ -112,6 +194,47 @@ show_partitions() {
          AND tablename LIKE 'sessions_%'
          ORDER BY tablename;" \
         "Listing current partitions"
+
+    log "Current xp_events partitions:"
+
+    execute_sql \
+        "SELECT 
+            schemaname,
+            tablename,
+            pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
+         FROM pg_tables
+         WHERE schemaname = 'public'
+           AND tablename LIKE 'xp_events_%'
+         ORDER BY tablename;" \
+        "Listing current xp_events partitions"
+}
+
+# Function to verify current-month partitions
+verify_partitions() {
+    log "Verifying current-month partitions"
+
+    local verify_result
+    verify_result=$(execute_sql \
+        "WITH expected AS (
+            SELECT
+                'sessions_' || to_char(date_trunc('month', current_date), 'YYYY_MM') AS sessions_partition,
+                'xp_events_' || to_char(date_trunc('month', current_date), 'YYYY_MM') AS xp_partition
+        )
+        SELECT
+            CASE
+                WHEN to_regclass('public.' || sessions_partition) IS NULL THEN 'MISSING ' || sessions_partition
+                WHEN to_regclass('public.' || xp_partition) IS NULL THEN 'MISSING ' || xp_partition
+                ELSE 'OK sessions=' || sessions_partition || ' xp_events=' || xp_partition
+            END
+        FROM expected;" \
+        "Verifying current-month sessions/xp_events partitions")
+
+    if echo "$verify_result" | grep -q '^OK '; then
+        log "$verify_result"
+    else
+        error "$verify_result"
+        return 1
+    fi
 }
 
 # Function to check if database is accessible
@@ -153,13 +276,17 @@ main() {
         "show")
             show_partitions
             ;;
+        "verify")
+            verify_partitions
+            ;;
         "both")
             create_partitions "$months_ahead"
             cleanup_partitions "$retention_months"
+            verify_partitions
             ;;
         *)
             error "Unknown action: $action"
-            echo "Usage: $0 [create|cleanup|show|both] [months_ahead] [retention_months]"
+            echo "Usage: $0 [create|cleanup|show|verify|both] [months_ahead] [retention_months]"
             exit 1
             ;;
     esac

@@ -1,21 +1,23 @@
-# Пакет для моделей данных
+# Package exports for SQLAlchemy models.
 
-# Импортируем модели в правильном порядке для избежания циклических зависимостей
 from app.models.enums_and_dimensions import *
 from app.models.core_tables import *
 from app.models.extended_tables import *
 
-# Экспортируем все модели для удобства импорта
+try:
+    from app.models.prompt_models import *
+    _HAS_PROMPT_MODELS = True
+except ModuleNotFoundError:
+    _HAS_PROMPT_MODELS = False
+
 __all__ = [
-    # Enums
     'CEFRLevel', 'MemoryKind', 'AccessChannel',
-    
-    # Dimensions
-    'DimEmotion', 'DimTopic', 'DimAccent',
-    
-    # Core tables
+    'DimEmotion', 'DimTopic', 'DimAccent', 'DimLearningGoal',
     'User', 'UserChannelIdentity', 'Session', 'Utterance', 'Feedback', 'Correction',
-    
-    # Extended tables
     'UserInterest', 'Memory', 'LearningPlan', 'XPEvent',
 ]
+
+if _HAS_PROMPT_MODELS:
+    __all__.extend([
+        'PromptTemplate', 'ABExperiment', 'SessionPromptLog',
+    ])

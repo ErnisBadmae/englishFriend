@@ -39,6 +39,15 @@ class AIProvider(ABC):
         """
         pass
 
+    async def update_persona(self, system_prompt: str) -> None:
+        """Update the system prompt / persona dynamically during a session.
+
+        Not all providers support this. Default is no-op.
+
+        Args:
+            system_prompt: New system prompt to apply.
+        """
+
     @abstractmethod
     async def disconnect(self) -> None:
         """Закрыть соединение."""

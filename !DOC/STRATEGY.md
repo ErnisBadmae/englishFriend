@@ -228,6 +228,121 @@ class AIProvider(ABC):
 
 **Применение**: Промежуточный вариант между текущим стеком и OpenAI Realtime.
 
+#### Pipecat + Ultravox - Recommended Intermediate Option ⭐ NEW
+
+**Pipecat** (https://github.com/pipecat-ai/pipecat):
+- Open-source voice AI framework от Daily.co
+- Модульная архитектура: plug любой STT/LLM/TTS
+- Built-in interruption handling и VAD
+- WebSocket и WebRTC support
+- Active community, хорошая документация
+
+**Ultravox** (https://ultravox.ai):
+- Speech-native LLM (понимает аудио напрямую, без отдельного STT шага)
+- Multimodal: текст + аудио в одной модели
+- ~$0.05/min (сравнимо с OpenAI Realtime)
+- API доступен, не нужен self-hosting
+
+**Преимущества связки Pipecat + Ultravox**:
+- Нет отдельного STT шага → меньше латентность
+- Ultravox "слышит" интонацию (не теряется просодика)
+- Pipecat даёт WebRTC из коробки
+- Проще интеграция чем raw OpenAI Realtime
+- Хорошая middle-ground между Vosk и OpenAI Realtime
+
+**Стоимость**: ~$0.05/min = $3/час
+**Latency**: ~400-600ms
+
+**Рекомендация**: Рассмотреть как основной вариант для Premium Tier вместо Deepgram+GPT-4o+ElevenLabs.
+
+---
+
+### 🚫 Архитектурный анализ: Vosk vs Moshi (Январь 2026)
+
+#### КЛЮЧЕВОЙ ВЫВОД: НЕ МЕНЯТЬ архитектуру сейчас
+
+#### Почему сравнение "Vosk vs Moshi" некорректно
+
+| Vosk | Moshi |
+|------|-------|
+| STT (Speech-to-Text) | End-to-end Speech-to-Speech |
+| Только распознаёт речь | Заменяет **ВЕСЬ pipeline** (STT + LLM + TTS) |
+| WASM в браузере, бесплатно | GPU сервер, $100-200/мес |
+| Офлайн, приватно | Требует сеть |
+
+**"Менять Vosk на Moshi" = полная перестройка архитектуры**, а не замена одного компонента.
+
+#### Почему у Moshi нет широкого распространения
+
+1. **Очень новый** - open-source веса с февраля 2025 (~11 мес)
+2. **GPU требования** - RTX 4090 / A100 / L4 обязательно
+3. **Нет коммерческой поддержки** - только research lab (Kyutai)
+4. **Нет SDK** - нужно самим писать WebSocket, audio processing
+5. **Только английский** - нет multi-language
+6. **Нет function calling** - нельзя интегрировать с RAG/памятью
+
+#### Риски перехода на Moshi для Free Tier
+
+| Риск | Severity |
+|------|----------|
+| Потеря бесплатности Free Tier | CRITICAL |
+| Потеря офлайн-работы (приватность) | HIGH |
+| GPU инфраструктура ($5000+/мес при масштабе) | HIGH |
+| Нет RAG/memory интеграции | HIGH |
+| Потеря гибкости выбора LLM/TTS | MEDIUM |
+
+#### Когда переходить на Moshi
+
+| Условие | Статус |
+|---------|--------|
+| >1000 платящих пользователей | ❌ Не выполнено |
+| OpenAI Realtime стоит >$5000/мес | ❌ Не релевантно |
+| Moshi имеет stable API (v1.0+) | ❌ Не выполнено |
+| Есть DevOps для GPU | ❌ Не выполнено |
+
+**Ответ: Moshi рассмотреть через 12+ месяцев** для Ultra Tier как альтернативу OpenAI Realtime.
+
+#### Сравнение альтернатив
+
+| Инструмент | Тип | Стоимость | Когда использовать |
+|------------|-----|-----------|-------------------|
+| **Vosk + Groq + edge-tts** | Modular, free | ~$0 | Free Tier (NOW) |
+| **Pipecat + Ultravox** | Modular pipeline | ~$0.05/min | Premium Tier (рекомендуется) |
+| **Deepgram + GPT-4o + ElevenLabs** | Traditional cascade | ~$0.03/min | Premium Tier (альтернатива) |
+| **Hume AI** | Emotional S2S | $14-500/мес | Если важны эмоции |
+| **OpenAI Realtime** | Premium S2S | ~$0.05/min | Ultra Tier v1 |
+| **Moshi self-hosted** | OSS S2S | GPU costs | Ultra Tier v2 (при scale) |
+
+#### Стратегия выбора стека по фазам
+
+```
+NOW (MVP):
+  ✅ Vosk + Groq + edge-tts
+  ✅ Валидировать product-market fit
+  ✅ Найти первых 100 пользователей
+
++3-4 месяца (Premium validation):
+  □ Оценить спрос на premium features
+  □ Прототип Pipecat + Ultravox ИЛИ Deepgram stack
+  □ A/B тест latency improvements
+
++6-12 месяцев (Scale decision):
+  □ Если >1000 платящих пользователей: внедрить Ultra tier
+  □ Выбор между OpenAI Realtime vs Moshi
+  □ Оценить экономику self-hosting
+```
+
+#### Файлы для будущей интеграции (когда придёт время)
+
+| Файл | Назначение |
+|------|------------|
+| `app/api/voice.py` | Добавить `/premium` и `/ultra` endpoints |
+| `app/services/ai/base.py` | Создать интерфейсы провайдеров |
+| `app/services/ai/pipecat_provider.py` | Pipecat интеграция |
+| `app/services/ai/moshi_provider.py` | Moshi интеграция |
+| `app/core/config.py` | Tier-specific settings |
+| `docker-compose.gpu.yml` | GPU service для Moshi |
+
 ---
 
 ### 💰 Ценообразование на рынке
@@ -562,15 +677,17 @@ Browser (Vosk WASM STT) → WebSocket → FastAPI → vLLM/Groq LLM → edge-tts
 
 ## Технический стек (по тирам)
 
-| Компонент         | Free Tier             | Premium Tier         | Ultra Tier                    |
-| ----------------- | --------------------- | -------------------- | ----------------------------- |
-| **STT**           | Vosk (browser WASM)   | Deepgram Nova-3      | OpenAI Realtime (native)      |
-| **LLM**           | Groq/vLLM (бесплатно) | GPT-4o-mini          | GPT-4o Realtime               |
-| **TTS**           | edge-tts              | ElevenLabs Flash     | Realtime API + ElevenLabs PVC |
-| **VAD**           | Browser (basic)       | Deepgram endpointing | Server VAD (OpenAI)           |
-| **Latency**       | 800-1200ms            | 400-600ms            | <500ms                        |
-| **Стоимость/час** | $0.10-0.50            | $2-4                 | $1.35-3                       |
-| **Цена подписки** | Free                  | $9.99/мес            | $29.99/мес                    |
+| Компонент         | Free Tier             | Premium Tier (Option A)   | Premium Tier (Option B)    | Ultra Tier                    |
+| ----------------- | --------------------- | ------------------------- | -------------------------- | ----------------------------- |
+| **Stack**         | Vosk + Groq + edge-tts| Deepgram + GPT-4o + EL    | **Pipecat + Ultravox** ⭐  | OpenAI Realtime / Moshi       |
+| **STT**           | Vosk (browser WASM)   | Deepgram Nova-3           | Ultravox (native audio)    | Realtime (native) / Moshi     |
+| **LLM**           | Groq/vLLM (бесплатно) | GPT-4o-mini               | Ultravox (built-in)        | GPT-4o Realtime / Moshi       |
+| **TTS**           | edge-tts              | ElevenLabs Flash          | ElevenLabs / Cartesia      | Realtime API / Moshi          |
+| **VAD**           | Browser (basic)       | Deepgram endpointing      | Pipecat VAD                | Server VAD (OpenAI)           |
+| **Latency**       | 800-1200ms            | 400-600ms                 | **400-600ms**              | <500ms                        |
+| **Стоимость/час** | $0.10-0.50            | $2-4                      | **~$3**                    | $1.35-3                       |
+| **Цена подписки** | Free                  | $9.99/мес                 | $9.99/мес                  | $29.99/мес                    |
+| **Рекомендация**  | ✅ MVP NOW            | Backup option             | **⭐ Recommended**         | After 1000+ users             |
 
 ---
 
@@ -1139,5 +1256,6 @@ JEPA: Предсказывает в пространстве эмбеддинг�
 
 ---
 
-*Последнее обновление: 2026-01-13*
-*Добавлено: Moshi, LiveKit, JEPA/World Models анализ, обновлённая юнит-экономика, Duolingo Video Call*
+*Последнее обновление: 2026-01-20*
+*Добавлено: Pipecat + Ultravox как альтернатива Premium Tier, архитектурный анализ Vosk vs Moshi, обновлённая таблица стеков*
+*Предыдущее обновление (2026-01-13): Moshi, LiveKit, JEPA/World Models анализ, обновлённая юнит-экономика, Duolingo Video Call*

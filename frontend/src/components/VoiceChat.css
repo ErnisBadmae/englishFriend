@@ -28,6 +28,13 @@
   color: var(--tg-theme-hint-color, #999);
 }
 
+.voice-session-note {
+  margin: 8px 0 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tg-theme-hint-color, #999);
+}
+
 .voice-chat-header .error {
   margin: 8px 0 0;
   font-size: 13px;
@@ -97,6 +104,122 @@
 .message.current .message-content {
   opacity: 0.7;
   font-style: italic;
+}
+
+.transcript-review-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+  border: 1px solid rgba(102, 126, 234, 0.14);
+}
+
+.guided-composer-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 8px;
+  border-top: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+  background: linear-gradient(180deg, rgba(102, 126, 234, 0.06) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.guided-composer-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.guided-composer-header strong {
+  font-size: 15px;
+}
+
+.guided-composer-header span {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tg-theme-hint-color, #999);
+}
+
+.guided-composer-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 110px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(102, 126, 234, 0.18);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--tg-theme-text-color, #000);
+  font: inherit;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.guided-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.guided-chip-button {
+  border: 1px solid rgba(102, 126, 234, 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--tg-theme-text-color, #000);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.guided-secondary-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.guided-secondary-button {
+  min-width: 112px;
+}
+
+.transcript-review-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transcript-review-header strong {
+  font-size: 15px;
+}
+
+.transcript-review-header span {
+  font-size: 13px;
+  color: var(--tg-theme-hint-color, #999);
+  line-height: 1.4;
+}
+
+.transcript-review-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 104px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(102, 126, 234, 0.18);
+  background: #fff;
+  color: var(--tg-theme-text-color, #000);
+  font: inherit;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.transcript-review-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.review-action-button {
+  min-width: 104px;
 }
 
 /* Typing indicator */
@@ -383,4 +506,72 @@
 
 .end-session-button:active {
   transform: translateY(0);
+}
+
+.voice-debug-panel {
+  margin: 0 16px 16px;
+  border: 1px solid rgba(102, 126, 234, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+}
+
+.voice-debug-panel summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tg-theme-text-color, #000);
+  background: rgba(102, 126, 234, 0.06);
+}
+
+.voice-debug-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.voice-debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.voice-debug-meta,
+.voice-debug-event-body {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--tg-theme-text-color, #000);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.voice-debug-events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.voice-debug-event {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(102, 126, 234, 0.05);
+}
+
+.voice-debug-event-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--tg-theme-hint-color, #666);
 }
