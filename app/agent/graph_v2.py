@@ -25,6 +25,7 @@ from typing import Optional, Any, Literal
 from langgraph.graph import StateGraph, END
 
 from app.agent.state import AgentState, AgentPhase
+from app.agent.recovery import build_mission_safe_recovery
 from app.data.interview_tracks import get_interview_track
 from app.data.interview_questions import select_questions_for_track
 from app.agent.nodes_v2 import (
@@ -36,6 +37,7 @@ from app.agent.nodes_v2 import (
     route_after_learning,
     session_end_node,
 )
+from app.services.ai.llm_provider import LLMEmptyContentError
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.ai.mode_prompts import LearningMode
 from app.core.observability import (
@@ -55,6 +57,58 @@ def _ascii_log_preview(value: Any, limit: int = 50) -> str:
     if len(text) > limit:
         text = f"{text[:limit]}..."
     return text.encode("ascii", errors="backslashreplace").decode("ascii")
+
+_PHASE_TO_RECOVERY_STAGE: dict[str, str] = {
+    "onboarding": "onboarding",
+    "assessment": "assessment",
+    "learning_session": "learning",
+    "session_end": "learning",
+}
+
+
+def _phase_to_recovery_stage(phase_value: Any) -> str:
+    """Map an AgentPhase value to a recovery-template stage key."""
+    key = str(phase_value or "").strip().lower()
+    return _PHASE_TO_RECOVERY_STAGE.get(key, "learning")
+
+
+def _apply_graph_fallback(
+    state: AgentState,
+    phase: Any,
+    exc: BaseException,
+    fallback_reason: str,
+    trace: Any = None,
+) -> AgentState:
+    """Emit a mission-safe fallback response and annotate state for telemetry."""
+    phase_value = phase.value if hasattr(phase, "value") else str(phase)
+    stage_key = _phase_to_recovery_stage(phase_value)
+    mission_task_type = state.get("mission_task_type")
+
+    if trace is not None:
+        try:
+            trace.update(
+                metadata={
+                    "error": str(exc),
+                    "fallback_reason": fallback_reason,
+                    "fallback_stage": stage_key,
+                    "mission_task_type": mission_task_type,
+                },
+                level="ERROR",
+            )
+        except Exception:
+            pass
+
+    state["pending_response"] = build_mission_safe_recovery(
+        mission_task_type=mission_task_type,
+        stage=stage_key,
+    )
+    state["fallback_reason"] = fallback_reason
+    state["fallback_stage"] = stage_key
+    state["mission_task_type_at_fallback"] = mission_task_type
+    state["retry_attempted"] = False
+    state["needs_user_input"] = True
+    return state
+
 
 # Feature flag for v2
 USE_AGENT_V2 = os.getenv("USE_AGENT_V2", "true").lower() == "true"
@@ -305,6 +359,7 @@ async def initialize_session_v2(
         "assessment_status": assessment_status,
         "baseline_provisional": baseline_provisional,
         "baseline_confidence": baseline_confidence,
+        "assessment_source": None,
         "assessment_step_index": 0,
         "assessment_answers": {},
 
@@ -363,7 +418,15 @@ async def initialize_session_v2(
         "_skip_goal": False,
         "_skip_interests": False,
         "_skip_assessment": False,
-        "setup_step": "ready_for_program" if assessed_level else ("baseline_assessment" if goal_setup_complete else "goal_setup"),
+        "setup_step": (
+            "ready_for_program"
+            if assessed_level
+            else (
+                "baseline_assessment"
+                if initial_mode == LearningMode.ASSESSMENT
+                else ("first_useful_mission" if goal_setup_complete else "goal_setup")
+            )
+        ),
         "last_question_type": None,
     }
 
@@ -488,22 +551,12 @@ async def run_agent_turn_v2(
 
         return result
 
+    except LLMEmptyContentError as e:
+        logger.warning("[Agent V2] LLM empty content leaked to graph layer: %s", e)
+        return _apply_graph_fallback(state, phase, e, "llm_empty_content", trace)
     except Exception as e:
         logger.error(f"[Agent V2] Error running graph: {e}", exc_info=True)
-
-        # Log error to Langfuse
-        if trace:
-            try:
-                trace.update(
-                    metadata={"error": str(e)},
-                    level="ERROR",
-                )
-            except Exception:
-                pass
-
-        state["pending_response"] = "I'm having trouble. Could you repeat that?"
-        state["needs_user_input"] = True
-        return state
+        return _apply_graph_fallback(state, phase, e, type(e).__name__, trace)
 
 
 # For backwards compatibility, re-export with v2 suffix
