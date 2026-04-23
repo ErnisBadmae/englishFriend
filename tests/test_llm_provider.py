@@ -165,7 +165,9 @@ class TestProviderGenerate:
         assert create_mock.await_count == 2
         assert create_mock.await_args_list[1].kwargs["model"] == DEFAULT_VLLM_MODEL
 
-    async def test_vllm_generate_falls_back_to_groq_on_connection_error(self):
+    async def test_vllm_generate_falls_back_to_groq_on_connection_error(self, monkeypatch):
+        monkeypatch.setattr(llm_provider_module.settings, "groq_api_key", "test-groq-key", raising=False)
+        monkeypatch.setattr(llm_provider_module.settings, "llm_fallback_to_groq", True, raising=False)
         provider = VLLMProvider()
         create_mock = AsyncMock(side_effect=httpx.ConnectError("local down"))
         fallback_provider = MagicMock(spec=LLMProvider)
@@ -186,8 +188,22 @@ class TestProviderGenerate:
             max_tokens=150,
         )
 
+    async def test_vllm_generate_raises_when_groq_fallback_has_no_key(self, monkeypatch):
+        provider = VLLMProvider()
+        monkeypatch.setattr(llm_provider_module.settings, "groq_api_key", "", raising=False)
+        monkeypatch.setattr(llm_provider_module.settings, "llm_fallback_to_groq", True, raising=False)
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            AsyncMock(side_effect=httpx.ConnectError("local down")),
+        ):
+            with pytest.raises(Exception):
+                await provider.generate("Hello", "You are helpful")
+
     async def test_vllm_generate_raises_when_groq_fallback_disabled(self, monkeypatch):
         provider = VLLMProvider()
+        monkeypatch.setattr(llm_provider_module.settings, "groq_api_key", "test-groq-key", raising=False)
         monkeypatch.setattr(llm_provider_module.settings, "llm_fallback_to_groq", False, raising=False)
 
         with patch.object(

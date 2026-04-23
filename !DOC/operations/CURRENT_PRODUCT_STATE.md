@@ -90,7 +90,8 @@ Do not create a new session log if this file is enough.
 - Split truth-state (llama_cpp vs intended vllm) is still an open infrastructure consistency task; product evals are passing but the backend may not be using the canonical vllm endpoint in all runs.
 
 ## Next Step
-- Collect a short live disagreement report for the routing classifier (shadow run) — this is the gate before deciding whether to move the classifier to gate-only-for-ambiguous-cases mode.
+- Restart FastAPI and run live synthetic eval in three tiers: `mainline`, `expanded`, then `live_tester` as advisory/stress.
+- Run `scripts/run_routing_classifier_eval.py --scenario-set expanded --classifier-source llm --arbiter-mode shadow` to collect an offline classifier disagreement report before any `gate` rollout.
 - Do NOT add a new LLM layer yet; in-session intent is the next candidate only if live evidence shows bounded fast rules miss important cases.
 - Do NOT touch voice architecture in this cycle; PersonaPlex stays as premium/advanced lane.
 - Resolve split truth-state: llama_cpp vs vllm as a separate infra task, not blocking product.
@@ -98,6 +99,19 @@ Do not create a new session log if this file is enough.
 - Benchmark browser Vosk vs backend Parakeet from evidence; then choose the mainline STT lane.
 
 ## Last Update
+### 2026-04-23 (offline classifier eval)
+- Added `scripts/run_routing_classifier_eval.py`, an offline lexical/classifier/arbiter eval that compares expected primary context, lexical routing, classifier output, and `shadow/gate/mainline` arbiter decisions without opening the live websocket.
+- Default rollout remains `career_routing_classifier_mode=shadow`; the new runner is measurement infrastructure, not a product behavior change.
+- Added `tests/test_routing_classifier_eval_script.py` to pin scenario tier resolution, deterministic fixture classification, gate/shadow arbitration, and summary metrics.
+- Verification: classifier eval tests `10 passed`; deterministic expanded fixture dry-run saved `!DOC/research/data/routing_eval/offline-fixture-expanded.json` with `6/6` arbiter matches.
+
+### 2026-04-23 (routing architecture hardening)
+- Added canonical goal-brief context normalization, so LLM/free-text labels like `job interview` are coerced to supported enums or rejected before they reach routing/snapshot state.
+- Made goal routing negation-aware and tolerant of a small set of common STT/noisy-English spellings, without moving the classifier out of `shadow`.
+- Hardened onboarding with cumulative short-answer inference, adjacent IT-role recognition, explicit safe force-routing after repeated low-signal goal turns, and no scenario-specific production branches.
+- Split synthetic eval tiers back into `mainline`, compact `expanded`, and large `live_tester` stress/advisory.
+- Verification: targeted routing/onboarding/provider/eval suite `97 passed`; product-track downstream suite `92 passed`; changed modules compile.
+
 ### 2026-04-22 (goal_brief contract canonicalization)
 - Added `app/services/goal_brief_contract.py` — canonical two-level contract: `routing-ready` (handoff to first mission) and `full profile` (enrichment); `target_market` no longer blocks first-mission handoff.
 - Migrated onboarding, `learning_plan_service`, `program_snapshot_service` to read from the shared contract; `missing_fields`, setup progress, draft/confirmed semantics, and routing gate are now in sync.

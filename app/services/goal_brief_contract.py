@@ -1,8 +1,52 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, Optional
 
 GoalBriefMode = Literal["routing", "full"]
+
+SUPPORTED_GOAL_CONTEXTS: tuple[str, ...] = (
+    "interviews",
+    "workplace_communication",
+    "project_walkthrough",
+)
+
+_CONTEXT_ALIASES: dict[str, str] = {
+    "interview": "interviews",
+    "interviews": "interviews",
+    "job interview": "interviews",
+    "job interviews": "interviews",
+    "mock interview": "interviews",
+    "hr interview": "interviews",
+    "technical interview": "interviews",
+    "behavioral interview": "interviews",
+    "behavioural interview": "interviews",
+    "interview preparation": "interviews",
+    "self introduction": "interviews",
+    "self intro": "interviews",
+    "workplace": "workplace_communication",
+    "workplace english": "workplace_communication",
+    "workplace communication": "workplace_communication",
+    "work communication": "workplace_communication",
+    "team communication": "workplace_communication",
+    "manager communication": "workplace_communication",
+    "stakeholder communication": "workplace_communication",
+    "client communication": "workplace_communication",
+    "client meeting": "workplace_communication",
+    "client presentation": "workplace_communication",
+    "team meetings": "workplace_communication",
+    "standup": "workplace_communication",
+    "status update": "workplace_communication",
+    "project": "project_walkthrough",
+    "projects": "project_walkthrough",
+    "project walkthrough": "project_walkthrough",
+    "project walk through": "project_walkthrough",
+    "technical project": "project_walkthrough",
+    "technical walkthrough": "project_walkthrough",
+    "project presentation": "project_walkthrough",
+    "research project": "project_walkthrough",
+    "system design": "project_walkthrough",
+}
 
 _GOAL_BRIEF_ROUTING_FIELDS: tuple[str, ...] = (
     "primary_goal",
@@ -26,6 +70,44 @@ _GOAL_BRIEF_FIELD_LABELS: dict[str, str] = {
 }
 
 
+def _normalize_context_label(value: Any) -> str:
+    source = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    source = re.sub(r"[^a-z0-9\s]", " ", source)
+    return " ".join(source.split())
+
+
+def normalize_goal_brief_context(value: Any) -> Optional[str]:
+    """Return a canonical practice-context enum, or None for unsupported text."""
+    raw = str(value or "").strip().lower()
+    if raw in SUPPORTED_GOAL_CONTEXTS:
+        return raw
+    return _CONTEXT_ALIASES.get(_normalize_context_label(value))
+
+
+def normalize_goal_brief_contexts(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    seen: set[str] = set()
+    contexts: list[str] = []
+    for value in values:
+        canonical = normalize_goal_brief_context(value)
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        contexts.append(canonical)
+    return contexts
+
+
+def normalize_goal_brief(goal_brief: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Normalize contract-owned fields while preserving unrelated metadata."""
+    normalized = dict(goal_brief or {})
+    if "main_contexts" in normalized:
+        normalized["main_contexts"] = normalize_goal_brief_contexts(
+            normalized.get("main_contexts")
+        )
+    return normalized
+
+
 def goal_brief_required_fields(*, mode: GoalBriefMode = "routing") -> tuple[str, ...]:
     if mode == "full":
         return (*_GOAL_BRIEF_ROUTING_FIELDS, *_GOAL_BRIEF_ENRICHMENT_FIELDS)
@@ -37,7 +119,7 @@ def goal_brief_missing_keys(
     *,
     mode: GoalBriefMode = "routing",
 ) -> list[str]:
-    goal_brief = goal_brief or {}
+    goal_brief = normalize_goal_brief(goal_brief)
     missing: list[str] = []
     for key in goal_brief_required_fields(mode=mode):
         value = goal_brief.get(key)
@@ -59,7 +141,7 @@ def goal_brief_missing_labels(
 
 
 def is_goal_brief_routing_ready(goal_brief: Optional[dict[str, Any]]) -> bool:
-    goal_brief = goal_brief or {}
+    goal_brief = normalize_goal_brief(goal_brief)
     contexts = goal_brief.get("main_contexts") or []
     return bool(
         goal_brief.get("primary_goal")
@@ -82,7 +164,7 @@ def goal_brief_setup_progress(
     *,
     assessment_complete: bool,
 ) -> int:
-    goal_brief = goal_brief or {}
+    goal_brief = normalize_goal_brief(goal_brief)
     filled_slots = 0
     total_slots = len(goal_brief_required_fields(mode="full")) + 1  # + assessment
 

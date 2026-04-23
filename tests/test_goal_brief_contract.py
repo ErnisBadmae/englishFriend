@@ -3,6 +3,8 @@ from app.services.goal_brief_contract import (
     goal_brief_setup_progress,
     is_goal_brief_complete,
     is_goal_brief_routing_ready,
+    normalize_goal_brief,
+    normalize_goal_brief_contexts,
 )
 
 
@@ -55,3 +57,33 @@ def test_setup_progress_counts_enrichment_without_blocking_handoff():
 
     assert goal_brief_setup_progress(brief, assessment_complete=False) == 71
     assert goal_brief_setup_progress(brief, assessment_complete=True) == 86
+
+
+def test_normalize_goal_contexts_maps_aliases_to_canonical_enums():
+    assert normalize_goal_brief_contexts(
+        ["job interview", "client meeting", "technical walkthrough", "unknown"]
+    ) == ["interviews", "workplace_communication", "project_walkthrough"]
+
+
+def test_routing_ready_rejects_unknown_llm_context_labels():
+    brief = {
+        "primary_goal": "Improve English",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "main_contexts": ["random coaching mode"],
+    }
+
+    assert normalize_goal_brief(brief)["main_contexts"] == []
+    assert is_goal_brief_routing_ready(brief) is False
+
+
+def test_routing_ready_accepts_llm_alias_after_normalization():
+    brief = {
+        "primary_goal": "Improve English",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "main_contexts": ["job interview"],
+    }
+
+    assert normalize_goal_brief(brief)["main_contexts"] == ["interviews"]
+    assert is_goal_brief_routing_ready(brief) is True

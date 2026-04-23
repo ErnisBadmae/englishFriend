@@ -608,7 +608,6 @@ EXPANDED_SCENARIO_SET = (
     "workplace_status_update",
     "project_tradeoff_story",
     "interview_self_intro_gap",
-    *LIVE_TESTER_SCENARIO_SET,
 )
 
 

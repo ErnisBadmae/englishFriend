@@ -28,8 +28,16 @@ Design invariants:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
+
+from app.services.goal_brief_contract import (
+    SUPPORTED_GOAL_CONTEXTS,
+    normalize_goal_brief,
+    normalize_goal_brief_context,
+    normalize_goal_brief_contexts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +83,9 @@ PROJECT_SIGNAL_PATTERNS: tuple[str, ...] = (
 
 # Workplace signals describe speaking to colleagues and stakeholders.
 WORKPLACE_SIGNAL_PATTERNS: tuple[str, ...] = (
+    "client",
+    "client meeting",
+    "client presentation",
     "product manager",
     "product managers",
     "operations",
@@ -124,7 +135,44 @@ _DEFAULT_PRIMARY_CONTEXT = "interviews"
 _DEFAULT_TRACK_ID = _PRIMARY_TO_TRACK[_DEFAULT_PRIMARY_CONTEXT]
 _DEFAULT_FIRST_MISSION = _PRIMARY_TO_FIRST_MISSION[_DEFAULT_PRIMARY_CONTEXT]
 
-_SUPPORTED_PRIMARY = tuple(_PRIMARY_TO_TRACK.keys())
+_SUPPORTED_PRIMARY = SUPPORTED_GOAL_CONTEXTS
+
+_NEGATION_WINDOW_TOKENS = 6
+_NEGATION_TOKENS = {
+    "not",
+    "no",
+    "never",
+    "without",
+    "dont",
+    "don't",
+    "doesnt",
+    "doesn't",
+}
+_NEGATION_PHRASES = (
+    "do not",
+    "does not",
+    "rather than",
+    "instead of",
+    "not want",
+    "dont want",
+    "don't want",
+)
+_STT_NOISE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("intarview", "interview"),
+    ("intarviews", "interviews"),
+    ("practis", "practice"),
+    ("practise", "practice"),
+    ("prepear", "prepare"),
+    ("preparashon", "preparation"),
+    ("injineer", "engineer"),
+    ("pozishon", "position"),
+    ("abrod", "abroad"),
+    ("jab", "job"),
+    ("teknikal", "technical"),
+    ("teknical", "technical"),
+    ("internashenal", "international"),
+    ("compny", "company"),
+)
 
 
 @dataclass(frozen=True)
@@ -146,13 +194,60 @@ class GoalRoutingProfile:
 def _normalize_text(text: Optional[str]) -> str:
     if not text:
         return ""
-    normalized = str(text).lower()
-    # Collapse whitespace so "tell  me" matches "tell me".
+    normalized = str(text).lower().replace("-", " ")
+    normalized = re.sub(r"[^a-z0-9'\s]", " ", normalized)
+    for source, target in _STT_NOISE_REPLACEMENTS:
+        normalized = re.sub(rf"\b{re.escape(source)}\b", target, normalized)
     return " ".join(normalized.split())
 
 
+def _split_signal_segments(text: str) -> list[str]:
+    return [
+        segment.strip()
+        for segment in re.split(r"[\n.!?;]+", text)
+        if segment.strip()
+    ]
+
+
+def _pattern_tokens(pattern: str) -> list[str]:
+    return _normalize_text(pattern).split()
+
+
+def _is_negated_match(tokens: list[str], start_index: int) -> bool:
+    window = tokens[max(0, start_index - _NEGATION_WINDOW_TOKENS):start_index]
+    if any(token in _NEGATION_TOKENS for token in window):
+        return True
+    prefix = " ".join(window)
+    return any(phrase in prefix for phrase in _NEGATION_PHRASES)
+
+
+def _segment_has_positive_pattern(segment: str, pattern: str) -> bool:
+    tokens = segment.split()
+    pattern_tokens = _pattern_tokens(pattern)
+    if not tokens or not pattern_tokens or len(pattern_tokens) > len(tokens):
+        return False
+    width = len(pattern_tokens)
+    for index in range(0, len(tokens) - width + 1):
+        if tokens[index:index + width] != pattern_tokens:
+            continue
+        if _is_negated_match(tokens, index):
+            continue
+        return True
+    return False
+
+
 def _count_hits(text: str, patterns: Iterable[str]) -> int:
-    return sum(1 for pattern in patterns if pattern in text)
+    segments = _split_signal_segments(text)
+    return sum(
+        1
+        for pattern in patterns
+        if any(_segment_has_positive_pattern(segment, pattern) for segment in segments)
+    )
+
+
+def has_positive_context_signal(text: str, context: str) -> bool:
+    scores = score_context_signals(text)
+    return scores.get(context, 0) > 0
 
 
 def score_context_signals(text: str) -> dict[str, int]:
@@ -255,7 +350,7 @@ def resolve_goal_routing(
     message is already in ``state``.
     """
 
-    goal_brief = goal_brief or {}
+    goal_brief = normalize_goal_brief(goal_brief)
 
     transcript_text = _aggregate_transcript(conversation_history, last_user_message)
     scores = score_context_signals(transcript_text)
@@ -263,9 +358,9 @@ def resolve_goal_routing(
     # 1. Sticky: once the brief is routing-ready, its main_contexts win.
     if _is_goal_routing_ready(goal_brief):
         existing_contexts = [
-            str(c).strip().lower()
+            normalize_goal_brief_context(c)
             for c in (goal_brief.get("main_contexts") or [])
-            if str(c).strip()
+            if normalize_goal_brief_context(c)
         ]
         existing_contexts = _dedupe(existing_contexts)
         if existing_contexts:
@@ -331,10 +426,12 @@ def _build_profile(
     decision_source: str,
 ) -> GoalRoutingProfile:
     if primary_context not in _SUPPORTED_PRIMARY:
-        primary_context = _DEFAULT_PRIMARY_CONTEXT
+        primary_context = (
+            normalize_goal_brief_context(primary_context) or _DEFAULT_PRIMARY_CONTEXT
+        )
         main_contexts = [primary_context]
 
-    normalized_contexts = tuple(_dedupe(main_contexts) or [primary_context])
+    normalized_contexts = tuple(normalize_goal_brief_contexts(main_contexts) or [primary_context])
     if normalized_contexts[0] != primary_context:
         # Always put the resolved primary first.
         remainder = tuple(c for c in normalized_contexts if c != primary_context)

@@ -43,6 +43,7 @@ from app.services.goal_brief_contract import (
     goal_brief_missing_keys,
     goal_brief_missing_labels,
     is_goal_brief_routing_ready,
+    normalize_goal_brief,
 )
 from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.pedagogy_logger import get_pedagogy_logger
@@ -57,6 +58,7 @@ from app.services.routing.goal_routing import (
     INTERVIEW_SIGNAL_PATTERNS as _ROUTING_INTERVIEW_PATTERNS,
     PROJECT_SIGNAL_PATTERNS as _ROUTING_PROJECT_PATTERNS,
     WORKPLACE_SIGNAL_PATTERNS as _ROUTING_WORKPLACE_PATTERNS,
+    resolve_goal_routing,
     score_context_signals,
 )
 
@@ -102,6 +104,23 @@ _FLEXIBLE_COMPANY_CONTEXT_PATTERNS = (
     "any company",
     "no matter",
 )
+_FORCE_ROUTE_AFTER_GOAL_TURNS = 3
+_STT_NOISE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("intarview", "interview"),
+    ("intarviews", "interviews"),
+    ("practis", "practice"),
+    ("practise", "practice"),
+    ("prepear", "prepare"),
+    ("preparashon", "preparation"),
+    ("injineer", "engineer"),
+    ("pozishon", "position"),
+    ("abrod", "abroad"),
+    ("jab", "job"),
+    ("teknikal", "technical"),
+    ("teknical", "technical"),
+    ("internashenal", "international"),
+    ("compny", "company"),
+)
 _CORRECTION_CUE_PATTERNS = (
     "actually",
     "instead",
@@ -142,11 +161,25 @@ _CONTEXT_NEGATION_PATTERNS: dict[str, tuple[str, ...]] = {
 _ROLE_DOMAIN_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("applied scientist", "Applied Scientist", "machine_learning"),
     ("research scientist", "Research Scientist", "machine_learning"),
+    ("phd student", "Researcher", "machine_learning"),
+    ("researcher", "Researcher", "machine_learning"),
     ("data scientist", "Data Scientist", "data_science"),
     ("data science", "Data Scientist", "data_science"),
+    ("data engineer", "Data Engineer", "data_engineering"),
+    ("analytics engineer", "Analytics Engineer", "data_engineering"),
+    ("mlops engineer", "MLOps Engineer", "mlops"),
+    ("mlops", "MLOps Engineer", "mlops"),
+    ("devops engineer", "DevOps Engineer", "devops"),
+    ("devops", "DevOps Engineer", "devops"),
+    ("sre", "SRE Engineer", "devops"),
+    ("site reliability engineer", "SRE Engineer", "devops"),
     ("backend engineer", "Backend Engineer", "software_engineering"),
     ("frontend engineer", "Frontend Engineer", "software_engineering"),
     ("software engineer", "Software Engineer", "software_engineering"),
+    ("team lead", "Team Lead", "software_engineering"),
+    ("tech lead", "Tech Lead", "software_engineering"),
+    ("product manager", "Product Manager", "product_management"),
+    ("freelancer", "Freelancer", "professional_services"),
     ("machine learning engineer", "ML Engineer", "machine_learning"),
     ("ml engineer", "ML Engineer", "machine_learning"),
     ("ai engineer", "ML Engineer", "machine_learning"),
@@ -259,10 +292,19 @@ _NO_CURRENT_ROLE_PATTERNS = (
 _TARGET_ROLE_PATTERNS = (
     "ml engineer",
     "machine learning engineer",
+    "mlops engineer",
+    "data engineer",
     "data scientist",
     "software engineer",
     "backend engineer",
     "frontend engineer",
+    "devops engineer",
+    "sre",
+    "team lead",
+    "tech lead",
+    "product manager",
+    "researcher",
+    "freelancer",
     "developer",
     "scientist",
     "engineer",
@@ -768,7 +810,7 @@ def _is_goal_brief_routing_ready(goal_brief: dict[str, Any]) -> bool:
 
 
 def _coerce_goal_brief_state(goal_brief: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(goal_brief)
+    normalized = normalize_goal_brief(goal_brief)
     if normalized.get("status") == "confirmed":
         normalized["confirmed_by_user"] = True
     if _is_goal_brief_routing_ready(normalized) and not normalized.get("deadline_type"):
@@ -1127,6 +1169,43 @@ def _finalize_goal_brief_after_merge(goal_brief: dict[str, Any]) -> dict[str, An
     return _coerce_goal_brief_state(normalized)
 
 
+def _build_forced_goal_brief_if_ready(
+    state: AgentState,
+    *,
+    cumulative_text: str,
+) -> Optional[dict[str, Any]]:
+    """After repeated low-signal turns, choose a safe bounded first mission.
+
+    This keeps anxious or one-word users out of an infinite "tell me more"
+    loop while still using the canonical routing policy.
+    """
+    if state.get("goal_setup_complete"):
+        return None
+    if int(state.get("turn_count", 0) or 0) < _FORCE_ROUTE_AFTER_GOAL_TURNS:
+        return None
+
+    normalized_text = _normalize_user_message(cumulative_text)
+    target_role, domain = _infer_role_domain_from_message(normalized_text)
+    profile = resolve_goal_routing(
+        goal_brief=state.get("goal_brief") or {},
+        conversation_history=state.get("conversation_history") or [],
+        last_user_message=state.get("last_user_message") or "",
+    )
+    goal_brief = {
+        "primary_goal": "",
+        "target_role": target_role or "IT Specialist",
+        "domain": domain or "professional_communication",
+        "main_contexts": list(profile.main_contexts),
+        "deadline_type": "open_ended",
+        "motivation": "Use English to move closer to an international role.",
+        "routing_decision_source": (
+            "cumulative_signals" if profile.decision_source != "default" else "safe_default"
+        ),
+    }
+    goal_brief["primary_goal"] = _build_primary_goal_from_brief(goal_brief)
+    return _coerce_goal_brief_state(goal_brief)
+
+
 async def _prepare_goal_brief_turn_update(
     state: AgentState,
     *,
@@ -1141,6 +1220,13 @@ async def _prepare_goal_brief_turn_update(
             cumulative_text=cumulative_text,
         ),
     )
+    if lexical_goal_brief is None or not _is_goal_brief_routing_ready(lexical_goal_brief):
+        forced_goal_brief = _build_forced_goal_brief_if_ready(
+            state,
+            cumulative_text=cumulative_text,
+        )
+        if forced_goal_brief:
+            lexical_goal_brief = forced_goal_brief
     classifier_result = None
     if _should_run_goal_routing_classifier(state):
         classifier_result = await classify_career_routing(
@@ -1429,6 +1515,8 @@ def _normalize_user_message(message: Optional[str]) -> str:
     source = (message or "").lower().replace("-", " ")
     normalized = f" {source} "
     normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    for noise, replacement in _STT_NOISE_REPLACEMENTS:
+        normalized = re.sub(rf"\b{re.escape(noise)}\b", replacement, normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return f" {normalized} "
 
@@ -1494,7 +1582,7 @@ def _infer_goal_brief_correction_from_message(
 
     corrected: dict[str, Any] = {}
     existing_contexts = list(goal_brief.get("main_contexts") or [])
-    context_scores = score_context_signals(normalized_message)
+    context_scores = score_context_signals(message)
     negated_contexts = _negated_contexts_from_message(normalized_message)
     positive_contexts = [
         context
@@ -1612,34 +1700,41 @@ def _infer_goal_brief_from_message(
     normalized_message = _normalize_user_message(message)
     if not normalized_message.strip():
         return None
+    normalized_scoring_text = _normalize_user_message(cumulative_text or message)
 
     existing = dict(existing_goal_brief or {})
     inferred = dict(existing)
     signal_count = 0
 
-    if _has_any_signal(normalized_message, _ML_SIGNAL_PATTERNS):
+    target_role, domain = _infer_role_domain_from_message(normalized_scoring_text)
+    if target_role:
+        signal_count += 1
+        inferred.setdefault("target_role", target_role)
+        if domain:
+            inferred.setdefault("domain", domain)
+    elif _has_any_signal(normalized_scoring_text, _ML_SIGNAL_PATTERNS):
         signal_count += 1
         inferred.setdefault("target_role", "ML Engineer")
         inferred.setdefault("domain", "machine_learning")
 
-    if _has_any_signal(normalized_message, _JOB_SIGNAL_PATTERNS):
+    if _has_any_signal(normalized_scoring_text, _JOB_SIGNAL_PATTERNS):
         signal_count += 1
         inferred.setdefault("target_market", "international_company")
-    elif _has_any_signal(normalized_message, _FLEXIBLE_COMPANY_CONTEXT_PATTERNS):
+    elif _has_any_signal(normalized_scoring_text, _FLEXIBLE_COMPANY_CONTEXT_PATTERNS):
         signal_count += 1
         inferred.setdefault("target_market", "international_company")
 
     contexts = list(inferred.get("main_contexts") or [])
-    if _has_any_signal(normalized_message, _INTERVIEW_SIGNAL_PATTERNS):
+    context_scores = score_context_signals(cumulative_text or message)
+    positive_contexts = [
+        context
+        for context in ("interviews", "workplace_communication", "project_walkthrough")
+        if context_scores.get(context, 0) > 0
+    ]
+    if positive_contexts:
         signal_count += 1
-        contexts.append("interviews")
-    if _has_any_signal(normalized_message, _PROJECT_SIGNAL_PATTERNS):
-        signal_count += 1
-        contexts.append("project_walkthrough")
-    if _has_any_signal(normalized_message, _WORKPLACE_SIGNAL_PATTERNS):
-        signal_count += 1
-        contexts.append("workplace_communication")
-    if _has_any_signal(normalized_message, _VOCAB_SIGNAL_PATTERNS):
+        contexts.extend(positive_contexts)
+    if _has_any_signal(normalized_scoring_text, _VOCAB_SIGNAL_PATTERNS):
         signal_count += 1
         blockers = list(inferred.get("current_blockers") or [])
         blockers.append("Need stronger ML and interview vocabulary")
@@ -1663,11 +1758,18 @@ def _infer_goal_brief_from_message(
             "Build English for an international ML/AI role with stronger interview and project communication.",
         )
         blockers = list(inferred.get("current_blockers") or [])
-        if _has_any_signal(normalized_message, _INTERVIEW_SIGNAL_PATTERNS):
+        if context_scores.get("interviews", 0) > 0:
             blockers.append("Need structured interview answers under pressure")
-        if _has_any_signal(normalized_message, _JOB_SIGNAL_PATTERNS):
+        if _has_any_signal(normalized_scoring_text, _JOB_SIGNAL_PATTERNS):
             blockers.append("Need confident English for international job opportunities")
         inferred["current_blockers"] = blockers
+
+    if (
+        inferred.get("target_role")
+        and inferred.get("main_contexts")
+        and not inferred.get("primary_goal")
+    ):
+        inferred["primary_goal"] = _build_primary_goal_from_brief(inferred)
 
     inferred.setdefault("deadline_type", "open_ended")
     inferred.setdefault("motivation", "Use English to move closer to an international ML/AI role.")

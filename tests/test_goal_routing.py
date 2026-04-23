@@ -152,6 +152,28 @@ def test_score_context_signals_splits_by_pattern() -> None:
     assert scores["interviews"] == 0
 
 
+def test_score_context_signals_ignores_negated_context_phrases() -> None:
+    scores = score_context_signals(
+        "I don't want to practice interviews. I need team meetings and manager communication."
+    )
+    assert scores["interviews"] == 0
+    assert scores["workplace_communication"] >= 2
+
+
+def test_score_context_signals_handles_common_stt_noise() -> None:
+    scores = score_context_signals(
+        "I wont intarview practis for ML injineer jab abrod."
+    )
+    assert scores["interviews"] > 0
+
+
+def test_build_from_brief_normalizes_llm_context_alias() -> None:
+    brief = {"status": "draft", "main_contexts": ["job interview"]}
+    profile = build_goal_routing_from_goal_brief(brief)
+    assert profile.primary_context == "interviews"
+    assert profile.main_contexts == ("interviews",)
+
+
 @pytest.mark.parametrize(
     "contexts, expected_primary",
     [
