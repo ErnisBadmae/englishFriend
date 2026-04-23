@@ -127,7 +127,19 @@
       "Bash(echo \"Started with PID $!\")",
       "Bash(awk '{print $5}')",
       "Bash(git rm *)",
-      "Bash(py *)"
+      "Bash(py *)",
+      "Bash(limactl list *)",
+      "Bash(xattr -l /Users/macbook/.colima/_lima/colima/basedisk)",
+      "Bash(xattr -l /Users/macbook/.colima/_lima/colima/diffdisk)",
+      "Bash(limactl stop *)",
+      "Bash(limactl start *)",
+      "Read(//Users/macbook/.lima/**)",
+      "Read(//Users/macbook/.colima/**)",
+      "Bash(venv/bin/python main.py)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(venv/bin/python *)",
+      "Bash(env)",
+      "Bash(wait)"
     ]
   },
   "enableAllProjectMcpServers": true

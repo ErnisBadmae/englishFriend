@@ -87,18 +87,24 @@ Do not create a new session log if this file is enough.
 - `/chat/v2` still contains the older large endpoint implementation; the modular runtime is additive for now, not yet the mainline path.
 - Full `pytest tests -q` still has unrelated legacy failures outside the current wedge work; targeted product-track tests are green.
 - Explicit goal correction is now supported only inside the onboarding correction lane; a broader post-handoff goal-edit UX does not exist yet.
-- Mainline synthetic eval is green on fresh users; the remaining uncertainty is now in `expanded` edge cases and real browser voice UX, not in the canonical first-value flows.
-- Expanded `project_tradeoff_story` had one unstable assistant recovery turn on the last run; mission-safe recovery should absorb it, but this also needs a live re-run.
+- Split truth-state (llama_cpp vs intended vllm) is still an open infrastructure consistency task; product evals are passing but the backend may not be using the canonical vllm endpoint in all runs.
 
 ## Next Step
+- Collect a short live disagreement report for the routing classifier (shadow run) — this is the gate before deciding whether to move the classifier to gate-only-for-ambiguous-cases mode.
+- Do NOT add a new LLM layer yet; in-session intent is the next candidate only if live evidence shows bounded fast rules miss important cases.
+- Do NOT touch voice architecture in this cycle; PersonaPlex stays as premium/advanced lane.
+- Resolve split truth-state: llama_cpp vs vllm as a separate infra task, not blocking product.
 - Run one real browser smoke pass for `workplace`, `interview`, and `project`, then mark greeting/farewell/redirect as live-verified.
-- Benchmark browser Vosk against backend Parakeet on role capture, project capture, technical terms, and guided-session latency; then choose the mainline STT lane from evidence.
-- Move memory consolidation from request-time only toward a background job.
-- Add richer speaking evidence next: pace, pause patterns, and later audio-backed pronunciation scoring.
-- Keep roadmap decisions filtered by the moat: career state, weak-English pedagogy, structured evidence, and adaptive next-mission routing.
-- Keep PersonaPlex as a premium or advanced delivery lane, not as the primary moat bet for the next cycle.
+- Benchmark browser Vosk vs backend Parakeet from evidence; then choose the mainline STT lane.
 
 ## Last Update
+### 2026-04-22 (goal_brief contract canonicalization)
+- Added `app/services/goal_brief_contract.py` — canonical two-level contract: `routing-ready` (handoff to first mission) and `full profile` (enrichment); `target_market` no longer blocks first-mission handoff.
+- Migrated onboarding, `learning_plan_service`, `program_snapshot_service` to read from the shared contract; `missing_fields`, setup progress, draft/confirmed semantics, and routing gate are now in sync.
+- Added `tests/test_goal_brief_contract.py`; full suite: `84 passed`.
+- Live expanded synthetic eval: `6/6 PASS, 100%`; `project_tradeoff_story` green.
+- Next: live disagreement report for routing classifier (shadow run) before deciding gate scope.
+
 ### 2026-04-22 (stabilization pass)
 - Added an explicit correction lane in onboarding: routing stays sticky against drift, but a clear user correction can now rewrite `main_contexts`, `target_role`, `domain`, and re-open draft confirmation.
 - `GoalRoutingProfile.decision_source` now distinguishes `explicit_user_correction` from ordinary sticky draft routing.

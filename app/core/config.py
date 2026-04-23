@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     # Shared LLM / RAG
     llm_temperature: float = 0.7
     llm_max_retries: int = 3
+    llm_fallback_to_groq: bool = True
     vector_memory_enabled: bool = True
 
     # Career routing classifier rollout

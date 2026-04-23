@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 from openai import AsyncOpenAI
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.core.metrics import llm_response_anomalies_total
@@ -452,6 +452,60 @@ class OpenAICompatibleProvider(LLMProvider):
             used_compat_retry=used_compat_retry,
         )
 
+    def _should_fallback_to_groq(self, exc: Exception) -> bool:
+        if self._provider_name not in {"vllm", "llama_cpp", "personaplex"}:
+            return False
+        if not settings.groq_api_key:
+            return False
+        if not getattr(settings, "llm_fallback_to_groq", True):
+            return False
+        return _is_retryable_failure(exc)
+
+    async def _generate_with_groq_fallback(
+        self,
+        *,
+        exc: Exception,
+        user_message: str,
+        system_prompt: str,
+        conversation_history: list[dict] | None,
+        max_tokens: int,
+    ) -> str:
+        logger.warning(
+            "[%s] Primary provider unavailable, falling back to groq: %s",
+            self._provider_name,
+            exc,
+        )
+        fallback_provider = _get_groq_fallback_provider()
+        return await fallback_provider.generate(
+            user_message=user_message,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+            max_tokens=max_tokens,
+        )
+
+    async def _generate_stream_with_groq_fallback(
+        self,
+        *,
+        exc: Exception,
+        user_message: str,
+        system_prompt: str,
+        conversation_history: list[dict] | None,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        logger.warning(
+            "[%s] Primary streaming provider unavailable, falling back to groq: %s",
+            self._provider_name,
+            exc,
+        )
+        fallback_provider = _get_groq_fallback_provider()
+        async for chunk in fallback_provider.generate_stream(
+            user_message=user_message,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+            max_tokens=max_tokens,
+        ):
+            yield chunk
+
     async def generate(
         self,
         user_message: str,
@@ -467,7 +521,18 @@ class OpenAICompatibleProvider(LLMProvider):
             self._prepare_system_prompt(system_prompt),
             conversation_history,
         )
-        raw_response = await self._call_completion(messages=messages, max_tokens=max_tokens)
+        try:
+            raw_response = await self._call_completion(messages=messages, max_tokens=max_tokens)
+        except Exception as exc:
+            if self._should_fallback_to_groq(exc):
+                return await self._generate_with_groq_fallback(
+                    exc=exc,
+                    user_message=user_message,
+                    system_prompt=system_prompt,
+                    conversation_history=conversation_history,
+                    max_tokens=max_tokens,
+                )
+            raise
         normalized = _normalize_completion_response(raw_response)
 
         if not normalized.content.strip():
@@ -500,7 +565,18 @@ class OpenAICompatibleProvider(LLMProvider):
                     self._prepare_system_prompt(system_prompt, compat_retry=True),
                     conversation_history,
                 )
-                raw_response = await self._call_completion(messages=retry_messages, max_tokens=max_tokens)
+                try:
+                    raw_response = await self._call_completion(messages=retry_messages, max_tokens=max_tokens)
+                except Exception as exc:
+                    if self._should_fallback_to_groq(exc):
+                        return await self._generate_with_groq_fallback(
+                            exc=exc,
+                            user_message=user_message,
+                            system_prompt=system_prompt,
+                            conversation_history=conversation_history,
+                            max_tokens=max_tokens,
+                        )
+                    raise
                 normalized = _normalize_completion_response(raw_response)
                 messages = retry_messages
 
@@ -554,9 +630,22 @@ class OpenAICompatibleProvider(LLMProvider):
             self._prepare_system_prompt(system_prompt),
             conversation_history,
         )
-        stream = await self._client.chat.completions.create(
-            **self._build_create_kwargs(messages=messages, max_tokens=max_tokens, stream=True)
-        )
+        try:
+            stream = await self._client.chat.completions.create(
+                **self._build_create_kwargs(messages=messages, max_tokens=max_tokens, stream=True)
+            )
+        except Exception as exc:
+            if self._should_fallback_to_groq(exc):
+                async for chunk in self._generate_stream_with_groq_fallback(
+                    exc=exc,
+                    user_message=user_message,
+                    system_prompt=system_prompt,
+                    conversation_history=conversation_history,
+                    max_tokens=max_tokens,
+                ):
+                    yield chunk
+                return
+            raise
 
         async for chunk in stream:
             if chunk.choices[0].delta.content:
@@ -739,6 +828,19 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
 
 _providers: dict[str, LLMProvider] = {}
+
+
+def _is_retryable_failure(exc: Exception) -> bool:
+    if isinstance(exc, RETRYABLE_EXCEPTIONS):
+        return True
+    if isinstance(exc, RetryError):
+        last_exception = exc.last_attempt.exception()
+        return isinstance(last_exception, RETRYABLE_EXCEPTIONS)
+    return False
+
+
+def _get_groq_fallback_provider() -> LLMProvider:
+    return get_llm_provider("groq")
 
 
 def _provider_runtime_metadata(provider_type: str) -> dict[str, Any]:

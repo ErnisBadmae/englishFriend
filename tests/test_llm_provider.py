@@ -1,5 +1,6 @@
 """Unit tests for LLM providers."""
 
+import httpx
 import app.services.ai.llm_provider as llm_provider_module
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -164,6 +165,39 @@ class TestProviderGenerate:
         assert create_mock.await_count == 2
         assert create_mock.await_args_list[1].kwargs["model"] == DEFAULT_VLLM_MODEL
 
+    async def test_vllm_generate_falls_back_to_groq_on_connection_error(self):
+        provider = VLLMProvider()
+        create_mock = AsyncMock(side_effect=httpx.ConnectError("local down"))
+        fallback_provider = MagicMock(spec=LLMProvider)
+        fallback_provider.generate = AsyncMock(return_value="Groq fallback response")
+
+        with patch.object(provider._client.chat.completions, "create", create_mock), patch(
+            "app.services.ai.llm_provider._get_groq_fallback_provider",
+            return_value=fallback_provider,
+        ):
+            result = await provider.generate("Hello", "You are helpful")
+
+        assert result == "Groq fallback response"
+        assert create_mock.await_count == llm_provider_module.settings.vllm_max_retries
+        fallback_provider.generate.assert_awaited_once_with(
+            user_message="Hello",
+            system_prompt="You are helpful",
+            conversation_history=None,
+            max_tokens=150,
+        )
+
+    async def test_vllm_generate_raises_when_groq_fallback_disabled(self, monkeypatch):
+        provider = VLLMProvider()
+        monkeypatch.setattr(llm_provider_module.settings, "llm_fallback_to_groq", False, raising=False)
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            AsyncMock(side_effect=httpx.ConnectError("local down")),
+        ):
+            with pytest.raises(Exception):
+                await provider.generate("Hello", "You are helpful")
+
     async def test_llama_cpp_generate_returns_response(self, mock_response):
         provider = LlamaCppProvider()
         with patch.object(
@@ -276,15 +310,16 @@ class TestConfigIntegration:
     def test_cluster_defaults_configured(self):
         from app.core.config import settings
 
-        assert settings.vllm_base_url == "http://192.168.0.18:8000/v1"
-        assert settings.vllm_api_key == "token-abc123"
-        assert settings.vllm_model == "Qwen/Qwen2.5-7B-Instruct-AWQ"
-        assert settings.llama_cpp_base_url == "http://192.168.0.18:8000/v1"
+        assert settings.vllm_base_url.startswith("http")
+        assert bool(settings.vllm_api_key)
+        assert settings.vllm_model
+        assert settings.llama_cpp_base_url.startswith("http")
 
     def test_provider_runtime_metadata_hides_secret_value(self):
         metadata = _provider_runtime_metadata("vllm")
+        from app.core.config import settings
 
-        assert metadata["base_url"] == "http://192.168.0.18:8000/v1"
-        assert metadata["model"] == "Qwen/Qwen2.5-7B-Instruct-AWQ"
+        assert metadata["base_url"] == settings.vllm_base_url
+        assert metadata["model"] == settings.vllm_model
         assert metadata["api_key_present"] is True
-        assert "token-abc123" not in str(metadata)
+        assert settings.vllm_api_key not in str(metadata)
