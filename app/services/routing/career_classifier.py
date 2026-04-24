@@ -35,6 +35,18 @@ _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IG
 
 
 @dataclass(frozen=True)
+class CareerRoutingSemanticValidation:
+    safe: bool
+    violations: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "safe": self.safe,
+            "violations": list(self.violations),
+        }
+
+
+@dataclass(frozen=True)
 class CareerRoutingClassifierResult:
     primary_context: Optional[str]
     secondary_contexts: tuple[str, ...] = ()
@@ -45,6 +57,12 @@ class CareerRoutingClassifierResult:
     target_role: Optional[str] = None
     domain: Optional[str] = None
     target_market: Optional[str] = None
+    intent_action: Optional[str] = None
+    audience: Optional[str] = None
+    artifact_focus: Optional[str] = None
+    job_process_stage: Optional[str] = None
+    domain_mentions: tuple[str, ...] = ()
+    routing_rationale: Optional[str] = None
     reason_codes: tuple[str, ...] = ()
     evidence_spans: tuple[str, ...] = ()
     classifier_source: Literal["llm", "fallback"] = "llm"
@@ -69,7 +87,16 @@ class CareerRoutingClassifierResult:
             ordered.append(normalized)
         return tuple(ordered)
 
+    @property
+    def semantic_validation(self) -> CareerRoutingSemanticValidation:
+        return validate_classifier_semantics(self)
+
+    @property
+    def semantic_safe(self) -> bool:
+        return self.semantic_validation.safe
+
     def to_observability_payload(self) -> dict[str, Any]:
+        semantic_validation = self.semantic_validation
         return {
             "primary_context": self.primary_context,
             "secondary_contexts": list(self.secondary_contexts),
@@ -80,8 +107,15 @@ class CareerRoutingClassifierResult:
             "target_role": self.target_role,
             "domain": self.domain,
             "target_market": self.target_market,
+            "intent_action": self.intent_action,
+            "audience": self.audience,
+            "artifact_focus": self.artifact_focus,
+            "job_process_stage": self.job_process_stage,
+            "domain_mentions": list(self.domain_mentions),
+            "routing_rationale": self.routing_rationale,
             "reason_codes": list(self.reason_codes),
             "evidence_spans": list(self.evidence_spans),
+            "semantic_validation": semantic_validation.to_payload(),
             "classifier_source": self.classifier_source,
             "model_version": self.model_version,
         }
@@ -105,6 +139,14 @@ class CareerRoutingArbiterDecision:
             "disagreement": self.disagreement,
             "ambiguous_legacy": self.ambiguous_legacy,
             "applied_classifier": self.applied_classifier,
+            "classifier_semantic_safe": (
+                self.classifier_result.semantic_safe if self.classifier_result else None
+            ),
+            "classifier_semantic_violations": (
+                list(self.classifier_result.semantic_validation.violations)
+                if self.classifier_result
+                else []
+            ),
             "goal_brief_update": dict(self.goal_brief_update or {}),
             "classifier_result": (
                 self.classifier_result.to_observability_payload()
@@ -145,6 +187,27 @@ def _coerce_confidence(value: Any) -> float:
     return max(0.0, min(1.0, confidence))
 
 
+def _normalize_slot_value(value: Any) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if not text or text in {"null", "none", "unknown", "n/a"}:
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or None
+
+
+def _normalize_slot_list(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, list):
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        normalized = _normalize_slot_value(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return tuple(out)
+
+
 def _extract_json_payload(text: str) -> dict[str, Any]:
     source = str(text or "").strip()
     if not source:
@@ -157,6 +220,135 @@ def _extract_json_payload(text: str) -> dict[str, Any]:
     return json.loads(source)
 
 
+_INTERVIEW_MARKERS = (
+    "interview",
+    "mock interview",
+    "interviewer",
+    "recruiter",
+    "hiring process",
+    "tell me about yourself",
+    "self intro",
+    "answer questions",
+)
+_WORKPLACE_MARKERS = (
+    "team",
+    "manager",
+    "stakeholder",
+    "product manager",
+    "operations",
+    "client",
+    "colleague",
+    "meeting",
+    "standup",
+    "status update",
+    "workplace",
+    "cross functional",
+    "non technical",
+    "nontechnical",
+)
+_PROJECT_MARKERS = (
+    "project",
+    "architecture",
+    "tradeoff",
+    "trade off",
+    "system design",
+    "technical story",
+    "walkthrough",
+    "impact",
+    "metric",
+    "implementation",
+    "pipeline",
+    "model",
+    "rag",
+)
+_TARGET_MARKET_ONLY_MARKERS = (
+    "job abroad",
+    "international company",
+    "target market",
+    "job search",
+    "career move",
+    "abroad",
+)
+
+
+def _semantic_blob(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            parts.extend(str(item or "") for item in value)
+        else:
+            parts.append(str(value))
+    return _normalize_text(" ".join(parts).replace("_", " "))
+
+
+def _has_any_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def validate_classifier_semantics(
+    result: CareerRoutingClassifierResult,
+) -> CareerRoutingSemanticValidation:
+    """Check whether classifier label agrees with extracted semantic slots."""
+    if not result.primary_context:
+        return CareerRoutingSemanticValidation(False, ("no_primary_context",))
+
+    slot_blob = _semantic_blob(
+        result.intent_action,
+        result.audience,
+        result.artifact_focus,
+        result.job_process_stage,
+        result.target_market,
+        result.domain_mentions,
+        result.reason_codes,
+        result.evidence_spans,
+    )
+    if not any(
+        (
+            result.intent_action,
+            result.audience,
+            result.artifact_focus,
+            result.job_process_stage,
+        )
+    ):
+        return CareerRoutingSemanticValidation(False, ("missing_semantic_slots",))
+
+    has_interview = _has_any_marker(slot_blob, _INTERVIEW_MARKERS)
+    has_workplace = _has_any_marker(slot_blob, _WORKPLACE_MARKERS)
+    has_project = _has_any_marker(slot_blob, _PROJECT_MARKERS)
+    has_target_market_only = _has_any_marker(slot_blob, _TARGET_MARKET_ONLY_MARKERS)
+    intent_blob = _semantic_blob(result.intent_action, result.job_process_stage)
+    audience_blob = _semantic_blob(result.audience)
+
+    violations: list[str] = []
+    if result.primary_context == "interviews":
+        if not has_interview:
+            violations.append("interview_without_interview_process")
+        if has_target_market_only and not has_interview:
+            violations.append("job_market_bias")
+    elif result.primary_context == "workplace_communication":
+        if not has_workplace:
+            violations.append("workplace_without_workplace_audience")
+    elif result.primary_context == "project_walkthrough":
+        if not has_project:
+            violations.append("project_without_project_artifact")
+        if has_workplace and not has_project:
+            violations.append("audience_ignored")
+        if (
+            _has_any_marker(audience_blob, _WORKPLACE_MARKERS)
+            and _has_any_marker(intent_blob, _WORKPLACE_MARKERS)
+        ):
+            violations.append("audience_ignored")
+        if not has_project and result.domain_mentions:
+            violations.append("domain_bias")
+
+    return CareerRoutingSemanticValidation(
+        safe=not violations,
+        violations=tuple(dict.fromkeys(violations)),
+    )
+
+
 def _build_classifier_prompt(
     *,
     transcript_text: str,
@@ -167,7 +359,7 @@ def _build_classifier_prompt(
     system_prompt = """You classify noisy onboarding text for a career-English coach.
 
 Task:
-- Infer the user's primary speaking context.
+- Extract the user's routing semantics, then infer primary_context.
 - Stay inside the allowed schema.
 - Do not generate advice.
 - Do not invent new labels.
@@ -176,6 +368,11 @@ Allowed primary_context / secondary_contexts:
 - interviews
 - workplace_communication
 - project_walkthrough
+
+Meaning of the labels:
+- interviews = the user wants interview/recruiter/hiring-process practice.
+- workplace_communication = the user wants to speak with team, manager, PM, client, stakeholder, or colleagues at work.
+- project_walkthrough = the user wants to explain a concrete project, architecture, tradeoff, metric, or impact story.
 
 Return ONLY valid JSON with this shape:
 {
@@ -188,17 +385,32 @@ Return ONLY valid JSON with this shape:
   "target_role": "string or null",
   "domain": "string or null",
   "target_market": "string or null",
+  "intent_action": "short snake_case action or null",
+  "audience": "short snake_case audience or null",
+  "artifact_focus": "short snake_case artifact or null",
+  "job_process_stage": "short snake_case stage or null",
+  "domain_mentions": ["short snake_case domains"],
+  "routing_rationale": "one short sentence",
   "reason_codes": ["short snake_case reasons"],
   "evidence_spans": ["short supporting phrases from the user"]
 }
 
 Rules:
 - Choose exactly one primary_context or null.
-- Prefer semantics over keywords.
+- Decide by intent/action first, then audience, then artifact. Role/domain/target_market are metadata only.
 - Respect negation like "not interviews".
 - If the signal is mixed, pick the most likely primary_context and lower confidence.
 - If target_market is unclear but the user is discussing international work/interviews, use "international_company".
 - Use null for unknown scalar fields.
+- "ML engineer", "AI", "RAG", "model", or "job abroad" alone must NOT force interviews or project_walkthrough.
+- If the user wants to explain work to team/manager/stakeholders, prefer workplace_communication even when they mention ML or a project.
+- If the user wants to explain a project/architecture/tradeoff/impact story, prefer project_walkthrough even when they mention job abroad.
+- Use interviews only when the user asks for interview/recruiter/hiring-process/self-intro practice.
+
+Counterexamples:
+- "speaking better in an international team" + "ML engineer job abroad" + "explain work to team" => workplace_communication.
+- "explain my ML projects more clearly for an ML engineer job abroad" => project_walkthrough, not interviews.
+- "tell me about yourself in ML engineer interviews" => interviews.
 """
     user_message = json.dumps(
         {
@@ -240,6 +452,12 @@ def _sanitize_classifier_payload(
     target_role = str(payload.get("target_role") or "").strip() or None
     domain = str(payload.get("domain") or "").strip().lower() or None
     target_market = str(payload.get("target_market") or "").strip().lower() or None
+    intent_action = _normalize_slot_value(payload.get("intent_action"))
+    audience = _normalize_slot_value(payload.get("audience"))
+    artifact_focus = _normalize_slot_value(payload.get("artifact_focus"))
+    job_process_stage = _normalize_slot_value(payload.get("job_process_stage"))
+    domain_mentions = _normalize_slot_list(payload.get("domain_mentions") or [])
+    routing_rationale = str(payload.get("routing_rationale") or "").strip() or None
 
     return CareerRoutingClassifierResult(
         primary_context=primary_context,
@@ -251,6 +469,12 @@ def _sanitize_classifier_payload(
         target_role=target_role,
         domain=domain,
         target_market=target_market,
+        intent_action=intent_action,
+        audience=audience,
+        artifact_focus=artifact_focus,
+        job_process_stage=job_process_stage,
+        domain_mentions=domain_mentions,
+        routing_rationale=routing_rationale,
         reason_codes=reason_codes,
         evidence_spans=evidence_spans,
         classifier_source="llm",
@@ -376,6 +600,23 @@ def _build_goal_brief_update_from_classifier(
         "routing_classifier_model_version": result.model_version,
         "routing_classifier_reason_codes": list(result.reason_codes),
         "routing_classifier_evidence_spans": list(result.evidence_spans),
+        "routing_classifier_semantic_safe": result.semantic_safe,
+        "routing_classifier_semantic_violations": list(
+            result.semantic_validation.violations
+        ),
+    }
+    semantic_slots = {
+        "intent_action": result.intent_action,
+        "audience": result.audience,
+        "artifact_focus": result.artifact_focus,
+        "job_process_stage": result.job_process_stage,
+        "domain_mentions": list(result.domain_mentions),
+        "routing_rationale": result.routing_rationale,
+    }
+    update["routing_classifier_semantic_slots"] = {
+        key: value
+        for key, value in semantic_slots.items()
+        if value not in (None, [], ())
     }
     if contexts:
         update["main_contexts"] = contexts
@@ -434,6 +675,7 @@ def arbitrate_career_routing(
     classifier_eligible = bool(
         classifier_update
         and classifier_primary
+        and classifier_result.semantic_safe
         and classifier_result.confidence >= min_confidence
     )
 

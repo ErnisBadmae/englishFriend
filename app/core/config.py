@@ -80,8 +80,8 @@ class Settings(BaseSettings):
     # Career routing classifier rollout
     career_routing_classifier_mode: Literal["off", "shadow", "gate", "mainline"] = "shadow"
     career_routing_classifier_min_confidence: float = 0.72
-    career_routing_classifier_max_tokens: int = 220
-    career_routing_classifier_timeout_seconds: float = 6.0
+    career_routing_classifier_max_tokens: int = 4096
+    career_routing_classifier_timeout_seconds: float = 240.0
     career_routing_classifier_model_version: str = "active_llm"
 
     # TTS

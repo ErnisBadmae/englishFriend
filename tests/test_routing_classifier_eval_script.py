@@ -71,6 +71,8 @@ def test_summarize_reports_counts_disagreements_and_rates() -> None:
     class _Report:
         lexical_match = True
         classifier_match = True
+        classifier_semantic_safe = True
+        classifier_failure_category = None
         arbiter_match = True
         arbiter_disagreement = False
         arbiter_ambiguous_legacy = False
@@ -79,6 +81,8 @@ def test_summarize_reports_counts_disagreements_and_rates() -> None:
     class _Miss:
         lexical_match = False
         classifier_match = None
+        classifier_semantic_safe = None
+        classifier_failure_category = None
         arbiter_match = False
         arbiter_disagreement = True
         arbiter_ambiguous_legacy = True
@@ -89,7 +93,9 @@ def test_summarize_reports_counts_disagreements_and_rates() -> None:
     assert summary["total"] == 2
     assert summary["lexical_match_rate"] == 0.5
     assert summary["classifier_match_rate"] == 1.0
+    assert summary["semantic_slot_validity"] == 1.0
     assert summary["arbiter_match_rate"] == 0.5
     assert summary["disagreements"] == 1
     assert summary["ambiguous_legacy"] == 1
+    assert summary["critical_inversions"] == 0
     assert summary["classifier_errors"] == 1

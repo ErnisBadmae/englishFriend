@@ -27,6 +27,12 @@ async def test_llm_career_routing_classifier_parses_valid_json():
               "target_role": "ML Engineer",
               "domain": "machine_learning",
               "target_market": "international_company",
+              "intent_action": "project_walkthrough",
+              "audience": "technical_audience",
+              "artifact_focus": "project_architecture_tradeoff",
+              "job_process_stage": "project_story_preparation",
+              "domain_mentions": ["machine_learning"],
+              "routing_rationale": "The user wants to explain a project tradeoff.",
               "reason_codes": ["technical_project_signal"],
               "evidence_spans": ["architecture tradeoff", "latency"]
             }
@@ -51,6 +57,12 @@ async def test_llm_career_routing_classifier_parses_valid_json():
     assert result.target_role == "ML Engineer"
     assert result.domain == "machine_learning"
     assert result.target_market == "international_company"
+    assert result.intent_action == "project_walkthrough"
+    assert result.audience == "technical_audience"
+    assert result.artifact_focus == "project_architecture_tradeoff"
+    assert result.job_process_stage == "project_story_preparation"
+    assert result.domain_mentions == ("machine_learning",)
+    assert result.semantic_safe is True
     assert result.model_version == "test-model"
 
 
@@ -83,6 +95,74 @@ def test_shadow_mode_keeps_legacy_even_when_classifier_disagrees():
     assert decision.disagreement is True
 
 
+def test_project_label_with_workplace_slots_is_semantically_unsafe():
+    classifier_result = CareerRoutingClassifierResult(
+        primary_context="project_walkthrough",
+        confidence=0.94,
+        target_role="ML Engineer",
+        domain="machine_learning",
+        intent_action="explain_work_to_team",
+        audience="team_manager",
+        artifact_focus="work_update",
+        job_process_stage="current_workplace",
+        domain_mentions=("machine_learning",),
+    )
+
+    validation = classifier_result.semantic_validation
+
+    assert validation.safe is False
+    assert "project_without_project_artifact" in validation.violations
+    assert "audience_ignored" in validation.violations
+
+
+def test_interview_label_from_job_market_only_is_semantically_unsafe():
+    classifier_result = CareerRoutingClassifierResult(
+        primary_context="interviews",
+        confidence=0.93,
+        target_role="ML Engineer",
+        target_market="international_company",
+        intent_action="project_walkthrough",
+        audience="target_company",
+        artifact_focus="project_architecture_tradeoff",
+        job_process_stage="job_abroad",
+        domain_mentions=("machine_learning",),
+    )
+
+    validation = classifier_result.semantic_validation
+
+    assert validation.safe is False
+    assert "interview_without_interview_process" in validation.violations
+    assert "job_market_bias" in validation.violations
+
+
+def test_gate_mode_rejects_semantically_unsafe_classifier_override():
+    lexical_goal_brief = {"main_contexts": ["workplace_communication"]}
+    classifier_result = CareerRoutingClassifierResult(
+        primary_context="project_walkthrough",
+        confidence=0.94,
+        target_role="ML Engineer",
+        domain="machine_learning",
+        intent_action="explain_work_to_team",
+        audience="team_manager",
+        artifact_focus="work_update",
+        job_process_stage="current_workplace",
+        domain_mentions=("machine_learning",),
+    )
+
+    decision = arbitrate_career_routing(
+        existing_goal_brief={},
+        lexical_goal_brief=lexical_goal_brief,
+        classifier_result=classifier_result,
+        transcript_text="I need to explain work to my manager and team.",
+        mode="gate",
+        min_confidence=0.72,
+    )
+
+    assert decision.applied_source == "legacy"
+    assert decision.applied_classifier is False
+    assert decision.goal_brief_update == lexical_goal_brief
+
+
 def test_gate_mode_applies_classifier_when_legacy_is_ambiguous():
     classifier_result = CareerRoutingClassifierResult(
         primary_context="project_walkthrough",
@@ -91,6 +171,10 @@ def test_gate_mode_applies_classifier_when_legacy_is_ambiguous():
         target_role="ML Engineer",
         domain="machine_learning",
         target_market="international_company",
+        intent_action="project_walkthrough",
+        audience="technical_audience",
+        artifact_focus="project_architecture_tradeoff_impact",
+        job_process_stage="project_story_preparation",
         reason_codes=("project_story",),
         classifier_source="llm",
         model_version="test-model",
@@ -120,6 +204,10 @@ def test_mainline_mode_falls_back_to_legacy_on_low_confidence():
         target_role="ML Engineer",
         domain="machine_learning",
         target_market="international_company",
+        intent_action="workplace_communication",
+        audience="team_manager",
+        artifact_focus="work_update",
+        job_process_stage="current_workplace",
         classifier_source="llm",
         model_version="test-model",
     )
@@ -151,6 +239,10 @@ async def test_onboarding_node_uses_classifier_mainline_for_weak_lexical_case():
         target_role="ML Engineer",
         domain="machine_learning",
         target_market="international_company",
+        intent_action="interview_practice",
+        audience="recruiter_interviewer",
+        artifact_focus="self_intro",
+        job_process_stage="interview_process",
         reason_codes=("hiring_context",),
         classifier_source="llm",
         model_version="test-model",

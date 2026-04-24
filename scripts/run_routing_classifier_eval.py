@@ -52,8 +52,15 @@ class RoutingClassifierScenarioReport:
     classifier_primary_context: Optional[str] = None
     classifier_confidence: Optional[float] = None
     classifier_match: Optional[bool] = None
+    classifier_semantic_safe: Optional[bool] = None
+    classifier_semantic_violations: list[str] = field(default_factory=list)
+    classifier_intent_action: Optional[str] = None
+    classifier_audience: Optional[str] = None
+    classifier_artifact_focus: Optional[str] = None
+    classifier_job_process_stage: Optional[str] = None
     classifier_reason_codes: list[str] = field(default_factory=list)
     classifier_evidence_spans: list[str] = field(default_factory=list)
+    classifier_failure_category: Optional[str] = None
     arbiter_mode: str = "shadow"
     arbiter_applied_source: str = "fallback"
     arbiter_primary_context: Optional[str] = None
@@ -115,7 +122,31 @@ def build_lexical_goal_brief(scenario: ProductSyntheticScenario) -> tuple[Option
     }, scores
 
 
+def _semantic_fixture_slots(primary_context: str) -> dict[str, Any]:
+    if primary_context == "interviews":
+        return {
+            "intent_action": "interview_practice",
+            "audience": "recruiter_interviewer",
+            "artifact_focus": "self_intro_or_interview_answer",
+            "job_process_stage": "interview_process",
+        }
+    if primary_context == "workplace_communication":
+        return {
+            "intent_action": "explain_work_to_team",
+            "audience": "team_manager_stakeholder",
+            "artifact_focus": "work_update",
+            "job_process_stage": "current_workplace",
+        }
+    return {
+        "intent_action": "project_walkthrough",
+        "audience": "technical_or_hiring_audience",
+        "artifact_focus": "project_architecture_tradeoff_impact",
+        "job_process_stage": "project_story_preparation",
+    }
+
+
 def build_expected_fixture_classifier(scenario: ProductSyntheticScenario) -> CareerRoutingClassifierResult:
+    semantic_slots = _semantic_fixture_slots(scenario.expected_primary_context)
     return CareerRoutingClassifierResult(
         primary_context=scenario.expected_primary_context,
         confidence=1.0,
@@ -124,6 +155,7 @@ def build_expected_fixture_classifier(scenario: ProductSyntheticScenario) -> Car
         evidence_spans=list(scenario.user_messages[:2]),
         classifier_source="fallback",
         model_version="expected_fixture",
+        **semantic_slots,
     )
 
 
@@ -154,6 +186,38 @@ async def classify_for_scenario(
     return result, status, None
 
 
+def _classifier_failure_category(
+    *,
+    scenario: ProductSyntheticScenario,
+    classifier_result: Optional[CareerRoutingClassifierResult],
+) -> Optional[str]:
+    if not classifier_result or not classifier_result.primary_context:
+        return None
+    if classifier_result.primary_context == scenario.expected_primary_context:
+        return None
+
+    violations = set(classifier_result.semantic_validation.violations)
+    if "job_market_bias" in violations or (
+        classifier_result.primary_context == "interviews"
+        and classifier_result.target_market
+    ):
+        return "job_market_bias"
+    if "audience_ignored" in violations or (
+        classifier_result.primary_context == "project_walkthrough"
+        and classifier_result.audience
+        and any(
+            marker in classifier_result.audience
+            for marker in ("team", "manager", "stakeholder", "client", "colleague")
+        )
+    ):
+        return "audience_ignored"
+    if "domain_bias" in violations or classifier_result.domain_mentions:
+        return "domain_bias"
+    if violations:
+        return sorted(violations)[0]
+    return "label_mismatch"
+
+
 async def evaluate_scenario(
     scenario: ProductSyntheticScenario,
     *,
@@ -178,6 +242,9 @@ async def evaluate_scenario(
         min_confidence=min_confidence,
     )
     arbiter_primary = _primary_from_goal_brief(decision.goal_brief_update)
+    semantic_validation = (
+        classifier_result.semantic_validation if classifier_result else None
+    )
 
     return RoutingClassifierScenarioReport(
         slug=scenario.slug,
@@ -200,8 +267,28 @@ async def evaluate_scenario(
             if classifier_result and classifier_result.primary_context
             else None
         ),
+        classifier_semantic_safe=(
+            semantic_validation.safe if semantic_validation else None
+        ),
+        classifier_semantic_violations=(
+            list(semantic_validation.violations) if semantic_validation else []
+        ),
+        classifier_intent_action=(
+            classifier_result.intent_action if classifier_result else None
+        ),
+        classifier_audience=classifier_result.audience if classifier_result else None,
+        classifier_artifact_focus=(
+            classifier_result.artifact_focus if classifier_result else None
+        ),
+        classifier_job_process_stage=(
+            classifier_result.job_process_stage if classifier_result else None
+        ),
         classifier_reason_codes=list(classifier_result.reason_codes) if classifier_result else [],
         classifier_evidence_spans=list(classifier_result.evidence_spans) if classifier_result else [],
+        classifier_failure_category=_classifier_failure_category(
+            scenario=scenario,
+            classifier_result=classifier_result,
+        ),
         arbiter_mode=arbiter_mode,
         arbiter_applied_source=decision.applied_source,
         arbiter_primary_context=arbiter_primary,
@@ -220,10 +307,14 @@ def summarize_reports(reports: list[RoutingClassifierScenarioReport]) -> dict[st
             "total": 0,
             "lexical_match_rate": 0.0,
             "classifier_match_rate": None,
+            "ambiguous_classifier_match_rate": None,
+            "semantic_slot_validity": None,
             "arbiter_match_rate": 0.0,
             "disagreements": 0,
             "ambiguous_legacy": 0,
+            "critical_inversions": 0,
             "classifier_errors": 0,
+            "failure_categories": {},
         }
 
     classifier_evaluable = [
@@ -231,6 +322,23 @@ def summarize_reports(reports: list[RoutingClassifierScenarioReport]) -> dict[st
         for report in reports
         if report.classifier_match is not None
     ]
+    ambiguous_classifier_evaluable = [
+        report
+        for report in classifier_evaluable
+        if report.arbiter_ambiguous_legacy
+    ]
+    semantic_evaluable = [
+        report
+        for report in reports
+        if report.classifier_semantic_safe is not None
+    ]
+    failure_categories: dict[str, int] = {}
+    for report in reports:
+        if not report.classifier_failure_category:
+            continue
+        failure_categories[report.classifier_failure_category] = (
+            failure_categories.get(report.classifier_failure_category, 0) + 1
+        )
     return {
         "total": total,
         "lexical_matches": sum(1 for report in reports if report.lexical_match),
@@ -250,6 +358,24 @@ def summarize_reports(reports: list[RoutingClassifierScenarioReport]) -> dict[st
             if classifier_evaluable
             else None
         ),
+        "ambiguous_classifier_match_rate": (
+            round(
+                sum(1 for report in ambiguous_classifier_evaluable if report.classifier_match)
+                / len(ambiguous_classifier_evaluable),
+                3,
+            )
+            if ambiguous_classifier_evaluable
+            else None
+        ),
+        "semantic_slot_validity": (
+            round(
+                sum(1 for report in semantic_evaluable if report.classifier_semantic_safe)
+                / len(semantic_evaluable),
+                3,
+            )
+            if semantic_evaluable
+            else None
+        ),
         "arbiter_matches": sum(1 for report in reports if report.arbiter_match),
         "arbiter_match_rate": round(
             sum(1 for report in reports if report.arbiter_match) / total,
@@ -257,7 +383,13 @@ def summarize_reports(reports: list[RoutingClassifierScenarioReport]) -> dict[st
         ),
         "disagreements": sum(1 for report in reports if report.arbiter_disagreement),
         "ambiguous_legacy": sum(1 for report in reports if report.arbiter_ambiguous_legacy),
+        "critical_inversions": sum(
+            1
+            for report in reports
+            if report.lexical_match and report.classifier_match is False
+        ),
         "classifier_errors": sum(1 for report in reports if report.classifier_status == "error"),
+        "failure_categories": dict(sorted(failure_categories.items())),
     }
 
 
@@ -323,10 +455,23 @@ def print_report(report: RoutingClassifierEvalReport) -> None:
         print("classifier_match_rate: n/a")
     else:
         print(f"classifier_match_rate: {summary['classifier_match_rate']:.1%}")
+    if summary["ambiguous_classifier_match_rate"] is None:
+        print("ambiguous_classifier_match_rate: n/a")
+    else:
+        print(
+            "ambiguous_classifier_match_rate: "
+            f"{summary['ambiguous_classifier_match_rate']:.1%}"
+        )
+    if summary["semantic_slot_validity"] is None:
+        print("semantic_slot_validity: n/a")
+    else:
+        print(f"semantic_slot_validity: {summary['semantic_slot_validity']:.1%}")
     print(f"arbiter_match_rate: {summary['arbiter_match_rate']:.1%}")
     print(f"disagreements: {summary['disagreements']}")
     print(f"ambiguous_legacy: {summary['ambiguous_legacy']}")
+    print(f"critical_inversions: {summary['critical_inversions']}")
     print(f"classifier_errors: {summary['classifier_errors']}")
+    print(f"failure_categories: {summary['failure_categories']}")
     print("-" * 72)
     for item in report.reports:
         status = "OK" if item.arbiter_match else "MISS"
@@ -336,8 +481,13 @@ def print_report(report: RoutingClassifierEvalReport) -> None:
             f"classifier={item.classifier_primary_context}, "
             f"arbiter={item.arbiter_primary_context}, "
             f"applied={item.arbiter_applied_source}, "
-            f"ambiguous={item.arbiter_ambiguous_legacy}"
+            f"ambiguous={item.arbiter_ambiguous_legacy}, "
+            f"semantic_safe={item.classifier_semantic_safe}"
         )
+        if item.classifier_failure_category:
+            print(f"  classifier_failure_category: {item.classifier_failure_category}")
+        if item.classifier_semantic_violations:
+            print(f"  semantic_violations: {item.classifier_semantic_violations}")
         if item.error:
             print(f"  classifier_error: {item.error}")
 
