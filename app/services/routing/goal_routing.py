@@ -28,8 +28,19 @@ Design invariants:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
+
+from app.services.goal_brief_contract import (
+    DEFAULT_SCOPE_STATUS,
+    ScopeStatus,
+    SUPPORTED_GOAL_CONTEXTS,
+    is_goal_brief_routing_ready,
+    normalize_goal_brief,
+    normalize_goal_brief_context,
+    normalize_goal_brief_contexts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +86,9 @@ PROJECT_SIGNAL_PATTERNS: tuple[str, ...] = (
 
 # Workplace signals describe speaking to colleagues and stakeholders.
 WORKPLACE_SIGNAL_PATTERNS: tuple[str, ...] = (
+    "client",
+    "client meeting",
+    "client presentation",
     "product manager",
     "product managers",
     "operations",
@@ -104,6 +118,131 @@ WORKPLACE_SIGNAL_PATTERNS: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# Pre-routing scope gate signals
+# ---------------------------------------------------------------------------
+
+# Career anchor wording. Any match pulls the user into the in-scope product.
+# The list is intentionally broad — missing on a career user is worse than
+# accidentally admitting an ambiguous one (that case falls to classifier/arbiter
+# inside the in_scope branch).
+CAREER_ANCHOR_PATTERNS: tuple[str, ...] = (
+    # Roles / industries
+    "engineer",
+    "engineers",
+    "developer",
+    "developers",
+    "analyst",
+    "scientist",
+    "researcher",
+    "designer",
+    "devops",
+    "architect",
+    "product manager",
+    "product managers",
+    "pm",
+    "team lead",
+    "tech lead",
+    # Career context
+    "job",
+    "jobs",
+    "work",
+    "working",
+    "career",
+    "hire",
+    "hiring",
+    "hired",
+    "recruiter",
+    "recruiters",
+    "offer",
+    "offers",
+    "company",
+    "companies",
+    "startup",
+    "startups",
+    "international",
+    "abroad",
+    "relocation",
+    "relocate",
+    "remote",
+    # Domain signals typical for our ICP
+    "ml",
+    "machine learning",
+    "ai",
+    "artificial intelligence",
+    "data science",
+    "software",
+    "engineering",
+    "tech",
+    # Existing context buckets — reuse lexicon so anything recognised by
+    # routing is also recognised as a career anchor.
+    *INTERVIEW_SIGNAL_PATTERNS,
+    *PROJECT_SIGNAL_PATTERNS,
+    *WORKPLACE_SIGNAL_PATTERNS,
+)
+
+# Generic English-study wording. On its own (no career anchor) this maps to
+# generic_english_only — EnglishFriend is not the right product for it.
+GENERIC_ENGLISH_PATTERNS: tuple[str, ...] = (
+    "grammar",
+    "grammer",
+    "grammatical",
+    "vocabulary",
+    "vocab",
+    "words",
+    "pronunciation",
+    "pronunciations",
+    "spelling",
+    "tenses",
+    "tense",
+    "past tense",
+    "present tense",
+    "future tense",
+    "fluency",
+    "speak better",
+    "speak english",
+    "speaking english",
+    "improve english",
+    "improve my english",
+    "learn english",
+    "practice english",
+    "study english",
+)
+
+# Anxiety / vagueness wording. Without a career anchor these map to
+# needs_narrowing — we ask one focused question before routing.
+ANXIETY_VAGUE_PATTERNS: tuple[str, ...] = (
+    "anxious",
+    "anxiety",
+    "nervous",
+    "shy",
+    "afraid",
+    "scared",
+    "stress",
+    "stressed",
+    "stressful",
+    "uncertain",
+    "embarrass",
+    "embarrassed",
+    "embarrassing",
+    "not confident",
+    "no confidence",
+    "low confidence",
+    "lack confidence",
+    "freeze",
+    "freezing",
+    "blank",
+    "confused",
+    "lost",
+    "dont know",
+    "don't know",
+    "not sure",
+    "unsure",
+    "help me",
+    "help",
+)
+
+
+# ---------------------------------------------------------------------------
 # Mapping table: primary_context -> track and first mission
 # ---------------------------------------------------------------------------
 
@@ -124,7 +263,44 @@ _DEFAULT_PRIMARY_CONTEXT = "interviews"
 _DEFAULT_TRACK_ID = _PRIMARY_TO_TRACK[_DEFAULT_PRIMARY_CONTEXT]
 _DEFAULT_FIRST_MISSION = _PRIMARY_TO_FIRST_MISSION[_DEFAULT_PRIMARY_CONTEXT]
 
-_SUPPORTED_PRIMARY = tuple(_PRIMARY_TO_TRACK.keys())
+_SUPPORTED_PRIMARY = SUPPORTED_GOAL_CONTEXTS
+
+_NEGATION_WINDOW_TOKENS = 6
+_NEGATION_TOKENS = {
+    "not",
+    "no",
+    "never",
+    "without",
+    "dont",
+    "don't",
+    "doesnt",
+    "doesn't",
+}
+_NEGATION_PHRASES = (
+    "do not",
+    "does not",
+    "rather than",
+    "instead of",
+    "not want",
+    "dont want",
+    "don't want",
+)
+_STT_NOISE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("intarview", "interview"),
+    ("intarviews", "interviews"),
+    ("practis", "practice"),
+    ("practise", "practice"),
+    ("prepear", "prepare"),
+    ("preparashon", "preparation"),
+    ("injineer", "engineer"),
+    ("pozishon", "position"),
+    ("abrod", "abroad"),
+    ("jab", "job"),
+    ("teknikal", "technical"),
+    ("teknical", "technical"),
+    ("internashenal", "international"),
+    ("compny", "company"),
+)
 
 
 @dataclass(frozen=True)
@@ -146,13 +322,60 @@ class GoalRoutingProfile:
 def _normalize_text(text: Optional[str]) -> str:
     if not text:
         return ""
-    normalized = str(text).lower()
-    # Collapse whitespace so "tell  me" matches "tell me".
+    normalized = str(text).lower().replace("-", " ")
+    normalized = re.sub(r"[^a-z0-9'\s]", " ", normalized)
+    for source, target in _STT_NOISE_REPLACEMENTS:
+        normalized = re.sub(rf"\b{re.escape(source)}\b", target, normalized)
     return " ".join(normalized.split())
 
 
+def _split_signal_segments(text: str) -> list[str]:
+    return [
+        segment.strip()
+        for segment in re.split(r"[\n.!?;]+", text)
+        if segment.strip()
+    ]
+
+
+def _pattern_tokens(pattern: str) -> list[str]:
+    return _normalize_text(pattern).split()
+
+
+def _is_negated_match(tokens: list[str], start_index: int) -> bool:
+    window = tokens[max(0, start_index - _NEGATION_WINDOW_TOKENS):start_index]
+    if any(token in _NEGATION_TOKENS for token in window):
+        return True
+    prefix = " ".join(window)
+    return any(phrase in prefix for phrase in _NEGATION_PHRASES)
+
+
+def _segment_has_positive_pattern(segment: str, pattern: str) -> bool:
+    tokens = segment.split()
+    pattern_tokens = _pattern_tokens(pattern)
+    if not tokens or not pattern_tokens or len(pattern_tokens) > len(tokens):
+        return False
+    width = len(pattern_tokens)
+    for index in range(0, len(tokens) - width + 1):
+        if tokens[index:index + width] != pattern_tokens:
+            continue
+        if _is_negated_match(tokens, index):
+            continue
+        return True
+    return False
+
+
 def _count_hits(text: str, patterns: Iterable[str]) -> int:
-    return sum(1 for pattern in patterns if pattern in text)
+    segments = _split_signal_segments(text)
+    return sum(
+        1
+        for pattern in patterns
+        if any(_segment_has_positive_pattern(segment, pattern) for segment in segments)
+    )
+
+
+def has_positive_context_signal(text: str, context: str) -> bool:
+    scores = score_context_signals(text)
+    return scores.get(context, 0) > 0
 
 
 def score_context_signals(text: str) -> dict[str, int]:
@@ -240,6 +463,72 @@ def _pick_primary_from_scores(scores: dict[str, int]) -> Optional[str]:
     return best_context if best_score > 0 else None
 
 
+def _text_has_any_pattern(text: str, patterns: Iterable[str]) -> bool:
+    if not text:
+        return False
+    segments = _split_signal_segments(text)
+    for pattern in patterns:
+        for segment in segments:
+            if _segment_has_positive_pattern(segment, pattern):
+                return True
+    return False
+
+
+def resolve_scope_status(
+    goal_brief: Optional[dict[str, Any]] = None,
+    *,
+    conversation_history: Optional[list[dict[str, Any]]] = None,
+    last_user_message: Optional[str] = None,
+) -> ScopeStatus:
+    """Classify the request into the career-prep scope before routing.
+
+    Values:
+        in_scope: the user has a clear or implied career anchor — route normally.
+        needs_narrowing: vague or anxiety-driven wording, no career anchor yet.
+        generic_english_only: only generic English-study wording, no career anchor.
+
+    The caller MUST NOT route into ``interviews | workplace_communication |
+    project_walkthrough`` unless this returns ``in_scope``.
+    """
+
+    brief = normalize_goal_brief(goal_brief)
+
+    # A routing-ready brief already committed to a career context.
+    if is_goal_brief_routing_ready(brief):
+        return "in_scope"
+    # A sticky draft brief with contexts is also in-scope even if enrichment
+    # fields like domain are still empty.
+    if _is_goal_routing_ready(brief):
+        return "in_scope"
+
+    transcript_text = _aggregate_transcript(conversation_history, last_user_message)
+    normalized = _normalize_text(transcript_text)
+
+    if not normalized:
+        return "needs_narrowing"
+
+    scores = score_context_signals(normalized)
+    if any(value > 0 for value in scores.values()):
+        return "in_scope"
+    if _text_has_any_pattern(normalized, CAREER_ANCHOR_PATTERNS):
+        return "in_scope"
+
+    has_anxiety = _text_has_any_pattern(normalized, ANXIETY_VAGUE_PATTERNS)
+    has_generic_english = _text_has_any_pattern(normalized, GENERIC_ENGLISH_PATTERNS)
+
+    if has_anxiety and not has_generic_english:
+        return "needs_narrowing"
+    if has_generic_english and not has_anxiety:
+        return "generic_english_only"
+    if has_anxiety and has_generic_english:
+        # Anxiety wins — the user is likely in-audience but cannot articulate
+        # the career anchor yet. Ask one narrowing question.
+        return "needs_narrowing"
+
+    # Nothing recognised — give the user the benefit of the doubt.
+    return DEFAULT_SCOPE_STATUS
+
+
 def resolve_goal_routing(
     goal_brief: Optional[dict[str, Any]] = None,
     *,
@@ -255,7 +544,7 @@ def resolve_goal_routing(
     message is already in ``state``.
     """
 
-    goal_brief = goal_brief or {}
+    goal_brief = normalize_goal_brief(goal_brief)
 
     transcript_text = _aggregate_transcript(conversation_history, last_user_message)
     scores = score_context_signals(transcript_text)
@@ -263,9 +552,9 @@ def resolve_goal_routing(
     # 1. Sticky: once the brief is routing-ready, its main_contexts win.
     if _is_goal_routing_ready(goal_brief):
         existing_contexts = [
-            str(c).strip().lower()
+            normalize_goal_brief_context(c)
             for c in (goal_brief.get("main_contexts") or [])
-            if str(c).strip()
+            if normalize_goal_brief_context(c)
         ]
         existing_contexts = _dedupe(existing_contexts)
         if existing_contexts:
@@ -331,10 +620,12 @@ def _build_profile(
     decision_source: str,
 ) -> GoalRoutingProfile:
     if primary_context not in _SUPPORTED_PRIMARY:
-        primary_context = _DEFAULT_PRIMARY_CONTEXT
+        primary_context = (
+            normalize_goal_brief_context(primary_context) or _DEFAULT_PRIMARY_CONTEXT
+        )
         main_contexts = [primary_context]
 
-    normalized_contexts = tuple(_dedupe(main_contexts) or [primary_context])
+    normalized_contexts = tuple(normalize_goal_brief_contexts(main_contexts) or [primary_context])
     if normalized_contexts[0] != primary_context:
         # Always put the resolved primary first.
         remainder = tuple(c for c in normalized_contexts if c != primary_context)

@@ -74,6 +74,60 @@ def test_infer_goal_brief_keeps_explicit_workplace_context_first():
     assert "project_walkthrough" in brief["main_contexts"]
 
 
+def test_infer_goal_brief_accumulates_short_answers_from_transcript():
+    brief = _infer_goal_brief_from_message(
+        "abroad, FAANG interview",
+        {},
+        cumulative_text="interviews\nML engineer\nabroad, FAANG interview",
+    )
+
+    assert brief is not None
+    assert brief["status"] == "draft"
+    assert brief["target_role"] == "ML Engineer"
+    assert brief["domain"] == "machine_learning"
+    assert brief["main_contexts"][0] == "interviews"
+
+
+def test_infer_goal_brief_normalizes_stt_noise_into_interview_context():
+    brief = _infer_goal_brief_from_message(
+        "I wont intarview practis for ML injineer jab abrod.",
+    )
+
+    assert brief is not None
+    assert brief["main_contexts"][0] == "interviews"
+
+
+@pytest.mark.parametrize(
+    "message, expected_role, expected_domain, expected_context",
+    [
+        (
+            "I am DevOps engineer. I want senior SRE interview abroad.",
+            "DevOps Engineer",
+            "devops",
+            "interviews",
+        ),
+        (
+            "I become team lead and need English for stakeholder meeting.",
+            "Team Lead",
+            "software_engineering",
+            "workplace_communication",
+        ),
+    ],
+)
+def test_infer_goal_brief_accepts_adjacent_it_roles(
+    message: str,
+    expected_role: str,
+    expected_domain: str,
+    expected_context: str,
+):
+    brief = _infer_goal_brief_from_message(message)
+
+    assert brief is not None
+    assert brief["target_role"] == expected_role
+    assert brief["domain"] == expected_domain
+    assert brief["main_contexts"][0] == expected_context
+
+
 @pytest.mark.asyncio
 async def test_onboarding_project_tradeoff_goal_becomes_routing_ready_without_company_context():
     state = create_initial_state(user_id=1, session_id="session-1")
@@ -104,6 +158,78 @@ async def test_onboarding_project_tradeoff_goal_becomes_routing_ready_without_co
     assert updated["current_phase"] == AgentPhase.LEARNING_SESSION
     assert updated["mission_task_type"] == "technical_project_walkthrough"
     assert "real mission" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_scope_gate_keeps_low_signal_in_needs_narrowing():
+    """Pre-routing scope gate must NOT force-route vague/anxiety users without a career anchor.
+
+    Plan contract: anxiety_vague_no_context => scope_status == "needs_narrowing",
+    setup_state stays needs_goal, no mission handoff. Replaces the old safe_default
+    force-route after three vague turns.
+    """
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_question_type"] = "goal_setup"
+
+    with patch(
+        "app.agent.nodes_v2.onboarding.classify_career_routing",
+        AsyncMock(return_value=None),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock(return_value="{}")),
+    ):
+        for message in (
+            "My English is very bad.",
+            "I am afraid to speak English.",
+            "I just want speak better but don't know where to start.",
+        ):
+            state["last_user_message"] = message
+            state = await onboarding_node(state)
+
+    assert state.get("goal_setup_complete") is False
+    assert state.get("scope_status") == "needs_narrowing"
+    assert state.get("mission_task_type") is None
+    assert state["current_phase"] == AgentPhase.ONBOARDING
+    assert state.get("setup_step") == "goal_setup"
+    assert state.get("last_question_type") == "scope_gate"
+    assert state.get("pending_response")
+
+
+@pytest.mark.asyncio
+async def test_onboarding_negated_interview_routes_to_workplace_after_three_turns():
+    state = create_initial_state(user_id=1, session_id="session-1")
+    state["last_question_type"] = "goal_setup"
+
+    with patch(
+        "app.agent.nodes_v2.onboarding.classify_career_routing",
+        AsyncMock(return_value=None),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_llm_provider",
+        return_value=MagicMock(generate=AsyncMock(return_value="{}")),
+    ):
+        for message in (
+            "I don't want to practice interviews. I need help with team meetings and manager communication.",
+            "My goal is workplace English, not interview preparation.",
+            "I need explain better to stakeholder and colleague at work.",
+        ):
+            state["last_user_message"] = message
+            state = await onboarding_node(state)
+
+    assert state["goal_setup_complete"] is True
+    assert state["goal_brief"]["main_contexts"][0] == "workplace_communication"
+    assert state["mission_task_type"] == "stakeholder_explanation_drill"
 
 
 @pytest.mark.asyncio

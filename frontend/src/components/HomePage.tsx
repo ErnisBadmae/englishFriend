@@ -65,6 +65,20 @@ export function HomePage({
   const projectStoryPack = snapshot.project_story_pack;
   const showProjectStoryCard = readyForProgram && Boolean(interviewPack);
   const showPaidCta = snapshot.monetization.show_paid_cta || snapshot.monetization.paid_intent_submitted;
+  const scopeStatus = snapshot.setup.scope_status;
+  const recurringIssue = snapshot.progress.recurring_issue;
+  const whatImproved = snapshot.progress.what_improved;
+  const westernReadiness = snapshot.progress.western_readiness;
+  const reusableAnswers = snapshot.progress.reusable_answers;
+  const latestEvidence = snapshot.session_evidence.latest;
+  const showLoopCard = Boolean(
+    latestEvidence
+      || recurringIssue
+      || whatImproved.length > 0
+      || (westernReadiness && westernReadiness.score > 0)
+      || reusableAnswers.length > 0,
+  );
+  const showScopeHint = scopeStatus === 'generic_english_only' || scopeStatus === 'needs_narrowing';
 
   async function handleVacancySubmit() {
     const trimmed = vacancyText.trim();
@@ -142,6 +156,22 @@ export function HomePage({
           ))}
         </div>
       </section>
+
+      {showScopeHint && (
+        <section className="content-card">
+          <div className="section-label">Career-specific coach</div>
+          <h2>
+            {scopeStatus === 'generic_english_only'
+              ? 'EnglishFriend is a career-prep coach'
+              : 'Tell the coach what is at stake'}
+          </h2>
+          <p>
+            {scopeStatus === 'generic_english_only'
+              ? "It is built for western interview, project walkthrough, and workplace English. Generic grammar or vocabulary practice is supported only inside a real career mission."
+              : "Pick interview prep, explaining a project, or workplace English so the coach can build a useful first mission instead of asking generic questions."}
+          </p>
+        </section>
+      )}
 
       {earlySetup && (
         <section className="content-card">
@@ -240,6 +270,60 @@ export function HomePage({
           </>
         )}
       </section>
+
+      {showLoopCard && (
+        <section className="content-card">
+          <div className="section-label">Mission ↔ evidence loop</div>
+          <h2>Each mission comes from the last one</h2>
+          {latestEvidence && (
+            <p className="muted-line">
+              <strong>Last session:</strong> {latestEvidence.summary}
+            </p>
+          )}
+          <div className="list-stack mission-detail-stack" style={{ marginTop: 12 }}>
+            {recurringIssue && (
+              <div className="list-item">
+                <strong>Recurring blocker</strong>
+                <p className="muted-line">{recurringIssue}</p>
+              </div>
+            )}
+            {whatImproved.length > 0 && (
+              <div className="list-item">
+                <strong>What improved</strong>
+                <div className="pill-row" style={{ marginTop: 8 }}>
+                  {whatImproved.map((tag) => (
+                    <span key={tag} className="pill interview-source-pill">{tag}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {westernReadiness && (
+              <div className="list-item">
+                <strong>Western readiness {Math.round(westernReadiness.score * 100)}%</strong>
+                <div className="pill-row" style={{ marginTop: 8 }}>
+                  <span className="pill">{westernReadiness.interview_runs_completed} interview runs</span>
+                  <span className="pill">{westernReadiness.career_missions_completed} career missions</span>
+                  {westernReadiness.interview_pack_ready && (
+                    <span className="pill interview-source-pill">interview pack ready</span>
+                  )}
+                </div>
+              </div>
+            )}
+            {reusableAnswers.length > 0 && (
+              <div className="list-item">
+                <strong>Reusable answers</strong>
+                <div className="pill-row" style={{ marginTop: 8 }}>
+                  {reusableAnswers.slice(0, 3).map((answer) => (
+                    <span key={`${answer.task_type}-${answer.summary}`} className="pill">
+                      {answer.task_type.replace(/_/g, ' ')}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       {!earlySetup && setupState !== 'needs_goal' && (
         <section className="content-card">

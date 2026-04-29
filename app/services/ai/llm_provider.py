@@ -665,6 +665,10 @@ class VLLMProvider(OpenAICompatibleProvider):
             max_retries=settings.vllm_max_retries,
             disable_env_proxy=True,
             response_mode="raw",
+            request_extra_body=_parse_extra_body_json(
+                settings.vllm_extra_body_json,
+                provider_name="vllm",
+            ),
         )
 
 

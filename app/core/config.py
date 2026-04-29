@@ -42,9 +42,10 @@ class Settings(BaseSettings):
     # vLLM
     vllm_base_url: str = "http://192.168.0.18:8000/v1"
     vllm_api_key: str = "token-abc123"
-    vllm_model: str = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+    vllm_model: str = "Qwen3.6-35B-A3B-Q5-256K"
     vllm_timeout: int = 60
     vllm_max_retries: int = 3
+    vllm_extra_body_json: str = '{"chat_template_kwargs": {"enable_thinking": false}}'
 
     # llama.cpp
     llama_cpp_base_url: str = "http://192.168.0.18:8000/v1"
@@ -80,8 +81,8 @@ class Settings(BaseSettings):
     # Career routing classifier rollout
     career_routing_classifier_mode: Literal["off", "shadow", "gate", "mainline"] = "shadow"
     career_routing_classifier_min_confidence: float = 0.72
-    career_routing_classifier_max_tokens: int = 220
-    career_routing_classifier_timeout_seconds: float = 6.0
+    career_routing_classifier_max_tokens: int = 4096
+    career_routing_classifier_timeout_seconds: float = 240.0
     career_routing_classifier_model_version: str = "active_llm"
 
     # TTS

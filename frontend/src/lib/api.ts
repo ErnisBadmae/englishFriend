@@ -291,6 +291,19 @@ export interface MonetizationSummary {
   latest_paid_intent_context?: string | null;
 }
 
+export interface WesternReadinessSummary {
+  score: number;
+  interview_runs_completed: number;
+  career_missions_completed: number;
+  interview_pack_ready: boolean;
+}
+
+export interface ReusableAnswerSummary {
+  task_type: string;
+  summary: string;
+  outcome_score: number;
+}
+
 export interface ProgramSnapshot {
   user: UserIdentity;
   goal: GoalSummary;
@@ -328,6 +341,10 @@ export interface ProgramSnapshot {
     top_error_patterns: ErrorPattern[];
     recent_sessions: RecentSession[];
     improvement_signals: string[];
+    recurring_issue?: string | null;
+    what_improved: string[];
+    western_readiness?: WesternReadinessSummary | null;
+    reusable_answers: ReusableAnswerSummary[];
   };
   session_evidence: {
     latest?: SessionEvidence | null;
@@ -338,6 +355,7 @@ export interface ProgramSnapshot {
     assessment_complete: boolean;
     needs_attention: boolean;
     state: string;
+    scope_status?: string | null;
     next_question_type?: string | null;
     progress: number;
   };
@@ -769,6 +787,32 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       top_error_patterns: Array.isArray(progress.top_error_patterns) ? progress.top_error_patterns as ErrorPattern[] : [],
       recent_sessions: Array.isArray(progress.recent_sessions) ? progress.recent_sessions as RecentSession[] : [],
       improvement_signals: asStringArray(progress.improvement_signals),
+      recurring_issue: typeof progress.recurring_issue === 'string' && progress.recurring_issue.trim().length > 0
+        ? progress.recurring_issue
+        : null,
+      what_improved: asStringArray(progress.what_improved),
+      western_readiness: progress.western_readiness ? {
+        score: Number(asRecord(progress.western_readiness).score ?? 0),
+        interview_runs_completed: Number(asRecord(progress.western_readiness).interview_runs_completed ?? 0),
+        career_missions_completed: Number(asRecord(progress.western_readiness).career_missions_completed ?? 0),
+        interview_pack_ready: Boolean(asRecord(progress.western_readiness).interview_pack_ready),
+      } : null,
+      reusable_answers: Array.isArray(progress.reusable_answers)
+        ? progress.reusable_answers
+            .map((item) => {
+              const record = asRecord(item);
+              const summary = typeof record.summary === 'string' ? record.summary : '';
+              if (!summary) {
+                return null;
+              }
+              return {
+                task_type: typeof record.task_type === 'string' ? record.task_type : '',
+                summary,
+                outcome_score: Number(record.outcome_score ?? 0),
+              } as ReusableAnswerSummary;
+            })
+            .filter((item): item is ReusableAnswerSummary => Boolean(item))
+        : [],
     },
     session_evidence: {
       latest: normalizeSessionEvidence(sessionEvidenceRecord.latest),
@@ -785,6 +829,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       state: typeof setup.state === 'string'
         ? setup.state
         : (goalComplete ? (assessmentComplete ? 'ready_for_program' : 'needs_assessment') : 'needs_goal'),
+      scope_status: typeof setup.scope_status === 'string' ? setup.scope_status : null,
       next_question_type: typeof setup.next_question_type === 'string' ? setup.next_question_type : null,
       progress: Number(setup.progress ?? (goalComplete ? (assessmentComplete ? 100 : 75) : (goalBrief ? 40 : 0))),
     },

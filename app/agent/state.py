@@ -108,6 +108,7 @@ class AgentState(TypedDict, total=False):
     low_signal_turn_streak: int
     anchor_question_id: int
     anchor_follow_up_pending: bool
+    last_anchor_question_text: Optional[str]
 
     # === Vocabulary (FSRS) ===
     due_vocabulary_count: int
@@ -149,6 +150,7 @@ class AgentState(TypedDict, total=False):
     _skip_interests: bool  # Internal: skip interest probe in onboarding
     _skip_assessment: bool  # Internal: skip assessment in onboarding
     setup_step: Optional[str]  # Internal: goal_setup, baseline_assessment, first_useful_mission, ready_for_program
+    scope_status: Optional[str]  # in_scope | needs_narrowing | generic_english_only
     last_question_type: Optional[str]  # Internal: tracks onboarding question type or first_mission_handoff
 
 
@@ -228,6 +230,7 @@ def create_initial_state(
         low_signal_turn_streak=0,
         anchor_question_id=0,
         anchor_follow_up_pending=False,
+        last_anchor_question_text=None,
 
         # Vocabulary
         due_vocabulary_count=0,

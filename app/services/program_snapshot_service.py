@@ -12,6 +12,7 @@ from app.models.core_tables import Correction, Feedback, Session, User
 from app.services.goal_brief_contract import (
     goal_brief_missing_labels,
     goal_brief_setup_progress,
+    is_goal_brief_routing_ready,
 )
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.gamification import StreakService, XPService
@@ -21,6 +22,7 @@ from app.services.pronunciation_assessment_service import build_pronunciation_su
 from app.services.routing import (
     GoalRoutingProfile,
     build_goal_routing_from_goal_brief,
+    resolve_scope_status,
 )
 
 _WEAKEST_AREA_MISSIONS: dict[str, dict[str, Any]] = {
@@ -362,6 +364,146 @@ def build_next_question_type(goal_status: Optional[str], assessment: Optional[di
     return "mission"
 
 
+def build_snapshot_scope_status(goal_brief: Optional[dict[str, Any]]) -> str:
+    """Snapshot-side scope_status: routing-ready brief => in_scope, else needs_narrowing.
+
+    Live conversation context is not available at snapshot time, so we deterministically
+    derive scope_status from the persisted goal brief. Onboarding owns the live resolution.
+    """
+    if is_goal_brief_routing_ready(goal_brief):
+        return "in_scope"
+    return resolve_scope_status(goal_brief=goal_brief)
+
+
+def _evidence_main_issue_text(item: dict[str, Any]) -> str:
+    return str(item.get("main_issue") or "").strip()
+
+
+def _evidence_weakness_tags(item: dict[str, Any]) -> list[str]:
+    raw = item.get("weakness_tags") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(tag).strip() for tag in raw if str(tag).strip()]
+
+
+def _evidence_improvement_tags(item: dict[str, Any]) -> list[str]:
+    raw = item.get("improvement_tags") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(tag).strip() for tag in raw if str(tag).strip()]
+
+
+def build_recurring_issue(session_evidence: list[dict[str, Any]], window: int = 4) -> Optional[str]:
+    """Return a weakness tag (or main_issue) that appears in >= 2 of the last `window` sessions."""
+    if not session_evidence:
+        return None
+    counts: Counter[str] = Counter()
+    first_seen: dict[str, str] = {}
+    for item in session_evidence[:window]:
+        if not isinstance(item, dict):
+            continue
+        labels: list[str] = []
+        main_issue = _evidence_main_issue_text(item)
+        if main_issue:
+            labels.append(main_issue)
+        labels.extend(_evidence_weakness_tags(item))
+        seen_in_item: set[str] = set()
+        for label in labels:
+            key = label.lower()
+            if key in seen_in_item:
+                continue
+            seen_in_item.add(key)
+            counts[key] += 1
+            first_seen.setdefault(key, label)
+    for key, occurrences in counts.most_common():
+        if occurrences >= 2:
+            return first_seen[key]
+    return None
+
+
+def build_what_improved(session_evidence: list[dict[str, Any]]) -> list[str]:
+    """Improvement tags present in the latest session but absent from the prior session."""
+    if not session_evidence:
+        return []
+    latest = session_evidence[0] if isinstance(session_evidence[0], dict) else {}
+    previous = session_evidence[1] if len(session_evidence) > 1 and isinstance(session_evidence[1], dict) else {}
+    latest_tags = _evidence_improvement_tags(latest)
+    previous_tags = {tag.lower() for tag in _evidence_improvement_tags(previous)}
+    fresh = [tag for tag in latest_tags if tag.lower() not in previous_tags]
+    return fresh[:3]
+
+
+def build_western_readiness(
+    interview_summary: dict[str, Any],
+    interview_pack: Optional[dict[str, Any]],
+    session_evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Rollup of interview-pack signals + completed career missions, scaled 0-1."""
+    completed_runs = int(interview_summary.get("completed_runs") or 0)
+    pack_ready = bool(interview_pack)
+    career_missions = sum(
+        1
+        for item in session_evidence or []
+        if isinstance(item, dict)
+        and str(item.get("task_type") or "").lower() in {
+            "hr_intro_drill",
+            "foundation_speaking_drill",
+            "stakeholder_explanation_drill",
+            "technical_project_walkthrough",
+        }
+    )
+    # Cap each component so a single signal cannot dominate.
+    interview_component = min(completed_runs, 3) / 3.0
+    pack_component = 1.0 if pack_ready else 0.0
+    mission_component = min(career_missions, 5) / 5.0
+    score = round(0.5 * interview_component + 0.2 * pack_component + 0.3 * mission_component, 2)
+    return {
+        "score": score,
+        "interview_runs_completed": completed_runs,
+        "career_missions_completed": career_missions,
+        "interview_pack_ready": pack_ready,
+    }
+
+
+def build_reusable_answers(session_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Polished reusable answers: career-task evidence with an outcome score >= 0.65."""
+    polished: list[dict[str, Any]] = []
+    seen_summaries: set[str] = set()
+    career_task_types = {
+        "hr_intro_drill",
+        "foundation_speaking_drill",
+        "stakeholder_explanation_drill",
+        "technical_project_walkthrough",
+    }
+    for item in session_evidence or []:
+        if not isinstance(item, dict):
+            continue
+        task_type = str(item.get("task_type") or "").lower()
+        if task_type not in career_task_types:
+            continue
+        score_raw = item.get("outcome_score")
+        try:
+            score = float(score_raw) if score_raw is not None else None
+        except (TypeError, ValueError):
+            score = None
+        if score is None or score < 0.65:
+            continue
+        summary = str(item.get("summary") or "").strip()
+        if not summary or summary.lower() in seen_summaries:
+            continue
+        seen_summaries.add(summary.lower())
+        polished.append(
+            {
+                "task_type": task_type,
+                "summary": summary,
+                "outcome_score": score,
+            }
+        )
+        if len(polished) >= 5:
+            break
+    return polished
+
+
 def build_improvement_signals(
     interview_summary: dict[str, Any],
     pronunciation_summary: dict[str, Any],
@@ -557,6 +699,49 @@ def _apply_adaptation_metadata(
     return updated
 
 
+def _build_evidence_binding(
+    session_evidence: list[dict[str, Any]] | None,
+    advance_reason: Optional[str],
+) -> tuple[Optional[str], str, str]:
+    """Return (adaptation_reason, evidence_source, repeat_vs_advance) for stage-default branches.
+
+    Guarantee: when session_evidence is non-empty, adaptation_reason is non-empty and
+    evidence_source references the most recent weakness or improvement when available.
+    """
+    if advance_reason:
+        return advance_reason, "stage_default", "advance"
+    items = [item for item in (session_evidence or []) if isinstance(item, dict)]
+    if not items:
+        return None, "stage_default", "new"
+    latest = items[0]
+    improvement_tags = _evidence_improvement_tags(latest)
+    main_issue = _evidence_main_issue(latest)
+    if improvement_tags:
+        return (
+            f"Carrying forward last session's improvement: {improvement_tags[0]}.",
+            "latest_improvement",
+            "advance",
+        )
+    if main_issue:
+        return (
+            f"Last session's main issue stayed visible: {main_issue}.",
+            "latest_weakness",
+            "new",
+        )
+    summary = str(latest.get("summary") or "").strip()
+    if summary:
+        return (
+            f"Building on the latest session: {summary}",
+            "latest_summary",
+            "new",
+        )
+    return (
+        "Continuing from the last completed session.",
+        "latest_session",
+        "new",
+    )
+
+
 def _is_entry_main_loop_mission(
     *,
     current_stage: Optional[str],
@@ -722,6 +907,10 @@ def recommend_next_mission(
         if adaptation and adaptation.get("decision") == "advance"
         else None
     )
+    evidence_reason, evidence_source, evidence_decision = _build_evidence_binding(
+        session_evidence,
+        advance_reason,
+    )
 
     if not goal_brief or goal_brief.get("status") not in {"draft", "confirmed"}:
         missing = goal_brief_missing_labels(goal_brief, mode="routing")
@@ -770,12 +959,12 @@ def recommend_next_mission(
             program_plan=program_plan,
             error_patterns=error_patterns,
         )
-        if advance_reason:
+        if evidence_reason:
             mission = _apply_adaptation_metadata(
                 mission,
-                adaptation_reason=advance_reason,
-                evidence_source="stage_default",
-                repeat_vs_advance="advance",
+                adaptation_reason=evidence_reason,
+                evidence_source=evidence_source,
+                repeat_vs_advance=evidence_decision,
             )
         return mission
 
@@ -787,9 +976,9 @@ def recommend_next_mission(
     if technical_focus_mission:
         mission = _mission_payload(
             **technical_focus_mission,
-            adaptation_reason=advance_reason,
-            evidence_source="stage_default",
-            repeat_vs_advance="advance" if advance_reason else "new",
+            adaptation_reason=evidence_reason,
+            evidence_source=evidence_source,
+            repeat_vs_advance=evidence_decision,
         )
         return mission
 
@@ -823,9 +1012,9 @@ def recommend_next_mission(
             estimated_minutes=10,
             success_signal=_track_success_signal(track_id),
             interview_track_id=track_id,
-            adaptation_reason=advance_reason,
-            evidence_source="stage_default",
-            repeat_vs_advance="advance" if advance_reason else "new",
+            adaptation_reason=evidence_reason,
+            evidence_source=evidence_source,
+            repeat_vs_advance=evidence_decision,
         ), track_id, track_title, reason)
         return mission
 
@@ -842,9 +1031,9 @@ def recommend_next_mission(
             expected_outcome=f"At least {min(5, due_count)} due words reinforced in context.",
             estimated_minutes=7,
             success_signal="Your due queue shrinks and the same words feel easier in live speaking.",
-            adaptation_reason=advance_reason,
-            evidence_source="stage_default",
-            repeat_vs_advance="advance" if advance_reason else "new",
+            adaptation_reason=evidence_reason,
+            evidence_source=evidence_source,
+            repeat_vs_advance=evidence_decision,
         )
 
     if current_stage == "foundation":
@@ -860,9 +1049,9 @@ def recommend_next_mission(
             expected_outcome="One cleaner career-related answer with fewer avoidable slips.",
             estimated_minutes=9,
             success_signal="You can answer in English with fewer corrections and clearer delivery.",
-            adaptation_reason=advance_reason,
-            evidence_source="stage_default",
-            repeat_vs_advance="advance" if advance_reason else "new",
+            adaptation_reason=evidence_reason,
+            evidence_source=evidence_source,
+            repeat_vs_advance=evidence_decision,
         )
 
     if current_stage in {"career_scenarios", "target_role_simulation"}:
@@ -878,9 +1067,9 @@ def recommend_next_mission(
             expected_outcome="One realistic career scenario completed with score and next focus.",
             estimated_minutes=10,
             success_signal="You finish one track with concrete feedback and a clearer next step.",
-            adaptation_reason=advance_reason,
-            evidence_source="stage_default",
-            repeat_vs_advance="advance" if advance_reason else "new",
+            adaptation_reason=evidence_reason,
+            evidence_source=evidence_source,
+            repeat_vs_advance=evidence_decision,
         )
 
     if error_patterns:
@@ -896,9 +1085,9 @@ def recommend_next_mission(
             expected_outcome="Fewer repeats of the most common spoken error.",
             estimated_minutes=8,
             success_signal="That same grammar issue appears less often in the next mission.",
-            adaptation_reason=advance_reason,
-            evidence_source="stage_default",
-            repeat_vs_advance="advance" if advance_reason else "new",
+            adaptation_reason=evidence_reason,
+            evidence_source=evidence_source,
+            repeat_vs_advance=evidence_decision,
         )
 
     return _mission_payload(
@@ -913,9 +1102,9 @@ def recommend_next_mission(
         expected_outcome="One useful practice repetition tied to your current stage.",
         estimated_minutes=8,
         success_signal="You finish with one clearer improvement target for the next session.",
-        adaptation_reason=advance_reason,
-        evidence_source="stage_default",
-        repeat_vs_advance="advance" if advance_reason else "new",
+        adaptation_reason=evidence_reason,
+        evidence_source=evidence_source,
+        repeat_vs_advance=evidence_decision,
     )
 
 
@@ -1049,6 +1238,14 @@ class ProgramSnapshotService:
                     latest_assessment=latest_assessment,
                     milestones=roadmap.get("milestones") or [],
                 ),
+                "recurring_issue": build_recurring_issue(session_evidence),
+                "what_improved": build_what_improved(session_evidence),
+                "western_readiness": build_western_readiness(
+                    interview_summary=interview_summary,
+                    interview_pack=interview_pack,
+                    session_evidence=session_evidence,
+                ),
+                "reusable_answers": build_reusable_answers(session_evidence),
             },
             "session_evidence": {
                 "latest": session_evidence[0] if session_evidence else None,
@@ -1059,6 +1256,7 @@ class ProgramSnapshotService:
                 "assessment_complete": assessment_complete,
                 "needs_attention": setup_state != "ready_for_program",
                 "state": setup_state,
+                "scope_status": build_snapshot_scope_status(goal_brief),
                 "next_question_type": next_question_type,
                 "progress": setup_progress,
             },

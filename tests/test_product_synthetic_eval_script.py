@@ -42,7 +42,7 @@ def test_evaluate_product_snapshot_accepts_happy_workplace_path() -> None:
     snapshot = {
         "goal": {"brief": {"main_contexts": ["workplace_communication", "project_walkthrough"]}},
         "interview": {"recommended_track": {"id": "workplace_communication"}},
-        "setup": {"state": "ready_for_program"},
+        "setup": {"state": "ready_for_program", "scope_status": "in_scope"},
         "assessment": {"source": "embedded_first_mission", "level": "B1"},
         "session_evidence": {
             "latest": {
