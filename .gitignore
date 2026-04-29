@@ -8,6 +8,12 @@
 
 # Временные файлы
 *.tmp
+.codex_*.log
+.tmp-*.log
+tmp_uvicorn_*.log
+tmp_smoke/
+product-synthetic-*.json
+.claude/scheduled_tasks.lock
 *.temp
 *.swp
 *.swo
