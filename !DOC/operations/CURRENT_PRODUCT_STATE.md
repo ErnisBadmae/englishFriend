@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-04-22
+Last updated: 2026-04-29
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
@@ -35,6 +35,7 @@ Do not create a new session log if this file is enough.
 - Core outcome: prepare for international jobs, interviews, project walkthroughs, and workplace communication
 - Main UX principle: one guided path, not a toolbox of disconnected modes
 - Moat candidate: goal-relative career state + pedagogy for weak spoken English + evidence-driven next-mission adaptation
+- Scope contract: only `interviews | workplace_communication | project_walkthrough` are routable; generic-grammar and vague/anxious openers are explicitly out-of-scope or held in narrowing.
 
 ## Golden Path
 1. Noisy user intent comes in through text or voice.
@@ -65,6 +66,12 @@ Do not create a new session log if this file is enough.
 - `chat_v2` now treats websocket `session_complete` as a post-persistence signal, so live eval can read snapshot immediately after completion without racing the evidence write path.
 - Local/team LLM truth-state is now explicit: mainline chat/runtime should use `vllm` via `http://192.168.0.18:8000/v1` with `token-abc123`, and `scripts/test_voice_backend.py` is the first-line connectivity smoke.
 - Live `mainline synthetic eval` is verified green again on a real local API: `workplace`, `interview`, and `project` all pass with `100%`.
+- Career routing classifier is now treated as a semantic extractor: it returns intent/audience/artifact/job-stage slots, while backend validation and arbiter policy still own the final routing decision.
+- Pre-routing scope gate is in place: `resolve_scope_status()` resolves `in_scope | needs_narrowing | generic_english_only` before `resolve_goal_routing()`, and onboarding refuses to synthesize a `primary_context` for non-`in_scope` openers.
+- Snapshot now exposes `setup.scope_status` plus a productized evidence-loop block (`progress.recurring_issue`, `what_improved`, `western_readiness`, `reusable_answers`); HomePage and Progress render the loop alongside the existing `latest_evidence`.
+- `recommend_next_mission()` now guarantees a non-empty `adaptation_reason` and a concrete `evidence_source` whenever `session_evidence` exists, so mission N+1 is visibly bound to mission N.
+- Career routing classifier now runs only inside in-scope ambiguity: the gate predicate also requires `lexical_primary is not None` and `semantic_slot_validity`, with `scoped_gate_applied` recorded for observability.
+- `foundation_speaking_drill` now dedupes repeated anchor questions, recognizes `pet project / creating / building / mentor` language as `recent_project`, and closes with a coach-driven next-mission confirmation instead of asking the learner to design the program.
 
 ## Routing Invariants
 - `primary_context` is the source of truth for the first useful mission. `domain` and secondary contexts never override it.
@@ -87,18 +94,54 @@ Do not create a new session log if this file is enough.
 - `/chat/v2` still contains the older large endpoint implementation; the modular runtime is additive for now, not yet the mainline path.
 - Full `pytest tests -q` still has unrelated legacy failures outside the current wedge work; targeted product-track tests are green.
 - Explicit goal correction is now supported only inside the onboarding correction lane; a broader post-handoff goal-edit UX does not exist yet.
-- Split truth-state (llama_cpp vs intended vllm) is still an open infrastructure consistency task; product evals are passing but the backend may not be using the canonical vllm endpoint in all runs.
+- **LLM backend**: canonical config is `LLM_PROVIDER=vllm` (`http://192.168.0.18:8000/v1`); if started with `llama_cpp`, the model gives empty responses after reasoning turns — mainline eval fails immediately after turn 1. Restart with vllm before running live evals.
+- Classifier rollout remains `shadow`: the latest live LLM eval showed label mistakes that would degrade routing if promoted directly to `gate`.
+- Boundary scenarios (`grammar_only_no_context`, `anxiety_vague_no_context`) are advisory: 5/7 checks pass (conversation behavior correct), 2 structural checks not applicable — `completion_signal_seen` and `scope_status` from snapshot (scope_status is not persisted for non-completing sessions; session stays in onboarding, never writes snapshot).
+- Frontend evidence-loop block is wired but only meaningful after a few completed career missions; cold-start users still see empty/zero readiness states.
 
 ## Next Step
-- Restart FastAPI and run live synthetic eval in three tiers: `mainline`, `expanded`, then `live_tester` as advisory/stress.
-- Run `scripts/run_routing_classifier_eval.py --scenario-set expanded --classifier-source llm --arbiter-mode shadow` to collect an offline classifier disagreement report before any `gate` rollout.
-- Do NOT add a new LLM layer yet; in-session intent is the next candidate only if live evidence shows bounded fast rules miss important cases.
-- Do NOT touch voice architecture in this cycle; PersonaPlex stays as premium/advanced lane.
-- Resolve split truth-state: llama_cpp vs vllm as a separate infra task, not blocking product.
-- Run one real browser smoke pass for `workplace`, `interview`, and `project`, then mark greeting/farewell/redirect as live-verified.
+- **DONE**: mainline eval 3/3 PASS (100%) with live Qwen3 + `enable_thinking=false`. Use `--turn-timeout 90 --session-timeout 120` — agent makes 3+ LLM calls per turn in onboarding→learning handoff.
+- Run one real browser smoke per in-scope bucket: verify evidence-loop block, narrowing hint, and scope_status render correctly in the UI.
+- Run boundary scenarios advisory: `--scenario grammar_only_no_context` and `--scenario anxiety_vague_no_context` — verify agent stays in `needs_goal`.
+- Only after two consecutive green mainline runs, flip `.env` to `career_routing_classifier_mode=gate`.
+- Do NOT promote classifier to `mainline`; scoped `gate` is the target end-state for this cycle.
 - Benchmark browser Vosk vs backend Parakeet from evidence; then choose the mainline STT lane.
 
 ## Last Update
+### 2026-04-29 (foundation drill UX hardening)
+- Hardened `foundation_speaking_drill` against duplicate anchor prompts: if the model repeats the same anchor question, the runtime swaps in a deterministic paraphrase instead of replaying it verbatim.
+- Expanded `recent_project` anchor detection to catch ICP phrasing like `pet project`, `creating`, `building`, `mentor`, `app`, and `i built`, so project-heavy answers can advance without exact benchmark wording.
+- Replaced the old user-driven `next_step` anchor with a coach-driven next-mission confirmation flow; once the learner answers the final confirmation, the drill now marks the session ready to end.
+- Verification: `py -m pytest tests/test_learning_node.py -q` -> `18 passed`; product-track regression subset -> `96 passed`.
+
+### 2026-04-28 (mainline eval 3/3 green with live Qwen3)
+- `run_product_synthetic_eval.py --scenario-set mainline` → 3/3 PASS, 100%, `scope_status=in_scope` on all three scenarios.
+- Root causes resolved: (1) `SetupSnapshot` Pydantic model was dropping `scope_status` — fixed in previous session; (2) API needed restart to pick up new code; (3) `--turn-timeout` must be ≥90s because onboarding→learning handoff chains 3+ LLM calls in one agent turn (~40–60s real session).
+- 96 unit tests green (offline): `test_goal_routing`, `test_scope_gate`, `test_routing_scoped_gate`, `test_program_snapshot_service`, `test_learning_plan_service`, `test_agent_error_recovery`, `test_product_synthetic_eval_script`.
+- Classifier offline eval: 6/6 PASS with `expected_fixture` source; `scoped_gate_applied` fires only on ambiguous in-scope scenarios.
+- LLM config: `LLM_PROVIDER=vllm`, `VLLM_MODEL=Qwen3.6-35B-A3B-Q5-256K`, `VLLM_EXTRA_BODY_JSON={"chat_template_kwargs": {"enable_thinking": false}}` — reasoning disabled to prevent empty content on small `max_tokens`.
+
+### 2026-04-27 (live eval + eval framework fixes)
+- Boundary scenarios `grammar_only_no_context` and `anxiety_vague_no_context` verified live: agent correctly stays in `needs_goal`, asks narrowing questions, never hands off to a career mission, and repeats the scope message for generic replies.
+- Fixed `run_product_scenario` — boundary scenarios no longer wait for `session_complete`; they read the snapshot directly after all user messages and close the websocket. Boundary scenarios are always `[advisory]` regardless of `--scenario` flag.
+- Fixed `SetupSnapshot` and `ProgressSnapshot` Pydantic models in `app/api/programs.py` — added `scope_status`, `recurring_issue`, `what_improved`, `western_readiness`, `reusable_answers` fields that were being silently dropped by Pydantic.
+- Mainline eval blocked by LLM backend config (`llama_cpp` gives empty responses with qwen reasoning model); must restart FastAPI with `LLM_PROVIDER=vllm` pointing to `http://192.168.0.18:8000/v1`.
+- All 138 targeted product-track unit tests green.
+
+### 2026-04-24 (scope gate + productized evidence loop)
+- Added `resolve_scope_status()` and a `scope_status` contract field; onboarding now refuses to synthesize a `primary_context` for `needs_narrowing` or `generic_english_only` openers and asks a wedge-aligned narrowing question instead.
+- Snapshot exposes `setup.scope_status` plus the new `progress.{recurring_issue, what_improved, western_readiness, reusable_answers}` block; `recommend_next_mission()` now guarantees `adaptation_reason` and `evidence_source` whenever `session_evidence` is non-empty.
+- Career classifier now runs only inside in-scope ambiguity; `arbitrate_career_routing` accepts `scope_status` and only fires when all 5 predicates hold (`in_scope` + ambiguous + classifier-eligible + `lexical_primary is not None` + semantic-slot validity).
+- HomePage and Progress render the new loop block alongside `latest_evidence`; HomePage also surfaces a short hint when `scope_status` is `generic_english_only` or `needs_narrowing`.
+- Synthetic eval gained `expected_scope_status`; boundary scenarios `grammar_only_no_context` and `anxiety_vague_no_context` now run as advisory checks for no mission handoff and no routing.
+- Added `tests/test_scope_gate.py` (13 tests) and `tests/test_routing_scoped_gate.py` (7 tests) — both green; existing classifier tests updated to the new gate contract.
+
+### 2026-04-23 (semantic classifier guardrails)
+- Upgraded career routing classifier from direct label picking toward semantic extraction: `intent_action`, `audience`, `artifact_focus`, `job_process_stage`, `domain_mentions`, and `routing_rationale`.
+- Added backend semantic validation so future `gate/mainline` modes only apply classifier output when slots agree with the proposed `primary_context`.
+- Expanded offline classifier eval with `semantic_slot_validity`, `ambiguous_classifier_match_rate`, `critical_inversions`, and `failure_categories`.
+- Default rollout remains `career_routing_classifier_mode=shadow`; this is measurement and safety hardening, not a behavior rollout.
+
 ### 2026-04-23 (offline classifier eval)
 - Added `scripts/run_routing_classifier_eval.py`, an offline lexical/classifier/arbiter eval that compares expected primary context, lexical routing, classifier output, and `shadow/gate/mainline` arbiter decisions without opening the live websocket.
 - Default rollout remains `career_routing_classifier_mode=shadow`; the new runner is measurement infrastructure, not a product behavior change.
