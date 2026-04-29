@@ -21,7 +21,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import websockets
 
@@ -51,11 +51,12 @@ class ProductSyntheticScenario:
     slug: str
     description: str
     user_messages: tuple[str, ...]
-    expected_primary_context: str
-    expected_track_id: str
-    expected_session_task_type: str
-    expected_assessment_source: str = "embedded_first_mission"
+    expected_primary_context: Optional[str]
+    expected_track_id: Optional[str]
+    expected_session_task_type: Optional[str]
+    expected_assessment_source: Optional[str] = "embedded_first_mission"
     expected_setup_state: str = "ready_for_program"
+    expected_scope_status: str = "in_scope"
     handoff_keywords: tuple[str, ...] = ("real mission",)
     forbidden_assistant_substrings: tuple[str, ...] = (
         "i'm having trouble right now",
@@ -431,29 +432,35 @@ MAINLINE_SCENARIOS: dict[str, ProductSyntheticScenario] = {
     ),
     "grammar_only_no_context": ProductSyntheticScenario(
         slug="grammar_only_no_context",
-        description="User asks only about grammar/vocabulary with no job or workplace context; routing should default somewhere.",
+        description="Pure generic-English request with no career anchor — must NOT route into a bucket. scope_status=generic_english_only, setup stays in needs_goal.",
         user_messages=(
             "I need improve my grammar in English. I make many mistakes.",
             "I have problem with articles and tenses. My English not good.",
             "I want better vocabulary for professional English communication.",
         ),
-        expected_primary_context="interviews",
-        expected_track_id="hr_intro",
-        expected_session_task_type="foundation_speaking_drill",
-        handoff_keywords=("real mission",),
+        expected_primary_context=None,
+        expected_track_id=None,
+        expected_session_task_type=None,
+        expected_assessment_source=None,
+        expected_setup_state="needs_goal",
+        expected_scope_status="generic_english_only",
+        handoff_keywords=(),
     ),
     "anxiety_vague_no_context": ProductSyntheticScenario(
         slug="anxiety_vague_no_context",
-        description="User expresses frustration and anxiety about English with no specific context; system must not crash.",
+        description="Vague/anxiety with no career anchor — exactly one narrowing question, no mission handoff. scope_status=needs_narrowing.",
         user_messages=(
             "My English is very bad. I cannot speak well in English at all.",
             "I am afraid to speak English. I make many mistake and people don't understand me.",
             "I need improve English but don't know where to start. I just want speak better.",
         ),
-        expected_primary_context="interviews",
-        expected_track_id="hr_intro",
-        expected_session_task_type="foundation_speaking_drill",
-        handoff_keywords=("real mission",),
+        expected_primary_context=None,
+        expected_track_id=None,
+        expected_session_task_type=None,
+        expected_assessment_source=None,
+        expected_setup_state="needs_goal",
+        expected_scope_status="needs_narrowing",
+        handoff_keywords=(),
     ),
     # --- Live-tester scenarios batch 5: formatting, tie-breaking, correction reverse ---
     "all_caps_interview": ProductSyntheticScenario(
@@ -746,6 +753,7 @@ def _snapshot_excerpt(snapshot: dict[str, Any]) -> dict[str, Any]:
         "primary_context": (goal_brief.get("main_contexts") or [None])[0],
         "recommended_track_id": recommended_track.get("id"),
         "setup_state": setup.get("state"),
+        "scope_status": setup.get("scope_status"),
         "assessment_source": assessment.get("source"),
         "assessment_level": assessment.get("level"),
         "latest_evidence_task_type": session_evidence.get("task_type"),
@@ -772,6 +780,7 @@ def evaluate_product_snapshot(
         )
 
     leaked, leak_phrase = _detect_generic_fallback_leak(assistant_texts)
+    boundary_scenario = scenario.expected_scope_status != "in_scope"
 
     checks = [
         make_check(
@@ -785,6 +794,54 @@ def evaluate_product_snapshot(
                 else "missing completion signal"
             ),
         ),
+        make_check(
+            "scope_status",
+            excerpt.get("scope_status") == scenario.expected_scope_status,
+            f"expected={scenario.expected_scope_status}, actual={excerpt.get('scope_status')}",
+        ),
+        make_check(
+            "setup_state",
+            excerpt.get("setup_state") == scenario.expected_setup_state,
+            f"expected={scenario.expected_setup_state}, actual={excerpt.get('setup_state')}",
+        ),
+        make_check(
+            "no_generic_fallback_leak",
+            not leaked,
+            "no generic fallback leak in assistant transcripts"
+            if not leaked
+            else f"generic fallback leaked: '{leak_phrase}'",
+        ),
+    ]
+
+    if boundary_scenario:
+        # Out-of-scope / needs_narrowing: must NOT route, NOT hand off a mission,
+        # NOT seed evidence. Snapshot stays clean.
+        checks.extend([
+            make_check(
+                "boundary_no_primary_context",
+                excerpt.get("primary_context") is None,
+                f"expected primary_context=None, actual={excerpt.get('primary_context')}",
+            ),
+            make_check(
+                "boundary_no_mission_handoff",
+                not any(
+                    "real mission" in text.lower() for text in assistant_texts
+                ),
+                "no first-mission handoff language present"
+                if not any("real mission" in text.lower() for text in assistant_texts)
+                else "boundary scenario unexpectedly produced a mission handoff",
+            ),
+            make_check(
+                "boundary_no_session_evidence",
+                not bool(latest_evidence),
+                "no session evidence persisted"
+                if not latest_evidence
+                else "boundary scenario unexpectedly persisted session evidence",
+            ),
+        ])
+        return checks
+
+    checks.extend([
         make_check(
             "first_useful_mission_handoff",
             any(keyword in text.lower() for keyword in scenario.handoff_keywords for text in assistant_texts),
@@ -801,11 +858,6 @@ def evaluate_product_snapshot(
             "recommended_track",
             excerpt.get("recommended_track_id") == scenario.expected_track_id,
             f"expected={scenario.expected_track_id}, actual={excerpt.get('recommended_track_id')}",
-        ),
-        make_check(
-            "setup_state",
-            excerpt.get("setup_state") == scenario.expected_setup_state,
-            f"expected={scenario.expected_setup_state}, actual={excerpt.get('setup_state')}",
         ),
         make_check(
             "assessment_source",
@@ -829,14 +881,7 @@ def evaluate_product_snapshot(
             if excerpt.get("latest_evidence_summary")
             else "latest evidence summary missing",
         ),
-        make_check(
-            "no_generic_fallback_leak",
-            not leaked,
-            "no generic fallback leak in assistant transcripts"
-            if not leaked
-            else f"generic fallback leaked: '{leak_phrase}'",
-        ),
-    ]
+    ])
     return checks
 
 
@@ -883,7 +928,8 @@ async def run_product_scenario(
                 print(f"Turn {index} assistant: {str(assistant.get('text') or '').strip()[:140]}")
                 await drain_events(websocket, scenario=scenario, events=events)
 
-            if not has_completion_signal(events):
+            is_boundary = scenario.expected_scope_status != "in_scope"
+            if not has_completion_signal(events) and not is_boundary:
                 await websocket.send(json.dumps({"type": "end"}))
                 try:
                     completion_event = await wait_for_session_complete(
@@ -900,6 +946,10 @@ async def run_product_scenario(
                 except Exception:
                     if not has_completion_signal(events):
                         raise
+            elif is_boundary:
+                # Boundary scenarios stay in onboarding; no session_complete expected.
+                # Close the websocket gracefully and read the snapshot.
+                print("Boundary scenario: skipping session_complete wait, reading snapshot directly.")
     except SmokeFailure:
         raise
     except Exception as exc:  # pragma: no cover - live networking guard
@@ -978,6 +1028,9 @@ def resolve_scenario_slugs(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _is_blocking_scenario(args: argparse.Namespace, slug: str) -> bool:
+    scenario = MAINLINE_SCENARIOS.get(slug)
+    if scenario and scenario.expected_scope_status != "in_scope":
+        return False  # Boundary scenarios are always advisory
     if args.scenario:
         return True
     return slug in MAINLINE_SCENARIO_SET
