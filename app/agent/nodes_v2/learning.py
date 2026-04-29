@@ -155,12 +155,17 @@ ANCHORS = [
     },
     {
         "id": "next_step",
-        "label": "your next step in the program",
-        "question": "What is your next step in our program, and which skill do you want to improve first?",
-        "follow_up": "Say it as one short plan: next step, skill, and why it matters.",
-        "example": "My next step is to improve grammar for project answers.",
+        "label": "the next guided mission",
+        "question": "I will choose the next mission focus from your answers. Does that sound right?",
+        "follow_up": "Reply with one short confirmation or correction.",
+        "example": "Yes, focus on project answers first.",
     },
 ]
+ANCHOR_PARAPHRASES = {
+    "current_work": "Tell me briefly about your current role and the ML work you handle.",
+    "recent_project": "Walk me through one recent project. What problem were you solving there?",
+    "next_step": "I will set the next mission from your answers. Does that focus fit?",
+}
 ANCHOR_SIGNAL_PATTERNS = {
     "current_work": (
         "current work",
@@ -176,6 +181,15 @@ ANCHOR_SIGNAL_PATTERNS = {
         "recent project",
         "my project",
         "project was",
+        "pet project",
+        "side project",
+        "personal project",
+        "creating",
+        "building",
+        "i built",
+        "model i",
+        "mentor",
+        "app",
         "recommendation model",
         "churn model",
         "fraud model",
@@ -458,6 +472,8 @@ def _record_learning_turn(
     reason: str,
     strategy: str,
 ) -> AgentState:
+    _rewrite_legacy_next_step_response_if_needed(state, action)
+    _dedupe_anchor_response_if_needed(state, action)
     state = _apply_learning_action(state, action, pedagogy)
 
     if user_message:
@@ -709,11 +725,22 @@ def _get_foundation_prompt(state: AgentState) -> str:
     goal = state.get("confirmed_goal") or "Career English"
     level = state.get("language_level", "B1")
     username = state.get("username", "Student")
+    next_mission_focus = _get_next_mission_focus_hint(state)
+    anchor_question = _get_anchor_prompt_text(state, follow_up=False)
+    anchor_follow_up = _get_anchor_prompt_text(state, follow_up=True)
 
     next_instruction = (
-        f"After a clear follow-up answer, move to the next anchor question: {next_anchor['question']}"
+        f"After a clear follow-up answer, move to the next anchor question: {_get_anchor_prompt_text(state, anchor=next_anchor, follow_up=False)}"
         if next_anchor
-        else "After a clear follow-up answer, ask the learner to restate the plan in one clean sentence and offer to stop."
+        else "After a clear follow-up answer, give one brief confirmation and close the drill."
+    )
+    next_step_instruction = (
+        "For the next_step anchor, recap one concrete detail from the learner's recent answers, "
+        f"state that the next mission will focus on {next_mission_focus}, and ask only for a short confirmation or correction. "
+        "Do NOT ask the learner to design the program or choose a skill list."
+    )
+    next_step_follow_up_instruction = (
+        "If the learner confirms or lightly corrects the next-step plan, acknowledge it in one short sentence and end the drill."
     )
 
     return f"""You are English Friend running a strict career-English foundation drill.
@@ -727,9 +754,12 @@ Mission success signal: {mission_success_signal}
 Linked goal context: {linked_context}
 Active anchor label: {anchor['label']}
 Active anchor stage: {stage}
-Primary anchor question: {anchor['question']}
-Follow-up anchor question: {anchor['follow_up']}
+Primary anchor question: {anchor_question}
+Follow-up anchor question: {anchor_follow_up}
+Suggested next mission focus: {next_mission_focus}
 {next_instruction}
+{next_step_instruction if anchor['id'] == 'next_step' and stage == 'primary' else ''}
+{next_step_follow_up_instruction if anchor['id'] == 'next_step' and stage == 'follow_up' else ''}
 
 Rules:
 1. Stay on the active anchor only.
@@ -875,7 +905,7 @@ def _build_mission_opener_action(state: AgentState) -> dict:
         intro = f"Let's keep {mission_title.lower()} focused."
     return {
         "action": "continue",
-        "response_text": f"{intro} {anchor['question']}",
+        "response_text": f"{intro} {_get_anchor_prompt_text(state, follow_up=False)}",
         "should_end": False,
     }
 
@@ -914,7 +944,7 @@ def _build_low_signal_action(state: AgentState) -> dict:
     if streak <= 1:
         response_text = (
             f"Let's stay with {anchor['label']}. Please answer in one short sentence. "
-            f"{anchor['question']}"
+            f"{_get_anchor_prompt_text(state, follow_up=False)}"
         )
         should_end = False
     elif streak == 2:
@@ -970,7 +1000,7 @@ def _build_supportive_anchor_action(state: AgentState) -> dict:
     if streak <= 1:
         response_text = (
             f"No problem. Use very simple English. Example: \"{example}\" "
-            f"{anchor['question']}"
+            f"{_get_anchor_prompt_text(state, follow_up=False)}"
         )
     elif streak == 2:
         response_text = (
@@ -1018,7 +1048,7 @@ def _build_mission_error_action(state: AgentState, reason: str) -> dict:
     )
     return {
         "action": "continue",
-        "response_text": f"Let's keep it focused on {anchor['label']}. {anchor['question']}",
+        "response_text": f"Let's keep it focused on {anchor['label']}. {_get_anchor_prompt_text(state, follow_up=False)}",
         "should_end": False,
     }
 
@@ -1038,6 +1068,7 @@ def _advance_anchor_state(state: AgentState) -> None:
 
     state["anchor_question_id"] = len(ANCHORS) - 1
     state["anchor_follow_up_pending"] = False
+    state["should_end_session"] = True
 
 
 def _apply_anchor_shift_if_needed(state: AgentState, user_message: Optional[str]) -> None:
@@ -1064,6 +1095,107 @@ def _normalize_text(text: Optional[str]) -> str:
     normalized = re.sub(r"[^a-z0-9\s]", " ", source)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return f" {normalized} "
+
+
+def _get_next_mission_focus_hint(state: AgentState) -> str:
+    linked_context = state.get("mission_linked_goal_context") or "foundation"
+    focus_by_context = {
+        "interviews": "a tighter self-introduction for interviews",
+        "project_walkthrough": "a clearer project walkthrough with problem, approach, metric, and impact",
+        "workplace_communication": "a clearer explanation for a manager or stakeholder",
+        "foundation": "one clearer interview-style answer about your current work and project",
+    }
+    return focus_by_context.get(
+        linked_context,
+        "one clearer interview-style answer about your current work and project",
+    )
+
+
+def _get_anchor_prompt_text(
+    state: AgentState,
+    *,
+    follow_up: bool,
+    anchor: Optional[dict] = None,
+) -> str:
+    active_anchor = anchor or _get_anchor(state)
+    prompt_key = "follow_up" if follow_up else "question"
+    if active_anchor["id"] != "next_step":
+        return active_anchor[prompt_key]
+
+    next_mission_focus = _get_next_mission_focus_hint(state)
+    if follow_up:
+        return "Reply with one short confirmation or correction."
+    return (
+        "From what you said, I can choose the next mission focus. "
+        f"Next mission will focus on {next_mission_focus}. Does that match what you want?"
+    )
+
+
+def _iter_anchor_prompt_fragments() -> list[tuple[str, str, str]]:
+    fragments: list[tuple[str, str, str]] = []
+    for anchor in ANCHORS:
+        for prompt_key in ("question", "follow_up"):
+            raw_fragment = anchor[prompt_key]
+            fragments.append((anchor["id"], _normalize_text(raw_fragment), raw_fragment))
+    return fragments
+
+
+def _match_anchor_prompt_fragment(response_text: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    normalized_response = _normalize_text(response_text)
+    for anchor_id, normalized_fragment, raw_fragment in _iter_anchor_prompt_fragments():
+        if normalized_fragment.strip() and normalized_fragment in normalized_response:
+            return anchor_id, normalized_fragment, raw_fragment
+    return None, None, None
+
+
+def _dedupe_anchor_response_if_needed(state: AgentState, action: dict) -> None:
+    if not _is_mission_anchored(state):
+        return
+
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        return
+
+    response_text = action.get("response_text", "")
+    if not response_text:
+        return
+
+    anchor_id, normalized_fragment, raw_fragment = _match_anchor_prompt_fragment(response_text)
+    if not anchor_id or not normalized_fragment:
+        return
+
+    if state.get("last_anchor_question_text") == normalized_fragment:
+        paraphrase = ANCHOR_PARAPHRASES.get(anchor_id)
+        if paraphrase:
+            if raw_fragment and raw_fragment in response_text:
+                action["response_text"] = response_text.replace(raw_fragment, paraphrase, 1)
+            else:
+                action["response_text"] = paraphrase
+
+    state["last_anchor_question_text"] = normalized_fragment
+
+
+def _rewrite_legacy_next_step_response_if_needed(state: AgentState, action: dict) -> None:
+    if not _is_mission_anchored(state):
+        return
+
+    mission_task_type = state.get("mission_task_type") or ""
+    if mission_task_type in TECHNICAL_MISSION_SPECS:
+        return
+
+    if int(state.get("anchor_question_id", 0) or 0) != 2:
+        return
+
+    normalized_response = _normalize_text(action.get("response_text", ""))
+    legacy_patterns = (
+        " say it as one short plan ",
+        " what is your next step in our program ",
+        " which skill do you want to improve first ",
+    )
+    if not any(pattern in normalized_response for pattern in legacy_patterns):
+        return
+
+    action["response_text"] = _get_anchor_prompt_text(state, follow_up=False)
 
 
 def _update_shadow_intent(state: AgentState, user_message: Optional[str]) -> None:

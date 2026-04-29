@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agent.graph_v2 import initialize_session_v2
-from app.agent.nodes_v2.learning import learning_node
+from app.agent.nodes_v2.learning import _get_foundation_prompt, _matches_anchor, learning_node
 from app.agent.state import AgentPhase, LearningModeEnum, create_initial_state
 from app.services.ai.llm_provider import LLMEmptyContentError
 
@@ -313,7 +313,77 @@ async def test_learning_node_accepts_shift_to_next_step_anchor():
 
     assert updated["anchor_question_id"] == 2
     assert updated["anchor_follow_up_pending"] is True
-    assert "short plan" in updated["pending_response"].lower()
+    assert "next mission" in updated["pending_response"].lower()
+    assert "does that match what you want" in updated["pending_response"].lower()
+
+
+def test_get_foundation_prompt_uses_coach_driven_next_step_instruction():
+    state = _foundation_state()
+    state["anchor_question_id"] = 2
+    prompt = _get_foundation_prompt(state)
+
+    assert "recap one concrete detail" in prompt.lower()
+    assert "do not ask the learner to design the program" in prompt.lower()
+    assert "what is your next step in our program" not in prompt.lower()
+    assert "which skill do you want to improve first" not in prompt.lower()
+
+
+def test_matches_recent_project_for_pet_project_language():
+    assert _matches_anchor("recent_project", "I'm creating a pet project, an LLM mentor app.")
+
+
+@pytest.mark.asyncio
+async def test_learning_node_dedupes_repeated_anchor_question_with_paraphrase():
+    state = _foundation_state()
+    state["last_user_message"] = "I am building an LLM mentor app now."
+    state["last_anchor_question_text"] = " what do you do now and what kind of ml work do you touch "
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action":"continue","response_text":"You are building an LLM mentor. What do you do now, and what kind of ML work do you touch?","should_end":false}'
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert "what do you do now" not in updated["pending_response"].lower()
+    assert "tell me briefly about your current role" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_marks_session_complete_after_next_step_follow_up():
+    state = _foundation_state()
+    state["anchor_question_id"] = 2
+    state["anchor_follow_up_pending"] = True
+    state["last_user_message"] = "Yes, focus on project answers first."
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action":"continue","response_text":"Good. Next mission will focus on a clearer project answer.","should_end":false}'
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert updated["should_end_session"] is True
+    assert updated["anchor_question_id"] == 2
+    assert updated["anchor_follow_up_pending"] is False
 
 
 @pytest.mark.asyncio
