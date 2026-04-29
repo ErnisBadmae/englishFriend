@@ -11,6 +11,16 @@ SUPPORTED_GOAL_CONTEXTS: tuple[str, ...] = (
     "project_walkthrough",
 )
 
+ScopeStatus = Literal["in_scope", "needs_narrowing", "generic_english_only"]
+
+SUPPORTED_SCOPE_STATUSES: tuple[str, ...] = (
+    "in_scope",
+    "needs_narrowing",
+    "generic_english_only",
+)
+
+DEFAULT_SCOPE_STATUS: ScopeStatus = "needs_narrowing"
+
 _CONTEXT_ALIASES: dict[str, str] = {
     "interview": "interviews",
     "interviews": "interviews",
@@ -157,6 +167,14 @@ def is_goal_brief_complete(goal_brief: Optional[dict[str, Any]]) -> bool:
         goal_brief,
         mode="full",
     )
+
+
+def normalize_scope_status(value: Any) -> ScopeStatus:
+    """Return a canonical scope_status enum; unknown values fall back to needs_narrowing."""
+    candidate = str(value or "").strip().lower()
+    if candidate in SUPPORTED_SCOPE_STATUSES:
+        return candidate  # type: ignore[return-value]
+    return DEFAULT_SCOPE_STATUS
 
 
 def goal_brief_setup_progress(

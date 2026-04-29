@@ -251,6 +251,10 @@ class ProgressSnapshot(BaseModel):
     top_error_patterns: list[ErrorPattern]
     recent_sessions: list[RecentSession]
     improvement_signals: list[str] = []
+    recurring_issue: Optional[str] = None
+    what_improved: list[str] = []
+    western_readiness: Optional[dict[str, Any]] = None
+    reusable_answers: list[dict[str, Any]] = []
 
 
 class SessionEvidence(BaseModel):
@@ -286,6 +290,7 @@ class SetupSnapshot(BaseModel):
     assessment_complete: bool
     needs_attention: bool
     state: str
+    scope_status: Optional[str] = None
     next_question_type: Optional[str] = None
     progress: int = 0
 

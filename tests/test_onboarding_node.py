@@ -161,7 +161,13 @@ async def test_onboarding_project_tradeoff_goal_becomes_routing_ready_without_co
 
 
 @pytest.mark.asyncio
-async def test_onboarding_force_routes_low_signal_no_context_after_three_turns():
+async def test_onboarding_scope_gate_keeps_low_signal_in_needs_narrowing():
+    """Pre-routing scope gate must NOT force-route vague/anxiety users without a career anchor.
+
+    Plan contract: anxiety_vague_no_context => scope_status == "needs_narrowing",
+    setup_state stays needs_goal, no mission handoff. Replaces the old safe_default
+    force-route after three vague turns.
+    """
     state = create_initial_state(user_id=1, session_id="session-1")
     state["last_question_type"] = "goal_setup"
 
@@ -186,11 +192,13 @@ async def test_onboarding_force_routes_low_signal_no_context_after_three_turns()
             state["last_user_message"] = message
             state = await onboarding_node(state)
 
-    assert state["goal_setup_complete"] is True
-    assert state["goal_brief"]["main_contexts"][0] == "interviews"
-    assert state["goal_brief"]["routing_decision_source"] == "safe_default"
-    assert state["current_phase"] == AgentPhase.LEARNING_SESSION
-    assert state["mission_task_type"] == "foundation_speaking_drill"
+    assert state.get("goal_setup_complete") is False
+    assert state.get("scope_status") == "needs_narrowing"
+    assert state.get("mission_task_type") is None
+    assert state["current_phase"] == AgentPhase.ONBOARDING
+    assert state.get("setup_step") == "goal_setup"
+    assert state.get("last_question_type") == "scope_gate"
+    assert state.get("pending_response")
 
 
 @pytest.mark.asyncio

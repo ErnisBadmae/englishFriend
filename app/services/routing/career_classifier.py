@@ -131,6 +131,8 @@ class CareerRoutingArbiterDecision:
     disagreement: bool
     ambiguous_legacy: bool
     applied_classifier: bool
+    scope_status: Optional[str] = None
+    scoped_gate_applied: bool = False
 
     def to_observability_payload(self) -> dict[str, Any]:
         return {
@@ -139,6 +141,8 @@ class CareerRoutingArbiterDecision:
             "disagreement": self.disagreement,
             "ambiguous_legacy": self.ambiguous_legacy,
             "applied_classifier": self.applied_classifier,
+            "scope_status": self.scope_status,
+            "scoped_gate_applied": self.scoped_gate_applied,
             "classifier_semantic_safe": (
                 self.classifier_result.semantic_safe if self.classifier_result else None
             ),
@@ -637,7 +641,9 @@ def arbitrate_career_routing(
     transcript_text: str,
     mode: ClassifierMode,
     min_confidence: float,
+    scope_status: Optional[str] = None,
 ) -> CareerRoutingArbiterDecision:
+    in_scope = scope_status in (None, "in_scope")
     if mode == "off" or not classifier_result:
         return CareerRoutingArbiterDecision(
             goal_brief_update=lexical_goal_brief,
@@ -651,6 +657,8 @@ def arbitrate_career_routing(
                 transcript_text=transcript_text,
             ),
             applied_classifier=False,
+            scope_status=scope_status,
+            scoped_gate_applied=False,
         )
 
     lexical_primary = _lexical_primary_context(lexical_goal_brief)
@@ -672,11 +680,22 @@ def arbitrate_career_routing(
         agent_career_routing_classifier_disagreements_total.labels(mode=mode).inc()
 
     classifier_update = _build_goal_brief_update_from_classifier(classifier_result)
+    semantic_slot_validity = bool(classifier_result.semantic_safe)
     classifier_eligible = bool(
         classifier_update
         and classifier_primary
-        and classifier_result.semantic_safe
+        and semantic_slot_validity
         and classifier_result.confidence >= min_confidence
+    )
+
+    # Plan contract: classifier may only override legacy when scope_status == "in_scope".
+    # Out-of-scope or needs_narrowing inputs must never be filled in by the classifier.
+    scoped_gate_predicate = bool(
+        in_scope
+        and ambiguous_legacy
+        and classifier_eligible
+        and lexical_primary is not None
+        and semantic_slot_validity
     )
 
     if mode == "shadow":
@@ -689,10 +708,12 @@ def arbitrate_career_routing(
             disagreement=disagreement,
             ambiguous_legacy=ambiguous_legacy,
             applied_classifier=False,
+            scope_status=scope_status,
+            scoped_gate_applied=False,
         )
 
     if mode == "gate":
-        if ambiguous_legacy and classifier_eligible:
+        if scoped_gate_predicate:
             return CareerRoutingArbiterDecision(
                 goal_brief_update=classifier_update,
                 classifier_result=classifier_result,
@@ -702,6 +723,8 @@ def arbitrate_career_routing(
                 disagreement=disagreement,
                 ambiguous_legacy=ambiguous_legacy,
                 applied_classifier=True,
+                scope_status=scope_status,
+                scoped_gate_applied=True,
             )
         return CareerRoutingArbiterDecision(
             goal_brief_update=lexical_goal_brief,
@@ -712,9 +735,11 @@ def arbitrate_career_routing(
             disagreement=disagreement,
             ambiguous_legacy=ambiguous_legacy,
             applied_classifier=False,
+            scope_status=scope_status,
+            scoped_gate_applied=False,
         )
 
-    if classifier_eligible:
+    if in_scope and classifier_eligible:
         return CareerRoutingArbiterDecision(
             goal_brief_update=classifier_update,
             classifier_result=classifier_result,
@@ -724,6 +749,8 @@ def arbitrate_career_routing(
             disagreement=disagreement,
             ambiguous_legacy=ambiguous_legacy,
             applied_classifier=True,
+            scope_status=scope_status,
+            scoped_gate_applied=False,
         )
 
     return CareerRoutingArbiterDecision(
@@ -735,4 +762,6 @@ def arbitrate_career_routing(
         disagreement=disagreement,
         ambiguous_legacy=ambiguous_legacy,
         applied_classifier=False,
+        scope_status=scope_status,
+        scoped_gate_applied=False,
     )

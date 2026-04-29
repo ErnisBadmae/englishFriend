@@ -59,6 +59,7 @@ from app.services.routing.goal_routing import (
     PROJECT_SIGNAL_PATTERNS as _ROUTING_PROJECT_PATTERNS,
     WORKPLACE_SIGNAL_PATTERNS as _ROUTING_WORKPLACE_PATTERNS,
     resolve_goal_routing,
+    resolve_scope_status,
     score_context_signals,
 )
 
@@ -456,6 +457,30 @@ async def onboarding_node(state: AgentState) -> AgentState:
         _record_onboarding_assistant_turn(state)
         return state
 
+    # Pre-routing scope gate: keep out-of-scope and vague users out of the
+    # 3-bucket routing taxonomy. Only in_scope moves into goal-brief inference.
+    scope_status = resolve_scope_status(
+        goal_brief=state.get("goal_brief"),
+        conversation_history=state.get("conversation_history"),
+        last_user_message=user_message,
+    )
+    state["scope_status"] = scope_status
+    if (
+        scope_status != "in_scope"
+        and not state.get("goal_setup_complete")
+        and not _is_goal_brief_routing_ready(state.get("goal_brief") or {})
+    ):
+        _apply_scope_gate_response(state, scope_status)
+        add_decision_log(
+            state,
+            node="onboarding",
+            action="scope_gate",
+            reason=f"scope_status={scope_status}",
+            data={"scope_status": scope_status},
+        )
+        _record_onboarding_assistant_turn(state)
+        return state
+
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
     goal_became_routing_ready_this_turn = False
     cumulative_transcript = _collect_user_transcript(state, current_message=user_message)
@@ -826,6 +851,39 @@ def _coerce_goal_brief_state(goal_brief: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_SCOPE_NARROWING_QUESTION = (
+    "What is closest right now: passing an interview in English, "
+    "explaining your projects clearly, or speaking with confidence at work? "
+    "Pick the one that feels most urgent."
+)
+
+_OUT_OF_SCOPE_MESSAGE = (
+    "EnglishFriend is a career-English coach — it works best for interview prep, "
+    "project walkthroughs, and international workplace communication. "
+    "If one of those matches your goal, tell me more about the role or situation you are preparing for."
+)
+
+
+def _build_scope_narrowing_question() -> str:
+    return _SCOPE_NARROWING_QUESTION
+
+
+def _build_out_of_scope_response() -> str:
+    return _OUT_OF_SCOPE_MESSAGE
+
+
+def _apply_scope_gate_response(state: AgentState, scope_status: str) -> None:
+    """Populate state with the scope-gate response so onboarding can exit early."""
+    if scope_status == "generic_english_only":
+        state["pending_response"] = _build_out_of_scope_response()
+    else:
+        state["pending_response"] = _build_scope_narrowing_question()
+    state["needs_user_input"] = True
+    state["current_phase"] = AgentPhase.ONBOARDING
+    state["setup_step"] = "goal_setup"
+    state["last_question_type"] = "scope_gate"
+
+
 def _build_goal_followup_question(goal_brief: dict[str, Any], goal_text: Optional[str]) -> str:
     normalized = _coerce_goal_brief_state(goal_brief)
     missing = _goal_brief_missing_fields(normalized)
@@ -1151,6 +1209,11 @@ def _should_run_goal_routing_classifier(state: AgentState) -> bool:
     current_phase = state.get("current_phase")
     if current_phase not in {None, AgentPhase.START, AgentPhase.ONBOARDING}:
         return False
+    # Plan contract: classifier is only consulted for in-scope inputs. Out-of-scope
+    # and needs_narrowing turns must never reach the classifier.
+    scope_status = state.get("scope_status")
+    if scope_status not in (None, "in_scope"):
+        return False
     return bool(str(state.get("last_user_message") or "").strip())
 
 
@@ -1241,6 +1304,7 @@ async def _prepare_goal_brief_turn_update(
         transcript_text=cumulative_text,
         mode=settings.career_routing_classifier_mode,
         min_confidence=float(settings.career_routing_classifier_min_confidence),
+        scope_status=state.get("scope_status"),
     )
 
 

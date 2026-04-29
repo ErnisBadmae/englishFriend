@@ -33,7 +33,10 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 from app.services.goal_brief_contract import (
+    DEFAULT_SCOPE_STATUS,
+    ScopeStatus,
     SUPPORTED_GOAL_CONTEXTS,
+    is_goal_brief_routing_ready,
     normalize_goal_brief,
     normalize_goal_brief_context,
     normalize_goal_brief_contexts,
@@ -111,6 +114,131 @@ WORKPLACE_SIGNAL_PATTERNS: tuple[str, ...] = (
     "colleague",
     "colleagues",
     "workplace",
+)
+
+
+# ---------------------------------------------------------------------------
+# Pre-routing scope gate signals
+# ---------------------------------------------------------------------------
+
+# Career anchor wording. Any match pulls the user into the in-scope product.
+# The list is intentionally broad — missing on a career user is worse than
+# accidentally admitting an ambiguous one (that case falls to classifier/arbiter
+# inside the in_scope branch).
+CAREER_ANCHOR_PATTERNS: tuple[str, ...] = (
+    # Roles / industries
+    "engineer",
+    "engineers",
+    "developer",
+    "developers",
+    "analyst",
+    "scientist",
+    "researcher",
+    "designer",
+    "devops",
+    "architect",
+    "product manager",
+    "product managers",
+    "pm",
+    "team lead",
+    "tech lead",
+    # Career context
+    "job",
+    "jobs",
+    "work",
+    "working",
+    "career",
+    "hire",
+    "hiring",
+    "hired",
+    "recruiter",
+    "recruiters",
+    "offer",
+    "offers",
+    "company",
+    "companies",
+    "startup",
+    "startups",
+    "international",
+    "abroad",
+    "relocation",
+    "relocate",
+    "remote",
+    # Domain signals typical for our ICP
+    "ml",
+    "machine learning",
+    "ai",
+    "artificial intelligence",
+    "data science",
+    "software",
+    "engineering",
+    "tech",
+    # Existing context buckets — reuse lexicon so anything recognised by
+    # routing is also recognised as a career anchor.
+    *INTERVIEW_SIGNAL_PATTERNS,
+    *PROJECT_SIGNAL_PATTERNS,
+    *WORKPLACE_SIGNAL_PATTERNS,
+)
+
+# Generic English-study wording. On its own (no career anchor) this maps to
+# generic_english_only — EnglishFriend is not the right product for it.
+GENERIC_ENGLISH_PATTERNS: tuple[str, ...] = (
+    "grammar",
+    "grammer",
+    "grammatical",
+    "vocabulary",
+    "vocab",
+    "words",
+    "pronunciation",
+    "pronunciations",
+    "spelling",
+    "tenses",
+    "tense",
+    "past tense",
+    "present tense",
+    "future tense",
+    "fluency",
+    "speak better",
+    "speak english",
+    "speaking english",
+    "improve english",
+    "improve my english",
+    "learn english",
+    "practice english",
+    "study english",
+)
+
+# Anxiety / vagueness wording. Without a career anchor these map to
+# needs_narrowing — we ask one focused question before routing.
+ANXIETY_VAGUE_PATTERNS: tuple[str, ...] = (
+    "anxious",
+    "anxiety",
+    "nervous",
+    "shy",
+    "afraid",
+    "scared",
+    "stress",
+    "stressed",
+    "stressful",
+    "uncertain",
+    "embarrass",
+    "embarrassed",
+    "embarrassing",
+    "not confident",
+    "no confidence",
+    "low confidence",
+    "lack confidence",
+    "freeze",
+    "freezing",
+    "blank",
+    "confused",
+    "lost",
+    "dont know",
+    "don't know",
+    "not sure",
+    "unsure",
+    "help me",
+    "help",
 )
 
 
@@ -333,6 +461,72 @@ def _pick_primary_from_scores(scores: dict[str, int]) -> Optional[str]:
             best_score = score
             best_context = context
     return best_context if best_score > 0 else None
+
+
+def _text_has_any_pattern(text: str, patterns: Iterable[str]) -> bool:
+    if not text:
+        return False
+    segments = _split_signal_segments(text)
+    for pattern in patterns:
+        for segment in segments:
+            if _segment_has_positive_pattern(segment, pattern):
+                return True
+    return False
+
+
+def resolve_scope_status(
+    goal_brief: Optional[dict[str, Any]] = None,
+    *,
+    conversation_history: Optional[list[dict[str, Any]]] = None,
+    last_user_message: Optional[str] = None,
+) -> ScopeStatus:
+    """Classify the request into the career-prep scope before routing.
+
+    Values:
+        in_scope: the user has a clear or implied career anchor — route normally.
+        needs_narrowing: vague or anxiety-driven wording, no career anchor yet.
+        generic_english_only: only generic English-study wording, no career anchor.
+
+    The caller MUST NOT route into ``interviews | workplace_communication |
+    project_walkthrough`` unless this returns ``in_scope``.
+    """
+
+    brief = normalize_goal_brief(goal_brief)
+
+    # A routing-ready brief already committed to a career context.
+    if is_goal_brief_routing_ready(brief):
+        return "in_scope"
+    # A sticky draft brief with contexts is also in-scope even if enrichment
+    # fields like domain are still empty.
+    if _is_goal_routing_ready(brief):
+        return "in_scope"
+
+    transcript_text = _aggregate_transcript(conversation_history, last_user_message)
+    normalized = _normalize_text(transcript_text)
+
+    if not normalized:
+        return "needs_narrowing"
+
+    scores = score_context_signals(normalized)
+    if any(value > 0 for value in scores.values()):
+        return "in_scope"
+    if _text_has_any_pattern(normalized, CAREER_ANCHOR_PATTERNS):
+        return "in_scope"
+
+    has_anxiety = _text_has_any_pattern(normalized, ANXIETY_VAGUE_PATTERNS)
+    has_generic_english = _text_has_any_pattern(normalized, GENERIC_ENGLISH_PATTERNS)
+
+    if has_anxiety and not has_generic_english:
+        return "needs_narrowing"
+    if has_generic_english and not has_anxiety:
+        return "generic_english_only"
+    if has_anxiety and has_generic_english:
+        # Anxiety wins — the user is likely in-audience but cannot articulate
+        # the career anchor yet. Ask one narrowing question.
+        return "needs_narrowing"
+
+    # Nothing recognised — give the user the benefit of the doubt.
+    return DEFAULT_SCOPE_STATUS
 
 
 def resolve_goal_routing(

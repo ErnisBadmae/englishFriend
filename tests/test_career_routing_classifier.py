@@ -164,6 +164,8 @@ def test_gate_mode_rejects_semantically_unsafe_classifier_override():
 
 
 def test_gate_mode_applies_classifier_when_legacy_is_ambiguous():
+    """Scoped gate predicate: classifier wins only when legacy has a (weak) primary AND
+    the case is ambiguous AND scope_status is in_scope. Plan contract."""
     classifier_result = CareerRoutingClassifierResult(
         primary_context="project_walkthrough",
         secondary_contexts=("interviews",),
@@ -179,18 +181,28 @@ def test_gate_mode_applies_classifier_when_legacy_is_ambiguous():
         classifier_source="llm",
         model_version="test-model",
     )
+    lexical_goal_brief = {
+        "primary_goal": "Explain my ML projects in English",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "main_contexts": ["interviews"],  # weak/ambiguous lexical pick
+    }
 
     decision = arbitrate_career_routing(
         existing_goal_brief={},
-        lexical_goal_brief=None,
+        lexical_goal_brief=lexical_goal_brief,
         classifier_result=classifier_result,
-        transcript_text="I need to explain what I built and why the tradeoff mattered.",
+        transcript_text=(
+            "I need to explain my project during interviews."
+        ),
         mode="gate",
         min_confidence=0.72,
+        scope_status="in_scope",
     )
 
     assert decision.applied_source == "classifier"
     assert decision.applied_classifier is True
+    assert decision.scoped_gate_applied is True
     assert decision.goal_brief_update is not None
     assert decision.goal_brief_update["main_contexts"][0] == "project_walkthrough"
     assert decision.goal_brief_update["routing_decision_source"] == "classifier_inferred"
