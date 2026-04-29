@@ -10,6 +10,10 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
   const hasBaseline = snapshot.setup.assessment_complete && Boolean(snapshot.assessment);
   const readiness = snapshot.assessment?.goal_readiness;
   const latestEvidence = snapshot.session_evidence.latest;
+  const recurringIssue = snapshot.progress.recurring_issue;
+  const whatImproved = snapshot.progress.what_improved;
+  const westernReadiness = snapshot.progress.western_readiness;
+  const reusableAnswers = snapshot.progress.reusable_answers;
 
   return (
     <div className="miniapp-page">
@@ -68,15 +72,73 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
           <section className="content-card">
             <div className="section-label">What improved</div>
             <div className="list-stack">
+              {whatImproved.length > 0 && (
+                <div className="list-item">
+                  <strong>Fresh in last session</strong>
+                  <div className="pill-row" style={{ marginTop: 8 }}>
+                    {whatImproved.map((tag) => (
+                      <span key={tag} className="pill interview-source-pill">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {snapshot.progress.improvement_signals.length > 0 ? (
                 snapshot.progress.improvement_signals.slice(0, 4).map((signal) => (
                   <div key={signal} className="list-item">{signal}</div>
                 ))
-              ) : (
+              ) : whatImproved.length === 0 ? (
                 <div className="list-empty">Finish a few guided missions to start building proof of progress.</div>
-              )}
+              ) : null}
             </div>
           </section>
+
+          <section className="content-card">
+            <div className="section-label">Recurring blocker</div>
+            {recurringIssue ? (
+              <>
+                <h2>{recurringIssue}</h2>
+                <p className="muted-line">
+                  This issue showed up in at least two of your last sessions. The next mission is biased toward fixing it.
+                </p>
+              </>
+            ) : (
+              <p className="muted-line">No issue has repeated across recent sessions yet.</p>
+            )}
+          </section>
+
+          {westernReadiness && (
+            <section className="content-card">
+              <div className="section-label">Western interview readiness</div>
+              <h2>{Math.round(westernReadiness.score * 100)}%</h2>
+              <p className="muted-line">
+                Composite signal from interview runs, the interview pack, and completed career missions.
+              </p>
+              <div className="pill-row" style={{ marginTop: 8 }}>
+                <span className="pill">{westernReadiness.interview_runs_completed} interview runs</span>
+                <span className="pill">{westernReadiness.career_missions_completed} career missions</span>
+                {westernReadiness.interview_pack_ready && (
+                  <span className="pill interview-source-pill">interview pack ready</span>
+                )}
+              </div>
+            </section>
+          )}
+
+          {reusableAnswers.length > 0 && (
+            <section className="content-card">
+              <div className="section-label">Reusable answers</div>
+              <p className="muted-line">
+                Polished answers from real career missions. These are ready to reuse in interviews and stakeholder conversations.
+              </p>
+              <div className="list-stack">
+                {reusableAnswers.slice(0, 4).map((answer) => (
+                  <div key={`${answer.task_type}-${answer.summary}`} className="list-item">
+                    <strong>{answer.task_type.replace(/_/g, ' ')}</strong>
+                    <p className="muted-line">{answer.summary}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section className="content-card">
             <div className="section-label">What still blocks the goal</div>

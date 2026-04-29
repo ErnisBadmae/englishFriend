@@ -43,7 +43,8 @@ interface SessionConfig {
   returnScreen: Screen;
 }
 
-const DEFAULT_STT_PROVIDER = import.meta.env.VITE_STT_PROVIDER || 'browser_vosk';
+const DEFAULT_STT_PROVIDER =
+  import.meta.env.VITE_STT_PROVIDER || 'browser_vosk';
 
 function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
   if (!mission) {
@@ -94,7 +95,7 @@ function readScreenFromHash(): Screen {
 }
 
 function App() {
-  const [telegramId, setTelegramId] = useState<number>(17);
+  const [telegramId, setTelegramId] = useState<number>(18);
   const [telegramUsername, setTelegramUsername] =
     useState<string>('Local User');
   const [userId, setUserId] = useState<number | null>(null);
@@ -413,7 +414,9 @@ function App() {
                   if (!userId) return;
                   try {
                     setError(null);
-                    await submitProjectNotes(userId, { project_notes: projectNotes });
+                    await submitProjectNotes(userId, {
+                      project_notes: projectNotes
+                    });
                     await refreshSnapshot();
                   } catch (err) {
                     setError(
