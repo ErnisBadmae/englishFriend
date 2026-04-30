@@ -98,6 +98,7 @@ Do not create a new session log if this file is enough.
 - Classifier rollout remains `shadow`: the latest live LLM eval showed label mistakes that would degrade routing if promoted directly to `gate`.
 - Boundary scenarios (`grammar_only_no_context`, `anxiety_vague_no_context`) are advisory: 5/7 checks pass (conversation behavior correct), 2 structural checks not applicable — `completion_signal_seen` and `scope_status` from snapshot (scope_status is not persisted for non-completing sessions; session stays in onboarding, never writes snapshot).
 - Frontend evidence-loop block is wired but only meaningful after a few completed career missions; cold-start users still see empty/zero readiness states.
+- Manual smoke 2026-04-29 surfaced two cross-cutting gaps still open after the foundation UX-fix: (1) русские meta-плеа («не понял», «можешь на русском») должны материализовать `SUPPORT_REQUEST` action — пока решено расширением fast rules; правильный путь — disagreement-report по shadow logs, затем scoped intent gate (как сделано с career classifier), не глобальный mainline gate; (2) anchor-2 confirm теперь пишет `next_mission_choice` в state, но `recommend_next_mission` пока не учитывает его — mission picker нужно научить уважать override.
 
 ## Next Step
 - **DONE**: mainline eval 3/3 PASS (100%) with live Qwen3 + `enable_thinking=false`. Use `--turn-timeout 90 --session-timeout 120` — agent makes 3+ LLM calls per turn in onboarding→learning handoff.
@@ -108,6 +109,13 @@ Do not create a new session log if this file is enough.
 - Benchmark browser Vosk vs backend Parakeet from evidence; then choose the mainline STT lane.
 
 ## Last Update
+### 2026-04-30 (foundation drill: meta-плеа, mission-switch, расширенный dedup)
+- `foundation_speaking_drill` теперь распознаёт русские мета-запросы («не понял», «можешь на русском», «объясни») и отвечает детерминированным bilingual hint'ом без LLM-вызова — anchor state не двигается.
+- Anchor 2 confirm парсит свободный ответ юзера: ключевые слова mock interview / intro / pronunciation / project walk / grammar / vocabulary → `state["next_mission_choice"]`; affirm («yes», «да») → proposed mission. Решение пишется в `decision_log`.
+- Расширенный dedup: история до 4 нормализованных вопросов ассистента, Jaccard-overlap ≥ 0.7 → swap на anchor paraphrase или префикс «Let me put it differently —».
+- Архитектурный note: расширили `SUPPORT_REQUEST_PATTERNS` русскими аналогами — это тот же rule layer, не новый. Следующий шаг — scoped intent gate (disagreement-report → flag), а не mainline LLM gate.
+- Verification: `pytest tests/test_learning_node.py tests/test_language_helper.py -q` → `26 passed`; regression subset (`test_goal_routing`, `test_scope_gate`, `test_routing_scoped_gate`, `test_program_snapshot_service`, `test_learning_plan_service`, `test_agent_error_recovery`, `test_product_synthetic_eval_script`, `test_onboarding_node`, `test_career_routing_classifier`) → `138 passed`.
+
 ### 2026-04-29 (foundation drill UX hardening)
 - Hardened `foundation_speaking_drill` against duplicate anchor prompts: if the model repeats the same anchor question, the runtime swaps in a deterministic paraphrase instead of replaying it verbatim.
 - Expanded `recent_project` anchor detection to catch ICP phrasing like `pet project`, `creating`, `building`, `mentor`, `app`, and `i built`, so project-heavy answers can advance without exact benchmark wording.
