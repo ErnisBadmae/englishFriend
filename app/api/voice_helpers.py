@@ -254,6 +254,7 @@ async def persist_session_evidence_if_needed(
     assessment_scores: Optional[dict] = None,
     assessment_source: Optional[str] = None,
     interview_run: Optional[dict] = None,
+    next_mission_choice: Optional[str] = None,
 ) -> Optional[dict]:
     """Persist generic session evidence if there is enough signal to be useful."""
     user_messages = [m for m in conversation_history if m.get("role") == "user" and m.get("content")]
@@ -285,6 +286,7 @@ async def persist_session_evidence_if_needed(
             assessment_scores=assessment_scores or {},
             assessment_source=assessment_source,
             interview_run=interview_run,
+            next_mission_choice=next_mission_choice,
         )
         if evidence:
             logger.info(f"[SessionEvidence] Persisted evidence for session {session_id}")

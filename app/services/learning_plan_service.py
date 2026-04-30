@@ -519,6 +519,7 @@ class LearningPlanService:
         assessment_scores: Optional[dict[str, Any]] = None,
         assessment_source: Optional[str] = None,
         interview_run: Optional[dict[str, Any]] = None,
+        next_mission_choice: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         plan = await self.get_or_create_plan(user_id)
         roadmap = deepcopy(plan.roadmap or {})
@@ -566,6 +567,7 @@ class LearningPlanService:
             weakness_tags=weakness_tags,
             previous_similar_evidence=previous_similar_evidence,
             project_story_pack=roadmap.get("project_story_pack"),
+            next_mission_choice=next_mission_choice,
         )
         if not evidence:
             return None
@@ -1478,6 +1480,7 @@ class LearningPlanService:
         weakness_tags: list[str],
         previous_similar_evidence: Optional[dict[str, Any]],
         project_story_pack: Optional[dict[str, Any]],
+        next_mission_choice: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         user_messages = [
             str(message.get("content") or "").strip()
@@ -1684,7 +1687,7 @@ class LearningPlanService:
         if embedded_baseline:
             summary = f"{summary} The coach also captured a working baseline from this real speaking task."
 
-        return {
+        evidence: dict[str, Any] = {
             "id": session_id,
             "session_id": session_id,
             "mission_type": mode,
@@ -1706,6 +1709,9 @@ class LearningPlanService:
             "recorded_at": recorded_at,
             "duration_minutes": duration_minutes,
         }
+        if next_mission_choice:
+            evidence["next_mission_choice"] = next_mission_choice
+        return evidence
 
     def _find_weakest_assessment_axis(self, assessment_scores: dict[str, Any]) -> Optional[str]:
         axes: list[tuple[str, float]] = []

@@ -634,6 +634,7 @@ class SessionPersistenceService:
                 assessment_scores=request.assessment_scores or {},
                 assessment_source=request.assessment_source,
                 interview_run=interview_run,
+                next_mission_choice=request.agent_state.get("next_mission_choice") or None,
             )
             if request.turn_count > 0:
                 await award_session_gamification(

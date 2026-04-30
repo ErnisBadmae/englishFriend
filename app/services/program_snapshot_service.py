@@ -890,6 +890,49 @@ def _first_mission_payload_for_profile(
     )
 
 
+_MISSION_CHOICE_OVERRIDES: dict[str, dict[str, Any]] = {
+    "mock_interview": {
+        "mode": "mock_interview",
+        "launch_mode": "mock_interview",
+        "title": "Mock interview practice",
+        "reason": "You chose to try a mock interview to build real interview confidence.",
+        "why_now": "You signalled at the end of your last session that a mock interview would be more useful right now.",
+        "linked_goal_context": "interviews",
+        "linked_skill_gap": None,
+        "task_type": "mock_interview_prep",
+        "expected_outcome": "One realistic interview answer delivered under pressure.",
+        "estimated_minutes": 10,
+        "success_signal": "You answered the interview question in under 90 seconds with a clear structure.",
+        "adaptation_reason": "User chose mock interview at end of previous session.",
+        "evidence_source": "user_choice",
+        "repeat_vs_advance": "new",
+    },
+    "interview_intro": {
+        "mode": "foundation_speaking_drill",
+        "launch_mode": "foundation_speaking_drill",
+        "title": "Self-introduction drill",
+        "reason": "You chose to sharpen your interview self-introduction.",
+        "why_now": "You signalled at the end of your last session that you want to work on your self-introduction.",
+        "linked_goal_context": "interviews",
+        "linked_skill_gap": "fluency",
+        "task_type": "foundation_speaking_drill",
+        "expected_outcome": "A cleaner tell-me-about-yourself answer you can reuse in interviews.",
+        "estimated_minutes": 9,
+        "success_signal": "You can introduce yourself in English in under 60 seconds with clear structure.",
+        "adaptation_reason": "User chose self-introduction drill at end of previous session.",
+        "evidence_source": "user_choice",
+        "repeat_vs_advance": "new",
+    },
+}
+
+
+def _build_mission_choice_override(choice: str) -> Optional[dict[str, Any]]:
+    payload = _MISSION_CHOICE_OVERRIDES.get(choice)
+    if payload:
+        return dict(payload)
+    return None
+
+
 def recommend_next_mission(
     goal_brief: Optional[dict[str, Any]],
     program_plan: Optional[dict[str, Any]],
@@ -930,6 +973,15 @@ def recommend_next_mission(
             estimated_minutes=4,
             success_signal="Your target role, company context, and practice situations are locked in.",
         )
+
+    # Honor user's mission preference captured at end of previous session.
+    # Stored in session_evidence[0]["next_mission_choice"]; self-expires when new evidence pushes it to index 1+.
+    if session_evidence:
+        _override = (session_evidence[0] or {}).get("next_mission_choice")
+        if _override:
+            _override_mission = _build_mission_choice_override(_override)
+            if _override_mission:
+                return _override_mission
 
     if not has_assessment:
         return _build_first_useful_mission_without_assessment(
