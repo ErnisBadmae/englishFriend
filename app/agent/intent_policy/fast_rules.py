@@ -77,6 +77,26 @@ SUPPORT_REQUEST_PATTERNS = (
     "i cant explain in english",
     "i can't explain in english",
 )
+SUPPORT_REQUEST_RU_PATTERNS = (
+    "не понял",
+    "не поняла",
+    "не понимаю",
+    "не понятно",
+    "непонятно",
+    "можешь на русском",
+    "можно на русском",
+    "по-русски",
+    "по русски",
+    "объясни",
+    "объясните",
+    "поясни",
+    "что значит",
+    "что это значит",
+    "как сказать",
+    "как будет",
+    "помоги",
+    "перевед",
+)
 LEXICAL_CONFUSION_PATTERNS = (
     "what does",
     "what is the meaning",
@@ -172,6 +192,17 @@ def classify_fast_intent(text: Optional[str], context: IntentContext) -> Optiona
             classifier_source="fast_rule",
         )
 
+    if _matches_russian_support(text):
+        return IntentResult(
+            type=IntentType.SUPPORT_REQUEST,
+            confidence=0.93,
+            reason_codes=["support_request_ru_pattern"],
+            normalized_text=normalized,
+            matched_anchor_id=context.anchor_question_id,
+            needs_composer_hint=context.low_signal_turn_streak >= 1,
+            classifier_source="fast_rule",
+        )
+
     if _matches_any(normalized, META_PROGRESS_PATTERNS):
         return IntentResult(
             type=IntentType.META_PROGRESS,
@@ -199,6 +230,13 @@ def classify_fast_intent(text: Optional[str], context: IntentContext) -> Optiona
 
 def _matches_any(normalized_text: str, patterns: tuple[str, ...]) -> bool:
     return any(f" {pattern} " in normalized_text for pattern in patterns)
+
+
+def _matches_russian_support(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(pattern in lowered for pattern in SUPPORT_REQUEST_RU_PATTERNS)
 
 
 def _is_lexical_confusion(normalized_text: str) -> bool:
