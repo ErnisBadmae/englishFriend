@@ -109,6 +109,8 @@ class AgentState(TypedDict, total=False):
     anchor_question_id: int
     anchor_follow_up_pending: bool
     last_anchor_question_text: Optional[str]
+    recent_assistant_questions: list[str]
+    next_mission_choice: Optional[str]
 
     # === Vocabulary (FSRS) ===
     due_vocabulary_count: int
@@ -231,6 +233,8 @@ def create_initial_state(
         anchor_question_id=0,
         anchor_follow_up_pending=False,
         last_anchor_question_text=None,
+        recent_assistant_questions=[],
+        next_mission_choice=None,
 
         # Vocabulary
         due_vocabulary_count=0,

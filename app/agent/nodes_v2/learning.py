@@ -13,6 +13,8 @@ import time
 from typing import Optional
 
 from app.agent.intent_policy import build_intent_context_from_state, classify_intent
+from app.agent.intent_policy.fast_rules import SUPPORT_REQUEST_RU_PATTERNS
+from app.agent.intent_policy.language import is_russian
 from app.agent.state import AgentState, AgentPhase, add_decision_log
 from app.agent.pedagogy_policy import shadow_policy_action_for_intent
 from app.data.interview_tracks import get_interview_track
@@ -301,7 +303,7 @@ async def learning_node(state: AgentState) -> AgentState:
 
     if mission_anchored and _needs_supportive_anchor_recovery(user_message):
         state["low_signal_turn_streak"] = int(state.get("low_signal_turn_streak", 0) or 0) + 1
-        action = _build_supportive_anchor_action(state)
+        action = _build_supportive_anchor_action(state, user_message=user_message)
         return _record_learning_turn(
             state,
             action,
@@ -449,7 +451,7 @@ async def learning_node(state: AgentState) -> AgentState:
     )
 
     if mission_anchored:
-        _advance_anchor_state(state)
+        _advance_anchor_state(state, user_message=user_message)
 
     return _record_learning_turn(
         state,
@@ -967,7 +969,14 @@ def _build_low_signal_action(state: AgentState) -> dict:
     }
 
 
-def _build_supportive_anchor_action(state: AgentState) -> dict:
+ANCHOR_RU_HINTS = {
+    "current_work": "Расскажи коротко по-английски, кем работаешь и какие ML-задачи решаешь.",
+    "recent_project": "Расскажи по-английски про один недавний проект: какую проблему решал.",
+    "next_step": "Подтверди одной фразой по-английски, согласен ли ты с предложенной следующей миссией.",
+}
+
+
+def _build_supportive_anchor_action(state: AgentState, *, user_message: Optional[str] = None) -> dict:
     mission_task_type = state.get("mission_task_type") or ""
     if mission_task_type in TECHNICAL_MISSION_SPECS:
         streak = int(state.get("low_signal_turn_streak", 0) or 0)
@@ -996,6 +1005,16 @@ def _build_supportive_anchor_action(state: AgentState) -> dict:
     streak = int(state.get("low_signal_turn_streak", 0) or 0)
     anchor = _get_anchor(state)
     example = anchor["example"]
+
+    if is_russian(user_message):
+        ru_hint = ANCHOR_RU_HINTS.get(anchor["id"], "")
+        return {
+            "action": "continue",
+            "response_text": (
+                f"{ru_hint} Example: \"{example}\""
+            ),
+            "should_end": False,
+        }
 
     if streak <= 1:
         response_text = (
@@ -1053,7 +1072,52 @@ def _build_mission_error_action(state: AgentState, reason: str) -> dict:
     }
 
 
-def _advance_anchor_state(state: AgentState) -> None:
+_MISSION_KEYWORD_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("mock interview", "mock", "test interview"), "mock_interview"),
+    (("intro", "introduction", "about myself", "self introduction"), "interview_intro"),
+    (("pronunciation", "accent"), "pronunciation_drill"),
+    (("project walk", "project answer", "walkthrough"), "technical_project_walkthrough"),
+    (("grammar", "tense", "article"), "grammar_rescue"),
+    (("vocab", "vocabulary", "words"), "vocabulary_drill"),
+)
+_AFFIRM_TOKENS = (" yes ", " ok ", " okay ", " sure ", " right ", " match ", " sounds right ", " да ", " угу ", " подтверждаю ")
+_NEGATION_TOKENS = (" no ", " not ", " nope ", " нет ", " не ")
+
+
+def _parse_anchor_two_choice(
+    user_text: Optional[str],
+    proposed_mission: Optional[str],
+) -> Optional[str]:
+    """Извлечь mission preference из ответа на anchor 2 confirm.
+
+    Возвращает имя миссии (`mock_interview`, ...), либо `proposed_mission`
+    при простом подтверждении, либо None если сигнал не обнаружен.
+    """
+    if not (user_text or "").strip():
+        return None
+    lowered = (user_text or "").lower()
+    padded = f" {lowered} "
+    is_affirm = any(token in padded for token in _AFFIRM_TOKENS)
+    is_negation = any(token in padded for token in _NEGATION_TOKENS)
+    for keywords, mission_id in _MISSION_KEYWORD_MAP:
+        if any(keyword in lowered for keyword in keywords):
+            return mission_id
+    if is_affirm and not is_negation:
+        return proposed_mission
+    return None
+
+
+def _proposed_mission_from_focus_hint(state: AgentState) -> Optional[str]:
+    linked_context = state.get("mission_linked_goal_context") or "foundation"
+    mapping = {
+        "interviews": "interview_intro",
+        "project_walkthrough": "technical_project_walkthrough",
+        "workplace_communication": "stakeholder_explanation_drill",
+    }
+    return mapping.get(linked_context)
+
+
+def _advance_anchor_state(state: AgentState, user_message: Optional[str] = None) -> None:
     index = int(state.get("anchor_question_id", 0) or 0)
     follow_up_pending = bool(state.get("anchor_follow_up_pending", False))
 
@@ -1065,6 +1129,18 @@ def _advance_anchor_state(state: AgentState) -> None:
         state["anchor_question_id"] = index + 1
         state["anchor_follow_up_pending"] = False
         return
+
+    proposed = _proposed_mission_from_focus_hint(state)
+    chosen = _parse_anchor_two_choice(user_message, proposed)
+    if chosen:
+        state["next_mission_choice"] = chosen
+        add_decision_log(
+            state,
+            node="learning",
+            action="anchor_two_choice",
+            reason="user confirmed/corrected next mission",
+            data={"chosen": chosen, "proposed": proposed},
+        )
 
     state["anchor_question_id"] = len(ANCHORS) - 1
     state["anchor_follow_up_pending"] = False
@@ -1148,6 +1224,34 @@ def _match_anchor_prompt_fragment(response_text: str) -> tuple[Optional[str], Op
     return None, None, None
 
 
+_RECENT_QUESTIONS_CAP = 4
+_DUP_JACCARD_THRESHOLD = 0.7
+_QUESTION_SENTENCE_RE = re.compile(r"[^.!?]*\?")
+
+
+def _extract_last_question(text: str) -> Optional[str]:
+    matches = _QUESTION_SENTENCE_RE.findall(text or "")
+    if not matches:
+        return None
+    return matches[-1].strip() or None
+
+
+def _jaccard(a: str, b: str) -> float:
+    set_a = {tok for tok in a.split() if tok}
+    set_b = {tok for tok in b.split() if tok}
+    if not set_a or not set_b:
+        return 0.0
+    inter = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return inter / union if union else 0.0
+
+
+def _push_recent_question(state: AgentState, normalized_question: str) -> None:
+    history: list[str] = list(state.get("recent_assistant_questions") or [])
+    history.append(normalized_question)
+    state["recent_assistant_questions"] = history[-_RECENT_QUESTIONS_CAP:]
+
+
 def _dedupe_anchor_response_if_needed(state: AgentState, action: dict) -> None:
     if not _is_mission_anchored(state):
         return
@@ -1161,18 +1265,35 @@ def _dedupe_anchor_response_if_needed(state: AgentState, action: dict) -> None:
         return
 
     anchor_id, normalized_fragment, raw_fragment = _match_anchor_prompt_fragment(response_text)
-    if not anchor_id or not normalized_fragment:
+    if anchor_id and normalized_fragment:
+        if state.get("last_anchor_question_text") == normalized_fragment:
+            paraphrase = ANCHOR_PARAPHRASES.get(anchor_id)
+            if paraphrase:
+                if raw_fragment and raw_fragment in response_text:
+                    action["response_text"] = response_text.replace(raw_fragment, paraphrase, 1)
+                else:
+                    action["response_text"] = paraphrase
+        state["last_anchor_question_text"] = normalized_fragment
+
+    response_text = action.get("response_text", "")
+    last_question = _extract_last_question(response_text)
+    if not last_question:
+        return
+    normalized_question = _normalize_text(last_question).strip()
+    if not normalized_question:
         return
 
-    if state.get("last_anchor_question_text") == normalized_fragment:
-        paraphrase = ANCHOR_PARAPHRASES.get(anchor_id)
-        if paraphrase:
-            if raw_fragment and raw_fragment in response_text:
-                action["response_text"] = response_text.replace(raw_fragment, paraphrase, 1)
-            else:
-                action["response_text"] = paraphrase
+    history = list(state.get("recent_assistant_questions") or [])
+    if any(_jaccard(normalized_question, prior) >= _DUP_JACCARD_THRESHOLD for prior in history):
+        anchor = _get_anchor(state)
+        paraphrase = ANCHOR_PARAPHRASES.get(anchor["id"])
+        if paraphrase and last_question in response_text:
+            action["response_text"] = response_text.replace(last_question, paraphrase, 1)
+        else:
+            action["response_text"] = f"Let me put it differently — {response_text}"
+        normalized_question = _normalize_text(_extract_last_question(action["response_text"]) or last_question).strip()
 
-    state["last_anchor_question_text"] = normalized_fragment
+    _push_recent_question(state, normalized_question)
 
 
 def _rewrite_legacy_next_step_response_if_needed(state: AgentState, action: dict) -> None:
@@ -1210,10 +1331,13 @@ def _update_shadow_intent(state: AgentState, user_message: Optional[str]) -> Non
 
 
 def _needs_supportive_anchor_recovery(text: Optional[str]) -> bool:
-    normalized = _normalize_text(text)
-    if not normalized.strip():
+    if not (text or "").strip():
         return False
-    return any(pattern in normalized for pattern in SUPPORT_REQUEST_PATTERNS)
+    normalized = _normalize_text(text)
+    if any(pattern in normalized for pattern in SUPPORT_REQUEST_PATTERNS):
+        return True
+    lowered = text.lower()
+    return any(pattern in lowered for pattern in SUPPORT_REQUEST_RU_PATTERNS)
 
 
 def route_after_learning(state: AgentState) -> str:
