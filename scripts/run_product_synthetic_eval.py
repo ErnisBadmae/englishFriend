@@ -567,6 +567,68 @@ MAINLINE_SCENARIOS: dict[str, ProductSyntheticScenario] = {
         expected_session_task_type="foundation_speaking_drill",
         handoff_keywords=("real mission",),
     ),
+    # --- Personas: stress-test foundation drill anchor-phase fixes (2026-04-30) ---
+    "ru_mixed_speaker": ProductSyntheticScenario(
+        slug="ru_mixed_speaker",
+        description="ML engineer mid-session switches to Russian meta-plea; coach must respond bilingually without losing anchor.",
+        user_messages=(
+            "I want machine learning interview practice for an ML engineer job abroad",
+            "I currently explain my background too vaguely and want a cleaner intro in English.",
+            "I work as ML engineer at a fintech for two years.",
+            "не понял вопрос, можешь на русском объяснить?",
+            "I built a fraud detection model with gradient boosting, improved precision by 20 percent.",
+            "next step is to learn system design for ML in production.",
+        ),
+        expected_primary_context="interviews",
+        expected_track_id="hr_intro",
+        expected_session_task_type="foundation_speaking_drill",
+        handoff_keywords=("real mission",),
+    ),
+    "impatient_mission_switcher": ProductSyntheticScenario(
+        slug="impatient_mission_switcher",
+        description="On anchor 2 user pivots to mock interview; session must complete cleanly without fallback leak.",
+        user_messages=(
+            "I want machine learning interview practice for an ML engineer job abroad",
+            "I want a cleaner intro for ML interviews.",
+            "Senior ML engineer at a healthcare startup for three years.",
+            "Built a patient risk scoring model end to end, deployed it on Kubernetes.",
+            "wanna try mock interview instead, that's more useful for me right now",
+        ),
+        expected_primary_context="interviews",
+        expected_track_id="hr_intro",
+        expected_session_task_type="foundation_speaking_drill",
+        handoff_keywords=("real mission",),
+    ),
+    "repetitive_complainer": ProductSyntheticScenario(
+        slug="repetitive_complainer",
+        description="Brief anchor-phase answers that still advance each anchor; coach must not repeat the same question verbatim.",
+        user_messages=(
+            "I want machine learning interview practice for an ML engineer job abroad",
+            "I want a cleaner self-introduction for ML engineer interviews",
+            "ML engineer at a fintech startup, two years, recommendation systems",
+            "built a fraud detection model, gradient boosting, reduced false positives by 20 percent",
+            "next goal is system design for ML in production",
+        ),
+        expected_primary_context="interviews",
+        expected_track_id="hr_intro",
+        expected_session_task_type="foundation_speaking_drill",
+        handoff_keywords=("real mission",),
+    ),
+    "pet_project_only": ProductSyntheticScenario(
+        slug="pet_project_only",
+        description="User has no day-job ML role, only a pet project; foundation drill must still complete without forcing current_work.",
+        user_messages=(
+            "I want machine learning interview practice for an ML engineer job abroad",
+            "I want better English for tell me about yourself answer.",
+            "I don't have ML role yet, only side project — a recommendation system for board game collectors.",
+            "It uses collaborative filtering, I scraped BoardGameGeek and trained on around 50k users.",
+            "next step is to add content-based features and deploy a small Streamlit demo.",
+        ),
+        expected_primary_context="interviews",
+        expected_track_id="hr_intro",
+        expected_session_task_type="foundation_speaking_drill",
+        handoff_keywords=("real mission",),
+    ),
 }
 
 MAINLINE_SCENARIO_SET = (
@@ -615,6 +677,13 @@ EXPANDED_SCENARIO_SET = (
     "workplace_status_update",
     "project_tradeoff_story",
     "interview_self_intro_gap",
+)
+
+PERSONAS_SCENARIO_SET = (
+    "ru_mixed_speaker",
+    "impatient_mission_switcher",
+    "repetitive_complainer",
+    "pet_project_only",
 )
 
 
@@ -917,6 +986,8 @@ async def run_product_scenario(
             await drain_events(websocket, scenario=scenario, events=events)
 
             for index, message in enumerate(scenario.user_messages, start=1):
+                if has_completion_signal(events):
+                    break  # session ended early (e.g. anchor-2 mission switch); skip remaining turns
                 payload = {"type": "text", "text": message, "source": "composer"}
                 await websocket.send(json.dumps(payload))
                 assistant = await wait_for_assistant_turn(
@@ -986,7 +1057,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario-set",
         default="mainline",
-        choices=("mainline", "expanded", "live_tester"),
+        choices=("mainline", "expanded", "live_tester", "personas"),
         help="Named synthetic scenario set to execute sequentially.",
     )
     parser.add_argument(
@@ -1024,6 +1095,8 @@ def resolve_scenario_slugs(args: argparse.Namespace) -> tuple[str, ...]:
         return EXPANDED_SCENARIO_SET
     if args.scenario_set == "live_tester":
         return LIVE_TESTER_SCENARIO_SET
+    if args.scenario_set == "personas":
+        return PERSONAS_SCENARIO_SET
     return MAINLINE_SCENARIO_SET
 
 
