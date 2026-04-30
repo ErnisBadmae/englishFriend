@@ -3,7 +3,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agent.graph_v2 import initialize_session_v2
-from app.agent.nodes_v2.learning import _get_foundation_prompt, _matches_anchor, learning_node
+from app.agent.nodes_v2.learning import (
+    _get_foundation_prompt,
+    _matches_anchor,
+    _parse_anchor_two_choice,
+    learning_node,
+)
 from app.agent.state import AgentPhase, LearningModeEnum, create_initial_state
 from app.services.ai.llm_provider import LLMEmptyContentError
 
@@ -464,3 +469,96 @@ async def test_learning_node_technical_empty_final_content_uses_technical_fallba
 
     assert "trade off" in updated["pending_response"].lower() or "trade-off" in updated["pending_response"].lower()
     assert "use simple english" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_russian_meta_plea_returns_bilingual_hint_without_llm():
+    state = _foundation_state()
+    state["last_user_message"] = "не понял вопрос, можешь на русском объяснить?"
+    initial_anchor = state.get("anchor_question_id", 0)
+
+    llm = MagicMock()
+    llm.generate = AsyncMock()
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert llm.generate.await_count == 0
+    response = updated["pending_response"] or ""
+    assert "по-английски" in response.lower() or "по английски" in response.lower()
+    assert "example" in response.lower()
+    assert updated["anchor_question_id"] == initial_anchor
+
+
+@pytest.mark.asyncio
+async def test_learning_node_anchor_two_records_mock_interview_choice():
+    state = _foundation_state()
+    state["anchor_question_id"] = 2
+    state["anchor_follow_up_pending"] = True
+    state["last_user_message"] = "wanna try to get hire and test mock interview"
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action":"continue","response_text":"Got it, mock interview it is.","should_end":false}'
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    assert updated["should_end_session"] is True
+    assert updated["next_mission_choice"] == "mock_interview"
+
+
+def test_parse_anchor_two_choice_extracts_known_missions():
+    assert _parse_anchor_two_choice("wanna try mock interview", None) == "mock_interview"
+    assert _parse_anchor_two_choice("yes, sounds right", "interview_intro") == "interview_intro"
+    assert _parse_anchor_two_choice("no", "interview_intro") is None
+    assert _parse_anchor_two_choice("", None) is None
+
+
+@pytest.mark.asyncio
+async def test_learning_node_dedupes_near_duplicate_llm_question():
+    state = _foundation_state()
+    state["anchor_question_id"] = 1
+    state["recent_assistant_questions"] = [
+        " walk me through one recent project what problem were you solving there ",
+    ]
+    state["last_user_message"] = "I built a churn model."
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action":"continue","response_text":"Walk me through one recent project: what problem were you solving there?","should_end":false}'
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    response = (updated["pending_response"] or "").lower()
+    assert (
+        "let me put it differently" in response
+        or "walk me through one recent project. what problem were you solving" not in response
+    )
