@@ -1,28 +1,32 @@
 # Voice Observability Runbook
 
-Last updated: 2026-04-09
+Last updated: 2026-05-06
 Scope: instrumented live smoke for `/api/v1/voice/chat/v2` and `/api/v1/voice/realtime`
 
 ## Purpose
 
-Use this runbook when you need one repeatable way to debug live voice behavior across:
+Используй этот runbook, когда нужен один повторяемый способ разбирать live voice behavior через:
 
 - browser STT / composer input
 - websocket flow
-- agent and pedagogy routing
+- agent и pedagogy routing
 - LLM compatibility / fallback behavior
 - memory bootstrap and save
 - post-session persistence
 
-The target is one correlated view by:
+Нужна одна коррелированная картина по:
 
 - `session_id`
 - `turn_id`
 - `runtime`
 
+Operator replay artifact:
+
+- `venv\Scripts\python.exe scripts/replay_session.py --session-id <uuid>`
+
 ## What Exists Now
 
-Backend now emits structured voice events with:
+Backend уже пишет structured voice events с:
 
 - `runtime`
 - `session_id`
@@ -32,7 +36,7 @@ Backend now emits structured voice events with:
 - `mode`
 - `mission_task_type`
 
-Frontend dev mode now exposes a debug panel with:
+Frontend dev mode уже показывает debug panel с:
 
 - session metadata
 - normalized client-side event list
@@ -40,59 +44,82 @@ Frontend dev mode now exposes a debug panel with:
 
 ## Capture Checklist
 
-For every live run, collect all 3 artifacts:
+Для каждого live run собирай все 4 артефакта:
 
-1. Frontend debug export JSON from the dev panel.
-2. Backend logs filtered by `session_id`.
-3. `/metrics` snapshot before and after the run.
+1. Frontend debug export JSON из dev panel.
+2. Backend logs, отфильтрованные по `session_id`.
+3. `/metrics` snapshot до и после run.
+4. Replay bundle из `scripts/replay_session.py`.
 
-If one of the 3 is missing, the run is not considered fully instrumented.
+Если одного из 4 артефактов нет, run не считается полностью instrumented.
+
+## Replay Workflow
+
+Минимальная команда:
+
+`venv\Scripts\python.exe scripts/replay_session.py --session-id <uuid>`
+
+Опционально можно сохранить bundle в файл:
+
+`venv\Scripts\python.exe scripts/replay_session.py --session-id <uuid> --output replay.json`
+
+Replay bundle должен включать:
+
+- session metadata
+- transcript по utterances
+- corrections
+- feedback
+- matching `roadmap_session_evidence`
+- `snapshot_excerpt`
+- trace note для дальнейшей корреляции логов
+
+Любой pilot debrief должен ссылаться на конкретный `session_id` и прилагать replay bundle.
 
 ## Smoke Set
 
 ### 1. First-run setup
 
-Goal:
+Цель:
 
-- validate `goal -> first useful mission -> session_complete -> return home`
+- проверить `goal -> first useful mission -> session_complete -> return home`
 
-Success:
+Успех:
 
-- no empty assistant turn
-- no reasoning text leaked to the user
-- setup session ends cleanly
-- Home shows the next mission after handoff
+- нет пустого assistant turn
+- reasoning text не утек пользователю
+- setup session завершается чисто
+- Home показывает next mission после handoff
 
 ### 2. Noisy foundation
 
-Goal:
+Цель:
 
-- validate low-signal handling and mission anchoring
+- проверить low-signal handling и mission anchoring
 
-Success:
+Успех:
 
-- no topic drift
-- noisy input does not become a hallucinated topic
-- coach asks for shorter answer or composer recovery
-- session stays inside mission anchors
+- нет topic drift
+- noisy input не превращается в hallucinated topic
+- coach просит shorter answer или recovery через composer
+- session остается внутри mission anchors
 
 ### 3. Clean foundation
 
-Goal:
+Цель:
 
-- validate the normal guided loop with clean speech
+- проверить нормальный guided loop на clean input
 
-Success:
+Успех:
 
-- short guided follow-ups
-- correct session completion
-- evidence and persistence remain intact
+- короткие guided follow-ups
+- корректное завершение session
+- evidence и persistence остаются целыми
 
 ## What To Inspect By Layer
 
 ### Frontend
 
-Look for:
+Смотри:
 
 - `model_loading_started` / `model_loaded`
 - `listening_started` / `listening_stopped`
@@ -104,45 +131,45 @@ Look for:
 - `ws_audio`
 - `ws_session_complete`
 
-Questions:
+Вопросы:
 
-- Did the browser capture the intended text?
-- Did the client send it as `browser_vosk` or `composer`?
-- Did the websocket reconnect or close unexpectedly?
+- Браузер действительно захватил нужный текст?
+- Клиент отправил его как `browser_vosk` или `composer`?
+- WebSocket неожиданно переподключился или закрылся?
 
 ### Backend bootstrap and memory
 
-Look for:
+Смотри:
 
 - `session_bootstrap_started`
 - `session_bootstrap_ready`
 - `memory_context_loaded`
 - `agent_session_ready`
 
-Questions:
+Вопросы:
 
-- Was the right `mission_task_type` loaded?
-- Was learner profile present?
-- Did the runtime start as `chat_v2` or `realtime`?
+- Загрузился правильный `mission_task_type`?
+- Был ли learner profile?
+- Runtime стартовал как `chat_v2` или `realtime`?
 
 ### Turn processing
 
-Look for:
+Смотри:
 
 - `turn_received`
 - `stt_completed`
 - `agent_turn_completed`
-- `tts_completed` or `tts_failed`
+- `tts_completed` или `tts_failed`
 
-Questions:
+Вопросы:
 
-- Which `turn_id` failed?
-- Was the issue in transcript quality, pedagogy, or TTS?
-- Did `phase` or `mode` shift unexpectedly?
+- Какой `turn_id` сломался?
+- Проблема в transcript quality, pedagogy или TTS?
+- `phase` или `mode` сдвинулись неожиданно?
 
 ### Persistence
 
-Look for:
+Смотри:
 
 - `persistence_started`
 - `memory_saved`
@@ -150,15 +177,15 @@ Look for:
 - `session_completed`
 - `session_disconnected`
 
-Questions:
+Вопросы:
 
-- Was persistence run once or twice?
-- Did setup handoff happen?
-- Did the session save evidence and memory safely?
+- Persistence отработал один раз или два?
+- Setup handoff случился корректно?
+- Session сохранил evidence и memory безопасно?
 
 ## Metrics To Snapshot
 
-Minimum metrics to inspect:
+Минимальный набор:
 
 - `voice_stage_latency_seconds`
 - `voice_turn_events_total`
@@ -168,30 +195,30 @@ Minimum metrics to inspect:
 - `voice_errors_total`
 - `llm_response_anomalies_total`
 
-For comparison runs, keep both:
+Для comparison runs храни:
 
 - raw `/metrics` text
-- a short human note with the scenario and `session_id`
+- короткую человеческую заметку со сценарием и `session_id`
 
 ## Triage Rules
 
-If the problem is:
+Если проблема такая:
 
-- wrong transcript from the start: inspect frontend STT and source tag first
-- correct transcript but wrong question/follow-up: inspect `agent_turn_completed`
-- empty or silent assistant turn: inspect `llm_response_anomalies_total` and LLM logs
-- good turn but wrong saved state: inspect `persistence_*` and `memory_saved`
-- drift between Home and live mission: inspect mission contract in bootstrap
+- неверный transcript с самого начала: сначала смотри frontend STT и source tag
+- transcript верный, но follow-up неправильный: смотри `agent_turn_completed`
+- пустой или silent assistant turn: смотри `llm_response_anomalies_total` и LLM logs
+- turn хороший, но state сохранился неверно: смотри `persistence_*` и `memory_saved`
+- есть drift между Home и live mission: смотри mission contract во время bootstrap
 
 ## Non-Goals
 
-This runbook does not yet cover:
+Этот runbook пока не покрывает:
 
 - PersonaPlex premium path
 - `/chat-legacy`
 - server-side storage of frontend debug events
 - full production tracing UX
 
-After a run is fully captured here, move to:
+После того как run полностью собран по этому runbook, можно переходить к:
 
 - [STT_BENCHMARK_RUNBOOK.md](./STT_BENCHMARK_RUNBOOK.md)

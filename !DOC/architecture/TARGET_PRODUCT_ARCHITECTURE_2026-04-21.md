@@ -16,6 +16,16 @@ The core idea is simple:
 - evidence is the control layer
 - adaptive mission routing is the product moat
 
+## Current Cycle Decisions (2026-05)
+
+Это тактические решения активного founder-learning sprint.
+
+- Активный wedge: только `ML/SWE interview prep`
+- Mainline validation path: `text-first`
+- Voice: `opt-in`, а не главный product gate
+- `/api/v1/voice/chat/v2` остается публичным endpoint, но runtime behavior определяется через controller/service ownership
+- Operator observability обязана включать replay по `session_id`, а не только сырые логи
+
 ## One-Screen Schematic
 
 ```text
@@ -175,16 +185,16 @@ These two technologies solve different problems.
 
 ### Parakeet
 
-`Parakeet` should be treated as the mainline STT upgrade path.
+`Parakeet` остается кандидатом на mainline STT upgrade path, но не является приоритетом текущего цикла.
 
-Why:
+Почему:
 
-- it improves transcript quality for the core product loop
-- it is benchmarkable against role, project, and technical-term capture
-- it helps every guided mission, not only premium realtime UX
-- it reduces the biggest current trust gap: "the product works, but hears me badly"
+- улучшает transcript quality для core product loop
+- его можно честно benchmark'ать на role, project и technical-term capture
+- он помогает всему guided flow, а не только premium realtime UX
+- снижает важный trust gap: “продукт работает, но плохо меня слышит”
 
-Recommendation: connect `Parakeet` first as the default backend STT lane beside browser Vosk.
+Правило на текущий цикл: `Parakeet` не двигается как отдельный milestone до тех пор, пока discovery и pilot не покажут, что STT действительно блокирует retention.
 
 ### PersonaPlex
 
@@ -200,11 +210,13 @@ Recommendation: keep `PersonaPlex` as an optional premium runtime path on top of
 
 ### Decision Rule
 
-If the question is "what should we connect next to strengthen the moat?", the answer is:
+Если вопрос звучит как “что подключать следующим для усиления moat?”, долгосрочный порядок остается таким:
 
-1. `Parakeet` first
-2. evidence loop hardening second
-3. `PersonaPlex` later as a premium lane
+1. `Parakeet`
+2. hardening evidence loop
+3. `PersonaPlex` позже как premium lane
+
+Но для текущего founder-learning sprint это отложено; цикл оптимизирует learning velocity, а не интеграционный breadth.
 
 ## The Road To Moat
 
