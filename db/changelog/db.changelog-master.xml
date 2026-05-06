@@ -12,5 +12,6 @@
     <include file="db/changelog/004-partition-management.xml" relativeToChangelogFile="true" />
     <include file="db/changelog/005-memories-learning-plan.xml" relativeToChangelogFile="true"/>
     <include file="db/changelog/006-materialized-views.xml" relativeToChangelogFile="true"/>
+    <include file="db/changelog/007-memory-kind-alignment.xml" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>

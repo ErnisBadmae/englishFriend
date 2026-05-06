@@ -69,6 +69,7 @@ class MemoryPipeline:
         self._extraction = extraction_service or get_memory_extraction_service()
         self._qdrant = qdrant_service or get_qdrant_service()
         self._vector_sync_scheduler = vector_sync_scheduler or self._schedule_qdrant_upsert
+        self._logged_memory_kind_schema_mismatch = False
 
     async def _extract_memories_with_retry(
         self,
@@ -363,7 +364,17 @@ class MemoryPipeline:
             await self.db.commit()
             await self.db.refresh(memory)
         except Exception as exc:
-            logger.error("Failed to save memory in PostgreSQL: %s", exc)
+            if self._is_memory_kind_schema_mismatch(exc):
+                if not self._logged_memory_kind_schema_mismatch:
+                    logger.warning(
+                        "Memory save skipped because PostgreSQL enum memory_kind is out of sync with app values: %s",
+                        exc,
+                    )
+                    self._logged_memory_kind_schema_mismatch = True
+                else:
+                    logger.debug("Skipping memory save due to known memory_kind enum mismatch: %s", exc)
+            else:
+                logger.error("Failed to save memory in PostgreSQL: %s", exc)
             await self.db.rollback()
             return None
 
@@ -390,6 +401,10 @@ class MemoryPipeline:
             )
 
         return memory
+
+    @staticmethod
+    def _is_memory_kind_schema_mismatch(exc: Exception) -> bool:
+        return "invalid input value for enum memory_kind" in str(exc).lower()
 
     def _schedule_qdrant_upsert(
         self,

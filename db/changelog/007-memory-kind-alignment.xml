@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="007-memory-kind-alignment" author="englishfriend">
+        <comment>Add canonical application values to PostgreSQL memory_kind enum</comment>
+
+        <sql><![CDATA[
+            DO $$ BEGIN
+                ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'fact';
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        ]]></sql>
+
+        <sql><![CDATA[
+            DO $$ BEGIN
+                ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'preference';
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        ]]></sql>
+
+        <sql><![CDATA[
+            DO $$ BEGIN
+                ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'experience';
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        ]]></sql>
+
+        <sql><![CDATA[
+            DO $$ BEGIN
+                ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'goal';
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        ]]></sql>
+
+        <sql><![CDATA[
+            DO $$ BEGIN
+                ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'error_pattern';
+            EXCEPTION
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        ]]></sql>
+    </changeSet>
+
+</databaseChangeLog>
