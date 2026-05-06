@@ -84,6 +84,7 @@ class VoiceSessionController:
         turn_detector: TurnDetector,
         dependencies: Optional[VoiceRuntimeDependencies] = None,
         use_v2_agent: Optional[bool] = None,
+        runtime_label: str = "realtime",
     ) -> None:
         self._db = db
         self._user_id = user_id
@@ -115,8 +116,9 @@ class VoiceSessionController:
         self._agent_state: dict[str, Any] = {}
         self._agent_version = "v2"
         self._final_mode = "unknown"
+        self._finishing_signal_sent = False
         self._completion_signal_sent = False
-        self._runtime = "realtime"
+        self._runtime = runtime_label
 
     def _scope(self) -> VoiceSessionScope:
         return VoiceSessionScope(
@@ -443,10 +445,10 @@ class VoiceSessionController:
             events.extend(assistant_events)
             voice_turn_total_seconds.labels(mode=current_mode).observe(time.time() - turn_start)
 
-        events.extend(self._build_session_complete_events())
-
         if self._agent_state.get("should_end_session"):
+            events.extend(self._build_session_finishing_events())
             await self._persist_session(status="completed")
+            events.extend(self._build_session_complete_events())
             return VoiceControllerOutcome(
                 events=events,
                 should_close=True,
@@ -490,8 +492,9 @@ class VoiceSessionController:
                 )
             )
 
-        events.extend(self._build_session_complete_events())
+        events.extend(self._build_session_finishing_events())
         await self._persist_session(status="completed")
+        events.extend(self._build_session_complete_events())
         return VoiceControllerOutcome(events=events, should_close=True, status="completed")
 
     async def _run_agent_turn(self, user_message: Optional[str]) -> dict[str, Any]:
@@ -526,6 +529,9 @@ class VoiceSessionController:
             )
         ]
 
+        if str(self._stt_provider_name or "").strip().lower() == "composer":
+            return events
+
         try:
             tts_start = time.time()
             audio_bytes = await self._tts_provider.synthesize(text)
@@ -540,6 +546,7 @@ class VoiceSessionController:
                 envelope=envelope,
                 layer="tts",
                 event="tts_completed",
+                level=logging.DEBUG,
                 latency_ms=(time.time() - tts_start) * 1000,
                 char_count=len(text),
                 audio_bytes=len(audio_bytes),
@@ -613,6 +620,39 @@ class VoiceSessionController:
                     "type": "session_complete",
                     "reason": self._agent_state.get("session_complete_reason"),
                     "return_screen": self._agent_state.get("session_complete_return_screen") or "home",
+                },
+                envelope=envelope,
+            )
+        ]
+
+    def _build_session_finishing_events(self) -> list[dict[str, Any]]:
+        if self._finishing_signal_sent or not self._agent_state.get("session_complete_reason"):
+            return []
+
+        self._finishing_signal_sent = True
+        envelope = make_turn_envelope(
+            self._scope(),
+            phase=_enum_value(
+                self._agent_state.get("current_phase", AgentPhase.START),
+                AgentPhase.START.value,
+            ),
+            mode=self._final_mode,
+        )
+        log_voice_event(
+            logger,
+            envelope=envelope,
+            layer="session",
+            event="session_finishing",
+            reason=self._agent_state.get("session_complete_reason"),
+            return_screen=self._agent_state.get("session_complete_return_screen") or "home",
+        )
+        return [
+            enrich_ws_event(
+                {
+                    "type": "session_finishing",
+                    "reason": self._agent_state.get("session_complete_reason"),
+                    "return_screen": self._agent_state.get("session_complete_return_screen") or "home",
+                    "pending_persistence": True,
                 },
                 envelope=envelope,
             )

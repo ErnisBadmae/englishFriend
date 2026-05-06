@@ -230,6 +230,8 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
         "corrections_made": [],
         "vocabulary_reviewed": [],
         "should_end_session": True,
+        "session_complete_reason": "session_end",
+        "session_complete_return_screen": "home",
     }
 
     with patch(
@@ -246,6 +248,76 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
         and "Nice work today" in event.get("text", "")
         for event in outcome.events
     )
+    finishing_index = next(
+        index for index, event in enumerate(outcome.events) if event.get("type") == "session_finishing"
+    )
+    complete_index = next(
+        index for index, event in enumerate(outcome.events) if event.get("type") == "session_complete"
+    )
+    assert finishing_index < complete_index
+    controller._persistence_service.persist.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_controller_regular_turn_emits_finishing_before_completion_when_agent_ends_session():
+    tts_provider = MagicMock()
+    tts_provider.synthesize = AsyncMock(return_value=b"audio")
+
+    controller = VoiceSessionController(
+        db=AsyncMock(),
+        user_id=8,
+        mode=None,
+        interview_track=None,
+        transport=MagicMock(),
+        stt_provider=PassthroughTextSTTProvider(),
+        tts_provider=tts_provider,
+        turn_detector=ExplicitMessageTurnDetector(),
+        dependencies=_mock_dependencies(),
+        use_v2_agent=True,
+    )
+    controller._context.confirmed_goal = "ML interviews"
+    controller._context.session_id = "session-finish"
+    controller._agent_state = {
+        "current_phase": AgentPhase.LEARNING_SESSION,
+        "current_mode": LearningModeEnum.MOCK_INTERVIEW,
+        "turn_count": 0,
+        "conversation_history": [],
+        "corrections_made": [],
+        "vocabulary_reviewed": [],
+        "should_end_session": False,
+    }
+    controller._persistence_service.persist = AsyncMock(
+        return_value=SessionCompletion(status="completed")
+    )
+
+    next_state = {
+        "pending_response": "Great. We have enough for today.",
+        "current_phase": AgentPhase.SESSION_END,
+        "current_mode": LearningModeEnum.MOCK_INTERVIEW,
+        "turn_count": 1,
+        "conversation_history": [{"role": "user", "content": "Hi"}],
+        "corrections_made": [],
+        "vocabulary_reviewed": [],
+        "should_end_session": True,
+        "session_complete_reason": "session_end",
+        "session_complete_return_screen": "home",
+    }
+
+    with patch(
+        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        new=AsyncMock(return_value=next_state),
+    ):
+        outcome = await controller.handle_message({"type": "text", "text": "Hi"})
+
+    assert outcome.should_close is True
+    assert outcome.status == "completed"
+    finishing_index = next(
+        index for index, event in enumerate(outcome.events) if event.get("type") == "session_finishing"
+    )
+    complete_index = next(
+        index for index, event in enumerate(outcome.events) if event.get("type") == "session_complete"
+    )
+    assert finishing_index < complete_index
     controller._persistence_service.persist.assert_awaited_once()
 
 
@@ -463,6 +535,63 @@ async def test_controller_survives_tts_failure_without_error_event():
     )
     assert not any(event.get("type") == "error" for event in outcome.events)
     assert not any(event.get("type") == "audio" for event in outcome.events)
+
+
+@pytest.mark.asyncio
+async def test_controller_skips_tts_for_composer_sessions():
+    tts_provider = MagicMock()
+    tts_provider.synthesize = AsyncMock(return_value=b"audio")
+
+    controller = VoiceSessionController(
+        db=AsyncMock(),
+        user_id=1,
+        mode=None,
+        interview_track=None,
+        stt_provider_name="composer",
+        transport=MagicMock(),
+        stt_provider=PassthroughTextSTTProvider(),
+        tts_provider=tts_provider,
+        turn_detector=ExplicitMessageTurnDetector(),
+        dependencies=_mock_dependencies(),
+        use_v2_agent=True,
+    )
+    controller._context.confirmed_goal = "ML interviews"
+    controller._context.session_id = "session-composer"
+    controller._agent_state = {
+        "current_phase": AgentPhase.ONBOARDING,
+        "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        "turn_count": 0,
+        "conversation_history": [],
+        "corrections_made": [],
+        "vocabulary_reviewed": [],
+        "should_end_session": False,
+    }
+
+    next_state = {
+        "pending_response": "Type your current role in one sentence.",
+        "current_phase": AgentPhase.ONBOARDING,
+        "current_mode": LearningModeEnum.FREE_CONVERSATION,
+        "turn_count": 1,
+        "conversation_history": [{"role": "user", "content": "Hi"}],
+        "corrections_made": [],
+        "vocabulary_reviewed": [],
+        "should_end_session": False,
+    }
+
+    with patch(
+        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        new=AsyncMock(return_value=next_state),
+    ):
+        outcome = await controller.handle_message({"type": "text", "text": "Hi", "source": "composer"})
+
+    assert any(
+        event.get("type") == "transcript"
+        and event.get("role") == "assistant"
+        and "current role" in event.get("text", "")
+        for event in outcome.events
+    )
+    assert not any(event.get("type") == "audio" for event in outcome.events)
+    tts_provider.synthesize.assert_not_awaited()
 
 
 @pytest.mark.asyncio

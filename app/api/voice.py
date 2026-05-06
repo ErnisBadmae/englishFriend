@@ -120,12 +120,6 @@ from app.services.voice_runtime import (
     VoiceSessionController,
     WebSocketTransport,
 )
-from app.services.voice_session import (
-    SessionBootstrapService,
-    SessionPersistRequest,
-    SessionPersistenceService,
-    VoiceSessionDependencies,
-)
 from app.services.voice_observability import (
     VoiceSessionScope,
     bind_voice_context,
@@ -247,6 +241,7 @@ async def voice_chat_realtime(
             stt_provider=PassthroughTextSTTProvider(),
             tts_provider=EdgeTTSTTSProvider(),
             turn_detector=ExplicitMessageTurnDetector(),
+            runtime_label="realtime",
         )
         result = await controller.run()
         final_mode = result.final_mode
@@ -805,480 +800,42 @@ async def voice_chat_v2(
     - Server -> Client: {"type": "transcript", "role": "assistant", "text": "..."}
     - Server -> Client: {"type": "audio", "data": "<base64 MP3>", "format": "mp3"}
     - Server -> Client: {"type": "phase_changed", "phase": "...", "mode": "..."}
+    - Server -> Client: {"type": "session_finishing", "reason": "...", "pending_persistence": true}
     - Server -> Client: {"type": "error", "message": "..."}
     """
-    await websocket.accept()
+    transport = WebSocketTransport(websocket)
 
     voice_sessions_active.inc()
     final_mode = "unknown"
     session_status = "disconnected"
-    completion_signal_sent = False
-    tts_soft_degraded = False
 
     try:
-        session_deps = VoiceSessionDependencies()
-        bootstrap_service = SessionBootstrapService(db, dependencies=session_deps)
-        persistence_service = SessionPersistenceService(
-            db,
-            dependencies=session_deps,
-            learning_plan_service=bootstrap_service.learning_plan_service,
-            memory_pipeline=bootstrap_service.memory_pipeline,
-        )
-        runtime_label = "chat_v2"
-        session_context = await bootstrap_service.build(
+        controller = VoiceSessionController(
+            db=db,
             user_id=user_id,
-            runtime=runtime_label,
-            stt_provider=stt_provider,
-        )
-        session_id = session_context.session_id
-        resolved_user_id = int(session_context.user_id or user_id)
-
-        agent_version = "v2"
-        session_scope = VoiceSessionScope(
-            runtime=runtime_label,
-            session_id=session_id,
-            user_id=resolved_user_id,
-            agent_version=agent_version,
-            mission_task_type=mission_task_type,
-            stt_provider=stt_provider,
-        )
-        bind_voice_context(session_scope)
-        logger.info(f"[Voice] Using agent {agent_version} for user {resolved_user_id}")
-        agent_version_sessions.labels(version=agent_version).inc()
-        composer_typed_session = str(stt_provider or "").strip().lower() == "composer"
-
-        agent_state = await bootstrap_service.initialize_agent_state(
-            user_id=resolved_user_id,
-            context=session_context,
-            use_v2_agent=True,
-            explicit_mode=mode,
-            interview_track_id=interview_track,
+            mode=mode,
+            interview_track=interview_track,
             mission_task_type=mission_task_type,
             mission_title=mission_title,
             mission_reason=mission_reason,
             mission_success_signal=mission_success_signal,
             mission_linked_goal_context=mission_linked_goal_context,
-            runtime=runtime_label,
-            stt_provider=stt_provider,
+            stt_provider_name=stt_provider,
+            transport=transport,
+            stt_provider=PassthroughTextSTTProvider(),
+            tts_provider=EdgeTTSTTSProvider(),
+            turn_detector=ExplicitMessageTurnDetector(),
+            runtime_label="chat_v2",
         )
-        tts = get_tts_service()
-
-        agent_state = await run_agent_turn_v2(agent_state, user_message=None)
-
-        initial_response = agent_state.get("pending_response", "")
-        current_phase = agent_state.get("current_phase", AgentPhase.START)
-        current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
-        final_mode = getattr(current_mode, "value", str(current_mode))
-        log_voice_event(
-            logger,
-            envelope=make_turn_envelope(
-                session_scope,
-                phase=getattr(current_phase, "value", str(current_phase)),
-                mode=final_mode,
-            ),
-            layer="bootstrap",
-            event="agent_session_ready",
-            is_new_user=session_context.is_new_user,
-            due_vocabulary_count=session_context.due_vocabulary_count,
-            goal_present=bool(session_context.confirmed_goal),
-        )
-
-        async def persist_session(status: str) -> None:
-            request = SessionPersistRequest.from_agent_state(
-                status=status,
-                user_id=resolved_user_id,
-                session_id=session_id,
-                final_mode=final_mode,
-                runtime=runtime_label,
-                existing_goal=session_context.confirmed_goal,
-                agent_state=agent_state,
-            )
-            completion = await persistence_service.persist(request)
-            if completion.error:
-                logger.warning("[Voice] Error persisting session data (%s): %s", status, completion.error)
-
-        async def send_assistant_message(
-            text: str,
-            *,
-            phase: str,
-            mode_value: Optional[str] = None,
-            turn: Optional[int] = None,
-            turn_id: Optional[str] = None,
-        ) -> None:
-            nonlocal tts_soft_degraded
-            envelope = make_turn_envelope(
-                session_scope,
-                turn_id=turn_id,
-                turn_index=turn,
-                phase=phase,
-                mode=mode_value or final_mode,
-            )
-            payload = enrich_ws_event(
-                {
-                    "type": "transcript",
-                    "role": "assistant",
-                    "text": text,
-                    "phase": phase,
-                },
-                envelope=envelope,
-            )
-            if mode_value is not None:
-                payload["mode"] = mode_value
-
-            await websocket.send_json(payload)
-
-            if composer_typed_session and tts_soft_degraded:
-                return
-
-            try:
-                tts_start = time.perf_counter()
-                audio_bytes = await tts.synthesize(text)
-                tts_duration = time.perf_counter() - tts_start
-                voice_tts_latency_seconds.observe(tts_duration)
-                observe_voice_stage(
-                    runtime=runtime_label,
-                    stage="tts",
-                    duration_seconds=tts_duration,
-                )
-                log_voice_event(
-                    logger,
-                    envelope=envelope,
-                    layer="tts",
-                    event="tts_completed",
-                    latency_ms=tts_duration * 1000,
-                    char_count=len(text),
-                    audio_bytes=len(audio_bytes),
-                )
-            except Exception as e:
-                if composer_typed_session:
-                    if not tts_soft_degraded:
-                        tts_soft_degraded = True
-                        logger.info("[Voice] TTS soft-degraded for composer session: %s", e)
-                        log_voice_event(
-                            logger,
-                            envelope=envelope,
-                            layer="tts",
-                            event="tts_soft_degraded",
-                            error=str(e),
-                        )
-                else:
-                    logger.warning(f"TTS error: {e}")
-                    voice_errors_total.labels(stage="tts").inc()
-                    log_voice_event(
-                        logger,
-                        envelope=envelope,
-                        layer="tts",
-                        event="tts_failed",
-                        level=logging.WARNING,
-                        error=str(e),
-                    )
-                return
-
-            try:
-                await websocket.send_json(
-                    enrich_ws_event(
-                        {
-                            "type": "audio",
-                            "data": base64.b64encode(audio_bytes).decode(),
-                            "format": "mp3",
-                        },
-                        envelope=envelope,
-                    )
-                )
-                voice_messages_total.labels(direction="outbound", type="audio").inc()
-            except Exception as e:
-                logger.warning(f"Audio delivery error: {e}")
-                voice_errors_total.labels(stage="tts").inc()
-                log_voice_event(
-                    logger,
-                    envelope=envelope,
-                    layer="transport",
-                    event="audio_delivery_failed",
-                    level=logging.WARNING,
-                    error=str(e),
-                )
-
-        async def emit_session_complete_if_needed() -> None:
-            nonlocal completion_signal_sent
-            if completion_signal_sent or not agent_state.get("session_complete_reason"):
-                return
-
-            envelope = make_turn_envelope(
-                session_scope,
-                phase=getattr(current_phase, "value", str(current_phase)),
-                mode=final_mode,
-            )
-            log_voice_event(
-                logger,
-                envelope=envelope,
-                layer="session",
-                event="session_completed",
-                reason=agent_state.get("session_complete_reason"),
-                return_screen=agent_state.get("session_complete_return_screen") or "home",
-            )
-            await websocket.send_json(
-                enrich_ws_event(
-                    {
-                        "type": "session_complete",
-                        "reason": agent_state.get("session_complete_reason"),
-                        "return_screen": agent_state.get("session_complete_return_screen") or "home",
-                    },
-                    envelope=envelope,
-                )
-            )
-            completion_signal_sent = True
-
-        await websocket.send_json(
-            {
-                "type": "connected",
-                "session_id": session_id,
-                "phase": getattr(current_phase, "value", str(current_phase)),
-                "mode": getattr(current_mode, "value", str(current_mode)),
-                "is_new_user": session_context.is_new_user,
-                "goal": session_context.confirmed_goal,
-                "due_vocabulary_count": session_context.due_vocabulary_count,
-                "runtime": runtime_label,
-                "agent_version": agent_version,
-                "stt_provider": stt_provider,
-            }
-        )
-
-        if initial_response:
-            await send_assistant_message(
-                initial_response,
-                phase=getattr(current_phase, "value", str(current_phase)),
-                mode_value=final_mode,
-            )
-
-        while True:
-            try:
-                data = await websocket.receive_text()
-                message = json.loads(data)
-
-                if message.get("type") == "text":
-                    user_text = message.get("text", "").strip()
-                    if not user_text:
-                        continue
-
-                    source = str(message.get("source", "")).strip().lower() or "websocket_text"
-                    next_turn_index = int(agent_state.get("turn_count", 0) or 0) + 1
-                    turn_id = f"t{next_turn_index}"
-                    bind_voice_context(session_scope, turn_id=turn_id)
-                    envelope_before = make_turn_envelope(
-                        session_scope,
-                        turn_id=turn_id,
-                        turn_index=next_turn_index,
-                        phase=getattr(agent_state.get("current_phase", AgentPhase.START), "value", str(agent_state.get("current_phase", AgentPhase.START))),
-                        mode=getattr(agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION), "value", str(agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION))),
-                    )
-
-                    if agent_state.get("session_complete_reason"):
-                        await emit_session_complete_if_needed()
-                        await websocket.send_json(
-                            enrich_ws_event(
-                                {
-                                    "type": "error",
-                                    "message": "This setup session is already complete. End it and start your first mission from the dashboard.",
-                                    "stage": "session",
-                                },
-                                envelope=envelope_before,
-                            )
-                        )
-                        continue
-
-                    turn_start = time.time()
-                    voice_messages_total.labels(direction="inbound", type="text").inc()
-                    log_voice_event(
-                        logger,
-                        envelope=envelope_before,
-                        layer="transport",
-                        event="turn_received",
-                        text=user_text,
-                        source=source,
-                    )
-                    log_voice_event(
-                        logger,
-                        envelope=envelope_before,
-                        layer="stt",
-                        event="stt_completed",
-                        latency_ms=0.0,
-                        text=user_text,
-                        source=source,
-                        confidence=1.0 if source == "browser_vosk" else None,
-                    )
-                    observe_voice_stage(
-                        runtime=runtime_label,
-                        stage="stt",
-                        duration_seconds=0.0,
-                    )
-
-                    await websocket.send_json(
-                        enrich_ws_event(
-                            {
-                                "type": "transcript",
-                                "role": "user",
-                                "text": user_text,
-                            },
-                            envelope=envelope_before,
-                        )
-                    )
-
-                    old_phase = agent_state.get("current_phase", AgentPhase.START)
-                    agent_start = time.perf_counter()
-                    agent_state = await run_agent_turn_v2(agent_state, user_message=user_text)
-                    agent_duration = time.perf_counter() - agent_start
-                    observe_voice_stage(
-                        runtime=runtime_label,
-                        stage="agent",
-                        duration_seconds=agent_duration,
-                    )
-
-                    response_text = agent_state.get("pending_response", "")
-                    current_phase = agent_state.get("current_phase", AgentPhase.START)
-                    current_mode = agent_state.get("current_mode", LearningModeEnum.FREE_CONVERSATION)
-                    turn_count = agent_state.get("turn_count", 0)
-                    current_phase_value = getattr(current_phase, "value", str(current_phase))
-                    current_mode_value = getattr(current_mode, "value", str(current_mode))
-                    final_mode = current_mode_value
-                    envelope_after = make_turn_envelope(
-                        session_scope,
-                        turn_id=turn_id,
-                        turn_index=turn_count,
-                        phase=current_phase_value,
-                        mode=current_mode_value,
-                    )
-                    last_intent = agent_state.get("last_intent") or {}
-                    if last_intent:
-                        log_voice_event(
-                            logger,
-                            envelope=envelope_after,
-                            layer="intent",
-                            event="intent_classified",
-                            latency_ms=last_intent.get("latency_ms"),
-                            shadow_mode=bool(last_intent.get("shadow_mode", False)),
-                            intent_type=last_intent.get("type"),
-                            intent_confidence=last_intent.get("confidence"),
-                            classifier_source=last_intent.get("classifier_source"),
-                            reason_codes=last_intent.get("reason_codes"),
-                            policy_action=last_intent.get("policy_action"),
-                            needs_composer_hint=last_intent.get("needs_composer_hint"),
-                        )
-                    log_voice_event(
-                        logger,
-                        envelope=envelope_after,
-                        layer="agent",
-                        event="agent_turn_completed",
-                        latency_ms=agent_duration * 1000,
-                        pending_response_chars=len(response_text),
-                        session_complete_reason=agent_state.get("session_complete_reason"),
-                        low_signal_turn_streak=int(agent_state.get("low_signal_turn_streak", 0) or 0),
-                        anchor_question_id=agent_state.get("anchor_question_id"),
-                        intent_type=last_intent.get("type"),
-                        intent_confidence=last_intent.get("confidence"),
-                        intent_source=last_intent.get("classifier_source"),
-                        intent_policy_action=last_intent.get("policy_action"),
-                    )
-
-                    if old_phase != current_phase:
-                        await websocket.send_json(
-                            enrich_ws_event(
-                                {
-                                    "type": "phase_changed",
-                                    "phase": current_phase_value,
-                                    "mode": current_mode_value,
-                                },
-                                envelope=envelope_after,
-                            )
-                        )
-
-                        if current_phase == AgentPhase.LEARNING_SESSION:
-                            agent_version_onboarding_complete.labels(
-                                version=agent_version
-                            ).inc()
-
-                    if response_text:
-                        await send_assistant_message(
-                            response_text,
-                            phase=current_phase_value,
-                            mode_value=current_mode_value,
-                            turn=turn_count,
-                            turn_id=turn_id,
-                        )
-                        voice_turn_total_seconds.labels(mode=current_mode_value).observe(
-                            time.time() - turn_start
-                        )
-
-                    if agent_state.get("should_end_session"):
-                        session_status = "completed"
-                        await persist_session("completed")
-                        await emit_session_complete_if_needed()
-                        break
-
-                elif message.get("type") == "end":
-                    session_status = "completed"
-                    log_voice_event(
-                        logger,
-                        envelope=make_turn_envelope(
-                            session_scope,
-                            phase="session_end",
-                            mode=final_mode,
-                        ),
-                        layer="session",
-                        event="session_end_started",
-                    )
-
-                    agent_state["should_end_session"] = True
-                    agent_state = await run_agent_turn_v2(agent_state, user_message=None)
-
-                    farewell = agent_state.get("pending_response", "")
-                    current_mode = agent_state.get("current_mode", current_mode)
-                    final_mode = getattr(current_mode, "value", str(current_mode))
-                    if agent_state.get("session_end_fallback_used"):
-                        log_voice_event(
-                            logger,
-                            envelope=make_turn_envelope(
-                                session_scope,
-                                phase="session_end",
-                                mode=final_mode,
-                            ),
-                            layer="session",
-                            event="session_end_fallback_used",
-                            reason=agent_state.get("session_end_fallback_reason"),
-                        )
-
-                    if farewell:
-                        await send_assistant_message(
-                            farewell,
-                            phase="session_end",
-                            mode_value=final_mode,
-                        )
-
-                    await persist_session("completed")
-                    await emit_session_complete_if_needed()
-                    break
-
-            except WebSocketDisconnect:
-                logger.info(f"Client disconnected: session {session_id}")
-                session_status = "disconnected"
-                log_voice_event(
-                    logger,
-                    envelope=make_turn_envelope(
-                        session_scope,
-                        phase=getattr(current_phase, "value", str(current_phase)),
-                        mode=final_mode,
-                    ),
-                    layer="session",
-                    event="session_disconnected",
-                )
-                await persist_session("disconnected")
-                break
-
+        result = await controller.run()
+        final_mode = result.final_mode
+        session_status = result.status
     except Exception as e:
         logger.error(f"WebSocket error (v2): {e}", exc_info=True)
         session_status = "error"
         voice_errors_total.labels(stage="websocket").inc()
         try:
-            await websocket.send_json(
+            await transport.send(
                 {
                     "type": "error",
                     "message": "Server error. Please refresh the page.",
@@ -1286,16 +843,15 @@ async def voice_chat_v2(
                     "runtime": "chat_v2",
                 }
             )
-            await websocket.close(code=1011, reason="Internal server error")
+            await transport.close(code=1011, reason="Internal server error")
         except Exception:
             pass
-
     finally:
         voice_sessions_active.dec()
         voice_sessions_total.labels(mode=final_mode, status=session_status).inc()
 
         try:
-            await websocket.close()
+            await transport.close()
         except Exception:
             pass
 
