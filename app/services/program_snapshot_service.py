@@ -441,17 +441,7 @@ def build_western_readiness(
     """Rollup of interview-pack signals + completed career missions, scaled 0-1."""
     completed_runs = int(interview_summary.get("completed_runs") or 0)
     pack_ready = bool(interview_pack)
-    career_missions = sum(
-        1
-        for item in session_evidence or []
-        if isinstance(item, dict)
-        and str(item.get("task_type") or "").lower() in {
-            "hr_intro_drill",
-            "foundation_speaking_drill",
-            "stakeholder_explanation_drill",
-            "technical_project_walkthrough",
-        }
-    )
+    career_missions = count_career_missions(session_evidence)
     # Cap each component so a single signal cannot dominate.
     interview_component = min(completed_runs, 3) / 3.0
     pack_component = 1.0 if pack_ready else 0.0
@@ -463,6 +453,20 @@ def build_western_readiness(
         "career_missions_completed": career_missions,
         "interview_pack_ready": pack_ready,
     }
+
+
+def count_career_missions(session_evidence: list[dict[str, Any]]) -> int:
+    career_task_types = {
+        "hr_intro_drill",
+        "foundation_speaking_drill",
+        "stakeholder_explanation_drill",
+        "technical_project_walkthrough",
+    }
+    return sum(
+        1
+        for item in session_evidence or []
+        if isinstance(item, dict) and str(item.get("task_type") or "").lower() in career_task_types
+    )
 
 
 def build_reusable_answers(session_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -502,6 +506,173 @@ def build_reusable_answers(session_evidence: list[dict[str, Any]]) -> list[dict[
         if len(polished) >= 5:
             break
     return polished
+
+
+def build_value_signals(
+    *,
+    session_evidence: list[dict[str, Any]],
+    reusable_answers: list[dict[str, Any]],
+    western_readiness: Optional[dict[str, Any]],
+    interview_summary: dict[str, Any],
+) -> list[str]:
+    """Human-readable proof that the loop is already producing value."""
+    signals: list[str] = []
+    latest = session_evidence[0] if session_evidence and isinstance(session_evidence[0], dict) else None
+    if latest and latest.get("mission_title"):
+        signals.append(f"Structured evidence is already saved from {latest['mission_title']}.")
+
+    reusable_count = len(reusable_answers)
+    if reusable_count > 0:
+        noun = "answer" if reusable_count == 1 else "answers"
+        signals.append(f"{reusable_count} reusable {noun} already look strong enough to reuse.")
+
+    completed_runs = int(interview_summary.get("completed_runs") or 0)
+    if completed_runs > 0:
+        noun = "run" if completed_runs == 1 else "runs"
+        signals.append(f"{completed_runs} mock interview {noun} already contribute scored readiness data.")
+
+    readiness = western_readiness or {}
+    readiness_score = float(readiness.get("score") or 0)
+    readiness_runs = int(readiness.get("interview_runs_completed") or 0)
+    readiness_missions = int(readiness.get("career_missions_completed") or 0)
+    if readiness_score > 0 and (readiness_runs > 0 or readiness_missions > 0):
+        signals.append(f"Western interview readiness is already measurable at {round(readiness_score * 100)}%.")
+
+    return signals[:4]
+
+
+def build_monetization_state(
+    *,
+    assessment_complete: bool,
+    interview_pack: Optional[dict[str, Any]],
+    latest_paid_intent: Optional[dict[str, Any]],
+    session_evidence: list[dict[str, Any]],
+    reusable_answers: list[dict[str, Any]],
+    western_readiness: Optional[dict[str, Any]],
+    interview_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Drive the paid CTA from value reveal, not from generic engagement."""
+    value_signals = build_value_signals(
+        session_evidence=session_evidence,
+        reusable_answers=reusable_answers,
+        western_readiness=western_readiness,
+        interview_summary=interview_summary,
+    )
+
+    reusable_count = len(reusable_answers)
+    completed_runs = int(interview_summary.get("completed_runs") or 0)
+    latest = session_evidence[0] if session_evidence and isinstance(session_evidence[0], dict) else None
+
+    cta_reason: Optional[str] = None
+    cta_source: Optional[str] = None
+    if reusable_count > 0:
+        noun = "answer" if reusable_count == 1 else "answers"
+        cta_reason = f"You already have {reusable_count} reusable {noun} from real career practice."
+        cta_source = "reusable_answers"
+    elif completed_runs > 0:
+        noun = "run" if completed_runs == 1 else "runs"
+        cta_reason = f"You already finished {completed_runs} scored mock interview {noun} and the next mission is adapting from them."
+        cta_source = "interview_runs"
+    elif latest and latest.get("mission_title"):
+        cta_reason = f"You already have structured evidence from {latest['mission_title']} and a concrete next mission."
+        cta_source = "first_session_evidence"
+
+    value_visible = bool(cta_reason and value_signals)
+    show_paid_cta = bool(
+        assessment_complete
+        and interview_pack
+        and not latest_paid_intent
+        and value_visible
+    )
+
+    return {
+        "show_paid_cta": show_paid_cta,
+        "paid_intent_submitted": latest_paid_intent is not None,
+        "latest_paid_intent_at": latest_paid_intent.get("submitted_at") if isinstance(latest_paid_intent, dict) else None,
+        "latest_paid_intent_context": latest_paid_intent.get("source") if isinstance(latest_paid_intent, dict) else None,
+        "value_visible": value_visible,
+        "value_signals": value_signals,
+        "cta_reason": cta_reason,
+        "cta_source": cta_source,
+    }
+
+
+def build_product_signals(
+    *,
+    setup_state: str,
+    session_evidence: list[dict[str, Any]],
+    reusable_answers: list[dict[str, Any]],
+    western_readiness: Optional[dict[str, Any]],
+    interview_summary: dict[str, Any],
+    monetization: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose product-loop state as one backend contract for UI and analytics."""
+    career_missions = count_career_missions(session_evidence)
+    reusable_answers_count = len(reusable_answers)
+    interview_runs_completed = int(interview_summary.get("completed_runs") or 0)
+    latest_evidence = session_evidence[0] if session_evidence and isinstance(session_evidence[0], dict) else None
+    readiness_score = float((western_readiness or {}).get("score") or 0)
+
+    if setup_state == "needs_goal":
+        activation_stage = "goal_not_ready"
+    elif career_missions <= 0:
+        activation_stage = "first_useful_mission_pending"
+    elif career_missions == 1:
+        activation_stage = "first_useful_mission_completed"
+    else:
+        activation_stage = "main_loop_active"
+
+    latest_value_signal: Optional[str] = None
+    if reusable_answers_count > 0:
+        value_stage = "reusable_answers_visible"
+        latest_value_signal = f"{reusable_answers_count} reusable answers are already available."
+    elif interview_runs_completed > 0 and readiness_score > 0:
+        value_stage = "scored_readiness_visible"
+        latest_value_signal = f"Interview readiness is already measurable at {round(readiness_score * 100)}%."
+    elif latest_evidence and latest_evidence.get("mission_title"):
+        value_stage = "structured_evidence_visible"
+        latest_value_signal = f"Structured evidence is already saved from {latest_evidence['mission_title']}."
+    else:
+        value_stage = "not_visible"
+
+    if monetization.get("paid_intent_submitted"):
+        conversion_stage = "paid_intent_submitted"
+    elif monetization.get("show_paid_cta"):
+        conversion_stage = "ready_for_paid_cta"
+    elif monetization.get("value_visible"):
+        conversion_stage = "value_visible_not_eligible"
+    else:
+        conversion_stage = "not_ready"
+
+    if career_missions >= 2:
+        retention_stage = "returned_after_first_evidence"
+    elif career_missions == 1:
+        retention_stage = "awaiting_return_after_first_evidence"
+    else:
+        retention_stage = "not_applicable_yet"
+
+    if activation_stage == "goal_not_ready":
+        next_measurement_focus = "Confirm a concrete career target before measuring product value."
+    elif activation_stage == "first_useful_mission_pending":
+        next_measurement_focus = "Get the learner through the first useful mission."
+    elif retention_stage == "awaiting_return_after_first_evidence":
+        next_measurement_focus = "See whether the learner returns for the next mission after first evidence."
+    elif conversion_stage == "ready_for_paid_cta":
+        next_measurement_focus = "Measure willingness to pay after visible proof of value."
+    else:
+        next_measurement_focus = "Keep measuring whether evidence turns into stronger reusable interview performance."
+
+    return {
+        "activation_stage": activation_stage,
+        "value_stage": value_stage,
+        "conversion_stage": conversion_stage,
+        "retention_stage": retention_stage,
+        "completed_career_missions": career_missions,
+        "reusable_answers_count": reusable_answers_count,
+        "interview_runs_completed": interview_runs_completed,
+        "latest_value_signal": latest_value_signal,
+        "next_measurement_focus": next_measurement_focus,
+    }
 
 
 def build_improvement_signals(
@@ -1231,11 +1402,28 @@ class ProgramSnapshotService:
         setup_progress = build_setup_progress(goal_brief, latest_assessment)
         next_question_type = build_next_question_type(goal_status, latest_assessment)
         latest_paid_intent = roadmap.get("latest_paid_intent")
-        show_paid_cta = bool(
-            assessment_complete
-            and interview_pack
-            and not latest_paid_intent
-            and (interview_summary.get("completed_runs", 0) >= 1 or len(session_evidence) >= 2)
+        western_readiness = build_western_readiness(
+            interview_summary=interview_summary,
+            interview_pack=interview_pack,
+            session_evidence=session_evidence,
+        )
+        reusable_answers = build_reusable_answers(session_evidence)
+        monetization = build_monetization_state(
+            assessment_complete=assessment_complete,
+            interview_pack=interview_pack,
+            latest_paid_intent=latest_paid_intent if isinstance(latest_paid_intent, dict) else None,
+            session_evidence=session_evidence,
+            reusable_answers=reusable_answers,
+            western_readiness=western_readiness,
+            interview_summary=interview_summary,
+        )
+        product_signals = build_product_signals(
+            setup_state=setup_state,
+            session_evidence=session_evidence,
+            reusable_answers=reusable_answers,
+            western_readiness=western_readiness,
+            interview_summary=interview_summary,
+            monetization=monetization,
         )
 
         return {
@@ -1292,12 +1480,8 @@ class ProgramSnapshotService:
                 ),
                 "recurring_issue": build_recurring_issue(session_evidence),
                 "what_improved": build_what_improved(session_evidence),
-                "western_readiness": build_western_readiness(
-                    interview_summary=interview_summary,
-                    interview_pack=interview_pack,
-                    session_evidence=session_evidence,
-                ),
-                "reusable_answers": build_reusable_answers(session_evidence),
+                "western_readiness": western_readiness,
+                "reusable_answers": reusable_answers,
             },
             "session_evidence": {
                 "latest": session_evidence[0] if session_evidence else None,
@@ -1312,12 +1496,8 @@ class ProgramSnapshotService:
                 "next_question_type": next_question_type,
                 "progress": setup_progress,
             },
-            "monetization": {
-                "show_paid_cta": show_paid_cta,
-                "paid_intent_submitted": latest_paid_intent is not None,
-                "latest_paid_intent_at": latest_paid_intent.get("submitted_at") if isinstance(latest_paid_intent, dict) else None,
-                "latest_paid_intent_context": latest_paid_intent.get("source") if isinstance(latest_paid_intent, dict) else None,
-            },
+            "product_signals": product_signals,
+            "monetization": monetization,
         }
 
     async def _get_total_sessions(self, user_id: int) -> int:

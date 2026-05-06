@@ -301,6 +301,24 @@ async def learning_node(state: AgentState) -> AgentState:
             strategy="mission_opener",
         )
 
+    current_mode = state.get("current_mode")
+    current_mode_value = current_mode.value if hasattr(current_mode, "value") else str(current_mode)
+    if (
+        not user_message
+        and current_mode_value == "mock_interview"
+        and state.get("mission_task_type")
+    ):
+        action = _build_mock_interview_opener_action(state)
+        return _record_learning_turn(
+            state,
+            action,
+            pedagogy,
+            conversation_history,
+            user_message,
+            reason="Mock interview opener",
+            strategy="mock_interview_opener",
+        )
+
     if mission_anchored and _needs_supportive_anchor_recovery(user_message):
         state["low_signal_turn_streak"] = int(state.get("low_signal_turn_streak", 0) or 0) + 1
         action = _build_supportive_anchor_action(state, user_message=user_message)
@@ -912,6 +930,22 @@ def _build_mission_opener_action(state: AgentState) -> dict:
     }
 
 
+def _build_mock_interview_opener_action(state: AgentState) -> dict:
+    track = get_interview_track(state.get("interview_track_id")) or {
+        "title": state.get("interview_track_title") or "Mock Interview",
+        "starter_question": "Tell me about yourself and your recent work.",
+    }
+    mission_title = state.get("mission_title") or track["title"]
+    return {
+        "action": "continue",
+        "response_text": (
+            f"Let's do a mock interview: {mission_title}. "
+            f"{track['starter_question']}"
+        ),
+        "should_end": False,
+    }
+
+
 def _build_low_signal_action(state: AgentState) -> dict:
     mission_task_type = state.get("mission_task_type") or ""
     if mission_task_type in TECHNICAL_MISSION_SPECS:
@@ -1122,6 +1156,20 @@ def _advance_anchor_state(state: AgentState, user_message: Optional[str] = None)
     follow_up_pending = bool(state.get("anchor_follow_up_pending", False))
 
     if not follow_up_pending:
+        # Pre-parse mission choice on first call at last anchor so the preference
+        # is captured even if the session ends before a second user turn arrives.
+        if index == len(ANCHORS) - 1:
+            proposed = _proposed_mission_from_focus_hint(state)
+            chosen = _parse_anchor_two_choice(user_message, proposed)
+            if chosen:
+                state["next_mission_choice"] = chosen
+                add_decision_log(
+                    state,
+                    node="learning",
+                    action="anchor_two_choice_early",
+                    reason="pre-parsed mission choice on anchor 2 first call",
+                    data={"chosen": chosen, "proposed": proposed},
+                )
         state["anchor_follow_up_pending"] = True
         return
 

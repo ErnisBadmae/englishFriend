@@ -116,6 +116,36 @@ def test_evaluate_product_snapshot_accepts_farewell_only_completion_signal() -> 
     assert check_map["completion_signal_seen"].passed is True
 
 
+def test_evaluate_product_snapshot_accepts_session_finishing_only_completion_signal() -> None:
+    scenario = MAINLINE_SCENARIOS["project_first_value"]
+    snapshot = {
+        "goal": {"brief": {"main_contexts": ["project_walkthrough", "interviews"]}},
+        "interview": {"recommended_track": {"id": "project_walkthrough"}},
+        "setup": {"state": "ready_for_program"},
+        "assessment": {"source": "embedded_first_mission", "level": "B1"},
+        "session_evidence": {
+            "latest": {
+                "task_type": "technical_project_walkthrough",
+                "summary": "You completed a real guided mission.",
+            }
+        },
+    }
+    events = [
+        {
+            "type": "session_finishing",
+            "reason": "session_end",
+            "return_screen": "home",
+            "pending_persistence": True,
+        },
+    ]
+
+    checks = evaluate_product_snapshot(snapshot=snapshot, events=events, scenario=scenario)
+    check_map = {check.name: check for check in checks}
+
+    assert check_map["completion_signal_seen"].passed is True
+    assert check_map["completion_signal_seen"].detail == "session_finishing event present"
+
+
 def test_parse_args_defaults_to_mainline_scenario_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["run_product_synthetic_eval.py"])
 

@@ -44,7 +44,7 @@ interface SessionConfig {
 }
 
 const DEFAULT_STT_PROVIDER =
-  import.meta.env.VITE_STT_PROVIDER || 'browser_vosk';
+  import.meta.env.VITE_STT_PROVIDER || 'composer';
 
 function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
   if (!mission) {
@@ -430,7 +430,9 @@ function App() {
                   if (!userId) return;
                   try {
                     setError(null);
-                    await submitPaidIntent(userId, { source: 'home_cta' });
+                    const ctaSource = snapshot?.monetization.cta_source || 'generic';
+                    const valueStage = snapshot?.product_signals.value_stage || 'unknown';
+                    await submitPaidIntent(userId, { source: `home_cta:${ctaSource}:${valueStage}` });
                     await refreshSnapshot();
                   } catch (err) {
                     setError(

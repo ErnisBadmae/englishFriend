@@ -18,6 +18,9 @@ from scripts.test_agent_e2e import (
     build_user_lookup_url,
     build_ws_url,
     classify_failure,
+    has_completion_signal,
+    has_session_end_farewell,
+    has_session_finishing,
     has_session_complete,
     parse_args,
     resolve_scenario_slugs,
@@ -127,6 +130,18 @@ def test_assert_snapshot_contract_accepts_project_priority_entry_mission() -> No
     assert_snapshot_contract(snapshot, scenario)
 
 
+def test_assert_snapshot_contract_prefers_latest_completed_task_type_over_next_mission() -> None:
+    scenario = SCENARIOS["interview_priority_regression"]
+    snapshot = {
+        "goal": {"brief": {"main_contexts": ["interviews", "project_walkthrough"]}},
+        "interview": {"recommended_track": {"id": "hr_intro"}},
+        "mission": {"task_type": "tradeoff_explanation_drill"},
+        "session_evidence": {"latest": {"task_type": "foundation_speaking_drill"}},
+    }
+
+    assert_snapshot_contract(snapshot, scenario)
+
+
 def test_assert_snapshot_contract_rejects_task_type_outside_allowed_set() -> None:
     scenario = SCENARIOS["interview_priority_regression"]
     snapshot = {
@@ -135,7 +150,7 @@ def test_assert_snapshot_contract_rejects_task_type_outside_allowed_set() -> Non
         "mission": {"task_type": "workplace_update_drill"},
     }
 
-    with pytest.raises(SmokeSnapshotMismatch, match="Expected mission.task_type in"):
+    with pytest.raises(SmokeSnapshotMismatch, match="Expected latest completed mission.task_type in"):
         assert_snapshot_contract(snapshot, scenario)
 
 
@@ -165,6 +180,36 @@ def test_has_session_complete_detects_completion_event() -> None:
     ]
 
     assert has_session_complete(events) is True
+
+
+def test_has_session_finishing_detects_pre_completion_marker() -> None:
+    events = [
+        {"type": "connected"},
+        {"type": "session_finishing", "reason": "session_end", "return_screen": "home"},
+    ]
+
+    assert has_session_finishing(events) is True
+
+
+def test_has_session_end_farewell_detects_terminal_transcript() -> None:
+    events = [
+        {
+            "type": "transcript",
+            "role": "assistant",
+            "phase": "session_end",
+            "text": "Thanks for joining today.",
+        }
+    ]
+
+    assert has_session_end_farewell(events) is True
+
+
+def test_has_completion_signal_accepts_finishing_before_session_complete() -> None:
+    events = [
+        {"type": "session_finishing", "reason": "session_end", "return_screen": "home"},
+    ]
+
+    assert has_completion_signal(events) is True
 
 
 def test_parse_args_defaults_to_single_workplace_scenario(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,6 +6,8 @@ from app.services.program_snapshot_service import (
     ProgramSnapshotService,
     build_latest_assessment,
     build_improvement_signals,
+    build_monetization_state,
+    build_product_signals,
     build_setup_state,
     build_setup_progress,
     extract_focus_areas,
@@ -540,6 +542,115 @@ def test_build_improvement_signals_combines_product_evidence():
     assert any("Complete assessment" in item for item in signals)
 
 
+def test_build_monetization_state_waits_for_value_reveal():
+    monetization = build_monetization_state(
+        assessment_complete=True,
+        interview_pack={"recommended_track": "hr_intro"},
+        latest_paid_intent=None,
+        session_evidence=[],
+        reusable_answers=[],
+        western_readiness={"score": 0.2, "interview_runs_completed": 0, "career_missions_completed": 0},
+        interview_summary={"completed_runs": 0},
+    )
+
+    assert monetization["show_paid_cta"] is False
+    assert monetization["value_visible"] is False
+    assert monetization["cta_reason"] is None
+    assert monetization["value_signals"] == []
+
+
+def test_build_monetization_state_activates_after_first_real_evidence():
+    monetization = build_monetization_state(
+        assessment_complete=True,
+        interview_pack={"recommended_track": "hr_intro"},
+        latest_paid_intent=None,
+        session_evidence=[
+            {
+                "mission_title": "Run a foundation speaking drill",
+                "task_type": "foundation_speaking_drill",
+                "summary": "You produced one reusable self-introduction.",
+            }
+        ],
+        reusable_answers=[
+            {
+                "task_type": "foundation_speaking_drill",
+                "summary": "You produced one reusable self-introduction.",
+                "outcome_score": 0.72,
+            }
+        ],
+        western_readiness={"score": 0.34, "interview_runs_completed": 0, "career_missions_completed": 1},
+        interview_summary={"completed_runs": 0},
+    )
+
+    assert monetization["show_paid_cta"] is True
+    assert monetization["value_visible"] is True
+    assert monetization["cta_source"] == "reusable_answers"
+    assert "reusable answer" in (monetization["cta_reason"] or "").lower()
+    assert any("structured evidence" in item.lower() for item in monetization["value_signals"])
+
+
+def test_build_product_signals_tracks_main_loop_progression():
+    monetization = build_monetization_state(
+        assessment_complete=True,
+        interview_pack={"recommended_track": "hr_intro"},
+        latest_paid_intent=None,
+        session_evidence=[
+            {
+                "mission_title": "Run a foundation speaking drill",
+                "task_type": "foundation_speaking_drill",
+                "summary": "You produced one reusable self-introduction.",
+            },
+            {
+                "mission_title": "Explain one stakeholder update",
+                "task_type": "stakeholder_explanation_drill",
+                "summary": "You explained blockers and next steps more clearly.",
+            },
+        ],
+        reusable_answers=[
+            {
+                "task_type": "foundation_speaking_drill",
+                "summary": "You produced one reusable self-introduction.",
+                "outcome_score": 0.72,
+            }
+        ],
+        western_readiness={"score": 0.51, "interview_runs_completed": 1, "career_missions_completed": 2},
+        interview_summary={"completed_runs": 1},
+    )
+    signals = build_product_signals(
+        setup_state="ready_for_program",
+        session_evidence=[
+            {
+                "mission_title": "Run a foundation speaking drill",
+                "task_type": "foundation_speaking_drill",
+                "summary": "You produced one reusable self-introduction.",
+            },
+            {
+                "mission_title": "Explain one stakeholder update",
+                "task_type": "stakeholder_explanation_drill",
+                "summary": "You explained blockers and next steps more clearly.",
+            },
+        ],
+        reusable_answers=[
+            {
+                "task_type": "foundation_speaking_drill",
+                "summary": "You produced one reusable self-introduction.",
+                "outcome_score": 0.72,
+            }
+        ],
+        western_readiness={"score": 0.51, "interview_runs_completed": 1, "career_missions_completed": 2},
+        interview_summary={"completed_runs": 1},
+        monetization=monetization,
+    )
+
+    assert signals["activation_stage"] == "main_loop_active"
+    assert signals["value_stage"] == "reusable_answers_visible"
+    assert signals["conversion_stage"] == "ready_for_paid_cta"
+    assert signals["retention_stage"] == "returned_after_first_evidence"
+    assert signals["completed_career_missions"] == 2
+    assert signals["reusable_answers_count"] == 1
+    assert signals["interview_runs_completed"] == 1
+
+
 @pytest.mark.asyncio
 async def test_get_snapshot_reconciles_stale_interview_pack_with_primary_context():
     db = AsyncMock()
@@ -623,3 +734,4 @@ async def test_get_snapshot_reconciles_stale_interview_pack_with_primary_context
     assert snapshot["mission"]["interview_track_id"] == "workplace_communication"
     assert snapshot["mission"]["task_type"] == "stakeholder_explanation_drill"
     assert snapshot["mission"]["linked_goal_context"] == "workplace_communication"
+    assert snapshot["product_signals"]["value_stage"] == "structured_evidence_visible"

@@ -408,11 +408,32 @@ async def test_record_paid_intent_stores_latest_signal():
     service = LearningPlanService(db)
     service.get_or_create_plan = AsyncMock(return_value=plan)
 
-    signal = await service.record_paid_intent(1, source="home_cta", note="Looks useful")
+    signal = await service.record_paid_intent(
+        1,
+        source="home_cta:reusable_answers:reusable_answers_visible",
+        note="Looks useful",
+        product_context={
+            "monetization": {
+                "cta_source": "reusable_answers",
+                "value_visible": True,
+            },
+            "product_signals": {
+                "value_stage": "reusable_answers_visible",
+                "conversion_stage": "ready_for_paid_cta",
+                "completed_career_missions": 2,
+                "reusable_answers_count": 1,
+            },
+        },
+    )
 
-    assert signal["source"] == "home_cta"
+    assert signal["source"] == "home_cta:reusable_answers:reusable_answers_visible"
     assert signal["readiness_score"] == 6.4
-    assert plan.roadmap["latest_paid_intent"]["source"] == "home_cta"
+    assert signal["cta_source"] == "reusable_answers"
+    assert signal["value_stage"] == "reusable_answers_visible"
+    assert signal["conversion_stage"] == "ready_for_paid_cta"
+    assert signal["completed_career_missions"] == 2
+    assert signal["reusable_answers_count"] == 1
+    assert plan.roadmap["latest_paid_intent"]["source"] == "home_cta:reusable_answers:reusable_answers_visible"
     assert plan.roadmap["paid_intents"][0]["note"] == "Looks useful"
 
 

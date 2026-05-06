@@ -37,6 +37,7 @@ from app.agent.nodes_v2 import (
     route_after_learning,
     session_end_node,
 )
+from app.services.program_snapshot_service import recommend_next_mission
 from app.services.ai.llm_provider import LLMEmptyContentError
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.ai.mode_prompts import LearningMode
@@ -273,7 +274,43 @@ async def initialize_session_v2(
         if assessed_level:
             language_level = assessed_level
 
-    selected_track = get_interview_track(interview_track_id)
+    recommended_mission: dict[str, Any] | None = None
+    if (
+        isinstance(roadmap, dict)
+        and goal_brief
+        and goal_brief.get("status") in {"draft", "confirmed"}
+    ):
+        recommended_mission = recommend_next_mission(
+            goal_brief=goal_brief,
+            program_plan=roadmap.get("program_plan"),
+            due_count=due_vocabulary_count,
+            error_patterns=list(roadmap.get("error_patterns") or []),
+            has_assessment=bool(assessed_level),
+            interview_pack=roadmap.get("interview_pack"),
+            session_evidence=list(roadmap.get("session_evidence") or []),
+            interview_runs_count=len(roadmap.get("interview_runs") or []),
+        )
+
+    resolved_mission_task_type = mission_task_type or (
+        recommended_mission.get("task_type") if recommended_mission else None
+    )
+    resolved_mission_title = mission_title or (
+        recommended_mission.get("title") if recommended_mission else None
+    )
+    resolved_mission_reason = mission_reason or (
+        recommended_mission.get("reason") if recommended_mission else None
+    )
+    resolved_mission_success_signal = mission_success_signal or (
+        recommended_mission.get("success_signal") if recommended_mission else None
+    )
+    resolved_mission_linked_goal_context = mission_linked_goal_context or (
+        recommended_mission.get("linked_goal_context") if recommended_mission else None
+    )
+    resolved_interview_track_id = interview_track_id or (
+        recommended_mission.get("interview_track_id") if recommended_mission else None
+    )
+
+    selected_track = get_interview_track(resolved_interview_track_id)
 
     # Pre-select curated questions for this session (deterministic per session_id)
     interview_question_prompts: list[str] = []
@@ -289,6 +326,11 @@ async def initialize_session_v2(
     initial_mode = LearningMode.FREE_CONVERSATION
     if due_vocabulary_count >= 10:
         initial_mode = LearningMode.VOCABULARY_DRILL
+    elif recommended_mission and recommended_mission.get("launch_mode"):
+        try:
+            initial_mode = LearningMode(str(recommended_mission["launch_mode"]))
+        except ValueError:
+            logger.warning("[Agent V2] Unknown recommended launch mode ignored: %s", recommended_mission.get("launch_mode"))
     elif confirmed_goal and "interview" in confirmed_goal.lower():
         initial_mode = LearningMode.MOCK_INTERVIEW
     if explicit_mode:
@@ -296,12 +338,6 @@ async def initialize_session_v2(
             initial_mode = LearningMode(explicit_mode)
         except ValueError:
             logger.warning(f"[Agent V2] Unknown explicit mode ignored: {explicit_mode}")
-
-    resolved_mission_task_type = mission_task_type
-    resolved_mission_title = mission_title
-    resolved_mission_reason = mission_reason
-    resolved_mission_success_signal = mission_success_signal
-    resolved_mission_linked_goal_context = mission_linked_goal_context
 
     program_plan = roadmap.get("program_plan") if isinstance(roadmap, dict) else {}
     current_stage = (program_plan or {}).get("current_stage")

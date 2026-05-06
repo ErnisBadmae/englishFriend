@@ -78,7 +78,13 @@ export function SessionResultsPage({
         <section className="mission-card">
           <div className="section-label">Recommended next step</div>
           <h2>{mission.title}</h2>
+          {mission.adaptation_reason && (
+            <p className="muted-line">{mission.adaptation_reason}</p>
+          )}
           <p>{mission.reason}</p>
+          {mission.why_now && (
+            <p className="muted-line">{mission.why_now}</p>
+          )}
           <p className="muted-line">{mission.success_signal}</p>
           {onStartMission && (
             <div className="hero-actions">

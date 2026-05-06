@@ -9,11 +9,16 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
   const draftGoal = goalBrief?.status === 'draft';
   const hasBaseline = snapshot.setup.assessment_complete && Boolean(snapshot.assessment);
   const readiness = snapshot.assessment?.goal_readiness;
+  const productSignals = snapshot.product_signals;
   const latestEvidence = snapshot.session_evidence.latest;
   const recurringIssue = snapshot.progress.recurring_issue;
   const whatImproved = snapshot.progress.what_improved;
   const westernReadiness = snapshot.progress.western_readiness;
   const reusableAnswers = snapshot.progress.reusable_answers;
+
+  function formatStage(value: string): string {
+    return value.replace(/_/g, ' ');
+  }
 
   return (
     <div className="miniapp-page">
@@ -66,6 +71,24 @@ export function ProgressPage({ snapshot }: ProgressPageProps) {
               <span className="pill">{snapshot.program.stage_label}</span>
               <span className="pill">{snapshot.program.time_horizon_days} days</span>
               {goalBrief?.domain && <span className="pill">{goalBrief.domain.replace(/_/g, ' ')}</span>}
+            </div>
+          </section>
+
+          <section className="content-card">
+            <div className="section-label">Loop state</div>
+            <h2>{formatStage(productSignals.value_stage)}</h2>
+            <p className="muted-line">
+              {productSignals.latest_value_signal || productSignals.next_measurement_focus || 'The coach is still building visible proof of value.'}
+            </p>
+            <div className="pill-row" style={{ marginTop: 8 }}>
+              <span className="pill">{formatStage(productSignals.activation_stage)}</span>
+              <span className="pill">{formatStage(productSignals.conversion_stage)}</span>
+              <span className="pill">{formatStage(productSignals.retention_stage)}</span>
+            </div>
+            <div className="pill-row" style={{ marginTop: 8 }}>
+              <span className="pill">{productSignals.completed_career_missions} career missions</span>
+              <span className="pill">{productSignals.interview_runs_completed} interview runs</span>
+              <span className="pill">{productSignals.reusable_answers_count} reusable answers</span>
             </div>
           </section>
 

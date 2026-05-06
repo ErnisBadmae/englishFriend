@@ -65,6 +65,7 @@ export function HomePage({
   const projectStoryPack = snapshot.project_story_pack;
   const showProjectStoryCard = readyForProgram && Boolean(interviewPack);
   const showPaidCta = snapshot.monetization.show_paid_cta || snapshot.monetization.paid_intent_submitted;
+  const monetizationSignals = snapshot.monetization.value_signals;
   const scopeStatus = snapshot.setup.scope_status;
   const recurringIssue = snapshot.progress.recurring_issue;
   const whatImproved = snapshot.progress.what_improved;
@@ -461,13 +462,24 @@ export function HomePage({
           <h2>
             {snapshot.monetization.paid_intent_submitted
               ? 'Paid beta interest saved'
-              : 'Unlock the full interview plan'}
+              : snapshot.monetization.value_visible
+                ? 'You already have proof this loop is working'
+                : 'Unlock the full interview plan'}
           </h2>
           <p>
             {snapshot.monetization.paid_intent_submitted
               ? 'You already signaled willingness to pay. This is the metric we need to prove that interview outcome is valuable enough as a product.'
-              : 'If this interview-prep loop already feels valuable, leave a paid-beta signal. The current goal is to prove real willingness to pay, not just engagement.'}
+              : snapshot.monetization.cta_reason
+                ? `${snapshot.monetization.cta_reason} If this feels valuable, leave a paid-beta signal so we can validate willingness to pay from outcome, not just engagement.`
+                : 'If this interview-prep loop already feels valuable, leave a paid-beta signal. The current goal is to prove real willingness to pay, not just engagement.'}
           </p>
+          {!snapshot.monetization.paid_intent_submitted && monetizationSignals.length > 0 && (
+            <div className="pill-row" style={{ marginTop: 12 }}>
+              {monetizationSignals.slice(0, 3).map((signal) => (
+                <span key={signal} className="pill interview-source-pill">{signal}</span>
+              ))}
+            </div>
+          )}
           {!snapshot.monetization.paid_intent_submitted && (
             <div className="hero-actions">
               <button

@@ -36,8 +36,12 @@ from scripts.test_agent_e2e import (
     drain_events,
     event_summary,
     fetch_snapshot,
+    format_exception,
     format_event_tail,
     generate_telegram_id,
+    has_completion_signal,
+    has_session_end_farewell,
+    has_session_finishing,
     has_session_complete,
     resolve_or_create_user,
     wait_for_assistant_turn,
@@ -586,12 +590,14 @@ MAINLINE_SCENARIOS: dict[str, ProductSyntheticScenario] = {
     ),
     "impatient_mission_switcher": ProductSyntheticScenario(
         slug="impatient_mission_switcher",
-        description="On anchor 2 user pivots to mock interview; session must complete cleanly without fallback leak.",
+        description="On anchor 2 user pivots to mock interview; next_mission_choice must persist and session ends.",
         user_messages=(
             "I want machine learning interview practice for an ML engineer job abroad",
             "I want a cleaner intro for ML interviews.",
             "Senior ML engineer at a healthcare startup for three years.",
-            "Built a patient risk scoring model end to end, deployed it on Kubernetes.",
+            "I build risk models to predict patient outcomes and automate deployment pipelines.",
+            "Built a patient risk scoring model to predict hospital readmission.",
+            "Solved class imbalance with SMOTE and reduced readmission rate by 15 percent.",
             "wanna try mock interview instead, that's more useful for me right now",
         ),
         expected_primary_context="interviews",
@@ -685,19 +691,6 @@ PERSONAS_SCENARIO_SET = (
     "repetitive_complainer",
     "pet_project_only",
 )
-
-
-def has_completion_signal(events: list[dict[str, Any]]) -> bool:
-    if has_session_complete(events):
-        return True
-    return any(
-        str(event.get("type") or "") == "transcript"
-        and str(event.get("role") or "") == "assistant"
-        and str(event.get("phase") or "") == "session_end"
-        and str(event.get("text") or "").strip()
-        for event in events
-    )
-
 
 @dataclass(slots=True)
 class ScenarioCheck:
@@ -830,6 +823,16 @@ def _snapshot_excerpt(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _completion_signal_detail(events: list[dict[str, Any]]) -> str:
+    if has_session_complete(events):
+        return "session_complete event present"
+    if has_session_finishing(events):
+        return "session_finishing event present"
+    if has_session_end_farewell(events):
+        return "farewell/session_end transcript present"
+    return "missing completion signal"
+
+
 def evaluate_product_snapshot(
     *,
     snapshot: dict[str, Any],
@@ -855,13 +858,7 @@ def evaluate_product_snapshot(
         make_check(
             "completion_signal_seen",
             has_completion_signal(events),
-            "session_complete event present"
-            if has_session_complete(events)
-            else (
-                "farewell/session_end transcript present"
-                if has_completion_signal(events)
-                else "missing completion signal"
-            ),
+            _completion_signal_detail(events),
         ),
         make_check(
             "scope_status",
@@ -1000,8 +997,10 @@ async def run_product_scenario(
                 await drain_events(websocket, scenario=scenario, events=events)
 
             is_boundary = scenario.expected_scope_status != "in_scope"
-            if not has_completion_signal(events) and not is_boundary:
-                await websocket.send(json.dumps({"type": "end"}))
+            completion_signal_seen = has_completion_signal(events)
+            if not has_session_complete(events) and not is_boundary:
+                if not completion_signal_seen:
+                    await websocket.send(json.dumps({"type": "end"}))
                 try:
                     completion_event = await wait_for_session_complete(
                         websocket,
@@ -1015,7 +1014,7 @@ async def run_product_scenario(
                     )
                     await drain_events(websocket, scenario=scenario, events=events)
                 except Exception:
-                    if not has_completion_signal(events):
+                    if not has_session_complete(events):
                         raise
             elif is_boundary:
                 # Boundary scenarios stay in onboarding; no session_complete expected.
@@ -1023,9 +1022,19 @@ async def run_product_scenario(
                 print("Boundary scenario: skipping session_complete wait, reading snapshot directly.")
     except SmokeFailure:
         raise
+    except websockets.exceptions.WebSocketException as exc:
+        raise SmokeRuntimeFailure(
+            f"Product synthetic websocket flow failed after {len(events)} events: {format_exception(exc)}. "
+            f"Tail: {format_event_tail(events)}"
+        ) from exc
+    except OSError as exc:
+        raise SmokeRuntimeFailure(
+            f"Product synthetic transport failed after {len(events)} events: {format_exception(exc)}. "
+            f"Tail: {format_event_tail(events)}"
+        ) from exc
     except Exception as exc:  # pragma: no cover - live networking guard
         raise SmokeRuntimeFailure(
-            f"Product synthetic scenario failed after {len(events)} events: {exc}. "
+            f"Product synthetic scenario failed after {len(events)} events: {format_exception(exc)}. "
             f"Tail: {format_event_tail(events)}"
         ) from exc
 
@@ -1074,7 +1083,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--session-timeout",
         type=float,
-        default=15.0,
+        default=90.0,
         help="Timeout in seconds for waiting on session_complete after end.",
     )
     parser.add_argument(

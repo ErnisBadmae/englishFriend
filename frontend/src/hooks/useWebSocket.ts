@@ -19,7 +19,7 @@ interface DisconnectPayload {
 }
 
 interface WebSocketMessage {
-  type: 'connected' | 'transcript' | 'audio' | 'error' | 'session_complete' | 'phase_changed';
+  type: 'connected' | 'transcript' | 'audio' | 'error' | 'session_finishing' | 'session_complete' | 'phase_changed';
   role?: 'user' | 'assistant';
   text?: string;
   data?: string;
@@ -37,6 +37,7 @@ interface WebSocketMessage {
   phase?: string;
   mode?: string;
   stage?: string;
+  pending_persistence?: boolean;
 }
 
 interface UseWebSocketOptions {
@@ -279,6 +280,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             onSessionComplete?.({
               reason: data.reason || 'completed',
               returnScreen: data.return_screen || undefined,
+            });
+            break;
+
+          case 'session_finishing':
+            onDebugEvent?.('websocket', 'ws_session_finishing', {
+              reason: data.reason,
+              returnScreen: data.return_screen,
+              runtime: data.runtime,
+              pendingPersistence: data.pending_persistence,
             });
             break;
         }

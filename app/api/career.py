@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services.learning_plan_service import LearningPlanService
+from app.services.program_snapshot_service import ProgramSnapshotService
 
 router = APIRouter(prefix="/api/v1/career", tags=["career"])
 
@@ -54,6 +55,12 @@ class PaidIntentResponse(BaseModel):
     readiness_score: Optional[float] = None
     sessions_completed: int = 0
     interview_runs_completed: int = 0
+    cta_source: Optional[str] = None
+    value_visible: bool = False
+    value_stage: Optional[str] = None
+    conversion_stage: Optional[str] = None
+    completed_career_missions: int = 0
+    reusable_answers_count: int = 0
 
 
 @router.post("/{user_id}/vacancy", response_model=VacancyUpdateResponse)
@@ -107,9 +114,11 @@ async def submit_paid_intent(
     payload: PaidIntentInput,
     db: AsyncSession = Depends(get_db),
 ) -> PaidIntentResponse:
+    snapshot = await ProgramSnapshotService(db).get_snapshot(user_id)
     signal = await LearningPlanService(db).record_paid_intent(
         user_id=user_id,
         source=payload.source,
         note=payload.note,
+        product_context=snapshot,
     )
     return PaidIntentResponse(accepted=True, **signal)

@@ -129,6 +129,8 @@ async def session_end_node(state: AgentState) -> AgentState:
     state["pending_response"] = farewell
     state["current_phase"] = AgentPhase.SESSION_END
     state["needs_user_input"] = False
+    state["session_complete_reason"] = "session_end"
+    state["session_complete_return_screen"] = "home"
 
     # Log session completion
     current_mode = state.get("current_mode")

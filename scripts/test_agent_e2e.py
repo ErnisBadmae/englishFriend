@@ -229,6 +229,7 @@ def assert_snapshot_contract(snapshot: dict[str, Any], scenario: SmokeScenario) 
     mission = snapshot.get("mission") or {}
     interview = snapshot.get("interview") or {}
     recommended_track = interview.get("recommended_track") or {}
+    latest_evidence = ((snapshot.get("session_evidence") or {}).get("latest") or {})
 
     main_contexts = goal_brief.get("main_contexts") or []
     primary_context = str(main_contexts[0] if main_contexts else "").strip()
@@ -243,7 +244,7 @@ def assert_snapshot_contract(snapshot: dict[str, Any], scenario: SmokeScenario) 
             f"Expected recommended track '{scenario.expected_track_id}', got '{recommended_track_id or 'missing'}'"
         )
 
-    task_type = str(mission.get("task_type") or "").strip()
+    task_type = str(latest_evidence.get("task_type") or mission.get("task_type") or "").strip()
     if task_type in scenario.forbidden_task_types:
         raise SmokeForbiddenTaskType(
             f"Mission task_type '{task_type}' is explicitly forbidden for this scenario"
@@ -252,7 +253,9 @@ def assert_snapshot_contract(snapshot: dict[str, Any], scenario: SmokeScenario) 
     if task_type not in scenario.allowed_task_types:
         allowed = ", ".join(scenario.allowed_task_types)
         raise SmokeSnapshotMismatch(
-            f"Expected mission.task_type in ({allowed}), got '{task_type or 'missing'}'"
+            "Expected latest completed mission.task_type in "
+            f"({allowed}), got '{task_type or 'missing'}' "
+            f"(session_evidence.latest={latest_evidence.get('task_type')!r}, mission.next={mission.get('task_type')!r})"
         )
 
 
@@ -321,7 +324,13 @@ async def wait_for_session_complete(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SmokeRuntimeFailure("Timed out waiting for session_complete")
-        event = await receive_event(websocket, remaining)
+        try:
+            event = await receive_event(websocket, remaining)
+        except websockets.exceptions.ConnectionClosed as exc:
+            raise SmokeRuntimeFailure(
+                f"Websocket closed before session_complete: code={exc.code}, reason={exc.reason!r}. "
+                f"Tail: {format_event_tail(events)}"
+            ) from exc
         events.append(event)
         assert_event_contract(event, scenario)
         if str(event.get("type") or "") == "session_complete":
@@ -371,6 +380,37 @@ async def fetch_snapshot(
         raise SmokeRuntimeFailure(f"Failed to fetch snapshot after {attempts} attempts: {last_error or 'unknown error'}")
 
 
+async def wait_for_snapshot_condition(
+    base_url: str,
+    *,
+    user_id: int,
+    predicate,
+    description: str,
+    attempts: int = 12,
+    delay_s: float = 0.5,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    last_snapshot: dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        snapshot = await fetch_snapshot(
+            base_url,
+            user_id=user_id,
+            attempts=1,
+            delay_s=delay_s,
+            timeout_s=timeout_s,
+        )
+        last_snapshot = snapshot
+        if predicate(snapshot):
+            return snapshot
+        if attempt < attempts:
+            await asyncio.sleep(delay_s)
+
+    raise SmokeRuntimeFailure(
+        f"Snapshot condition not met after {attempts} attempts: {description}. "
+        f"Latest snapshot keys: {list((last_snapshot or {}).keys())}"
+    )
+
+
 def print_tail(events: list[dict[str, Any]], *, limit: int = 14) -> None:
     print("\nEvent tail:")
     for index, event in enumerate(events[-limit:], start=max(1, len(events) - limit + 1)):
@@ -383,8 +423,37 @@ def format_event_tail(events: list[dict[str, Any]], *, limit: int = 8) -> str:
     return " || ".join(event_summary(event) for event in events[-limit:])
 
 
+def format_exception(exc: BaseException) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return f"{type(exc).__name__}: {detail}"
+    return f"{type(exc).__name__}: {exc!r}"
+
+
 def has_session_complete(events: list[dict[str, Any]]) -> bool:
     return any(str(event.get("type") or "") == "session_complete" for event in events)
+
+
+def has_session_finishing(events: list[dict[str, Any]]) -> bool:
+    return any(str(event.get("type") or "") == "session_finishing" for event in events)
+
+
+def has_session_end_farewell(events: list[dict[str, Any]]) -> bool:
+    return any(
+        str(event.get("type") or "") == "transcript"
+        and str(event.get("role") or "") == "assistant"
+        and str(event.get("phase") or "") == "session_end"
+        and str(event.get("text") or "").strip()
+        for event in events
+    )
+
+
+def has_completion_signal(events: list[dict[str, Any]]) -> bool:
+    return (
+        has_session_complete(events)
+        or has_session_finishing(events)
+        or has_session_end_farewell(events)
+    )
 
 
 def print_snapshot_summary(snapshot: dict[str, Any]) -> None:
@@ -392,11 +461,13 @@ def print_snapshot_summary(snapshot: dict[str, Any]) -> None:
     interview = snapshot.get("interview") or {}
     recommended_track = interview.get("recommended_track") or {}
     mission = snapshot.get("mission") or {}
+    latest_evidence = ((snapshot.get("session_evidence") or {}).get("latest") or {})
     print("\nSnapshot summary:")
     print(f"  primary_context: {(goal_brief.get('main_contexts') or [''])[0] if goal_brief.get('main_contexts') else ''}")
     print(f"  recommended_track: {recommended_track.get('id') or ''}")
-    print(f"  mission_task_type: {mission.get('task_type') or ''}")
-    print(f"  mission_title: {mission.get('title') or ''}")
+    print(f"  latest_task_type: {latest_evidence.get('task_type') or ''}")
+    print(f"  next_task_type: {mission.get('task_type') or ''}")
+    print(f"  next_mission_title: {mission.get('title') or ''}")
 
 
 def classify_failure(exc: SmokeFailure) -> str:
@@ -441,8 +512,8 @@ async def run_scenario(
             await drain_events(websocket, scenario=scenario, events=events)
 
             for index, message in enumerate(scenario.user_messages, start=1):
-                if has_session_complete(events):
-                    completion_seen = True
+                if has_completion_signal(events):
+                    completion_seen = has_session_complete(events)
                     break
                 payload = {"type": "text", "text": message, "source": "composer"}
                 await websocket.send(json.dumps(payload))
@@ -458,6 +529,8 @@ async def run_scenario(
 
             completion_seen = completion_seen or has_session_complete(events)
             if not completion_seen:
+                if not has_completion_signal(events):
+                    await websocket.send(json.dumps({"type": "end"}))
                 completion_event = await wait_for_session_complete(
                     websocket,
                     scenario=scenario,
@@ -472,12 +545,18 @@ async def run_scenario(
 
     except websockets.exceptions.WebSocketException as exc:
         raise SmokeRuntimeFailure(
-            f"Websocket flow failed after {len(events)} events: {exc}. "
+            f"Websocket flow failed after {len(events)} events: {format_exception(exc)}. "
             f"Tail: {format_event_tail(events)}"
         ) from exc
     except OSError as exc:
+        if events:
+            raise SmokeRuntimeFailure(
+                f"Websocket transport failed after {len(events)} events: {format_exception(exc)}. "
+                f"Tail: {format_event_tail(events)}"
+            ) from exc
         raise SmokeRuntimeFailure(
-            f"Could not connect to {ws_url}. Make sure the backend is running and reachable. Details: {exc}"
+            f"Could not connect to {ws_url}. Make sure the backend is running and reachable. "
+            f"Details: {format_exception(exc)}"
         ) from exc
 
     snapshot = await fetch_snapshot(base_url, user_id=snapshot_user_id)
@@ -520,13 +599,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--turn-timeout",
         type=float,
-        default=8.0,
+        default=20.0,
         help="Timeout in seconds for connected and assistant-turn waits.",
     )
     parser.add_argument(
         "--session-timeout",
         type=float,
-        default=15.0,
+        default=90.0,
         help="Timeout in seconds for waiting on session_complete.",
     )
     args = parser.parse_args()

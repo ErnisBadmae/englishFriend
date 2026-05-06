@@ -263,6 +263,7 @@ class SessionEvidence(BaseModel):
     mission_type: str
     mode: Optional[str] = None
     task_type: Optional[str] = None
+    next_mission_choice: Optional[str] = None
     linked_goal_context: Optional[str] = None
     mission_title: str
     summary: str
@@ -300,6 +301,22 @@ class MonetizationSnapshot(BaseModel):
     paid_intent_submitted: bool = False
     latest_paid_intent_at: Optional[str] = None
     latest_paid_intent_context: Optional[str] = None
+    value_visible: bool = False
+    value_signals: list[str] = []
+    cta_reason: Optional[str] = None
+    cta_source: Optional[str] = None
+
+
+class ProductSignalsSnapshot(BaseModel):
+    activation_stage: str
+    value_stage: str
+    conversion_stage: str
+    retention_stage: str
+    completed_career_missions: int = 0
+    reusable_answers_count: int = 0
+    interview_runs_completed: int = 0
+    latest_value_signal: Optional[str] = None
+    next_measurement_focus: Optional[str] = None
 
 
 class ProgramSnapshotResponse(BaseModel):
@@ -318,6 +335,7 @@ class ProgramSnapshotResponse(BaseModel):
     progress: ProgressSnapshot
     session_evidence: SessionEvidenceSnapshot
     setup: SetupSnapshot
+    product_signals: ProductSignalsSnapshot
     monetization: MonetizationSnapshot
 
 

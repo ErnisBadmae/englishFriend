@@ -473,10 +473,17 @@ class LearningPlanService:
         user_id: int,
         source: str,
         note: Optional[str] = None,
+        product_context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         plan = await self.get_or_create_plan(user_id)
         roadmap = deepcopy(plan.roadmap or {})
         profile = roadmap.get("proficiency_profile") or {}
+        monetization_context = (
+            product_context.get("monetization") if isinstance(product_context, dict) else {}
+        ) or {}
+        product_signals = (
+            product_context.get("product_signals") if isinstance(product_context, dict) else {}
+        ) or {}
         payload = {
             "submitted_at": _utcnow_iso(),
             "source": source,
@@ -485,6 +492,12 @@ class LearningPlanService:
             "readiness_score": profile.get("goal_readiness"),
             "sessions_completed": roadmap.get("sessions_completed", 0),
             "interview_runs_completed": len(roadmap.get("interview_runs") or []),
+            "cta_source": monetization_context.get("cta_source"),
+            "value_visible": bool(monetization_context.get("value_visible")),
+            "value_stage": product_signals.get("value_stage"),
+            "conversion_stage": product_signals.get("conversion_stage"),
+            "completed_career_missions": int(product_signals.get("completed_career_missions") or 0),
+            "reusable_answers_count": int(product_signals.get("reusable_answers_count") or 0),
         }
         existing = [
             dict(item)

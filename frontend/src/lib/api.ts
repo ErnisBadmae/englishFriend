@@ -267,6 +267,7 @@ export interface SessionEvidence {
   mission_type: string;
   mode?: string | null;
   task_type?: string | null;
+  next_mission_choice?: string | null;
   linked_goal_context?: string | null;
   mission_title: string;
   summary: string;
@@ -289,6 +290,22 @@ export interface MonetizationSummary {
   paid_intent_submitted: boolean;
   latest_paid_intent_at?: string | null;
   latest_paid_intent_context?: string | null;
+  value_visible: boolean;
+  value_signals: string[];
+  cta_reason?: string | null;
+  cta_source?: string | null;
+}
+
+export interface ProductSignalsSummary {
+  activation_stage: string;
+  value_stage: string;
+  conversion_stage: string;
+  retention_stage: string;
+  completed_career_missions: number;
+  reusable_answers_count: number;
+  interview_runs_completed: number;
+  latest_value_signal?: string | null;
+  next_measurement_focus?: string | null;
 }
 
 export interface WesternReadinessSummary {
@@ -359,6 +376,7 @@ export interface ProgramSnapshot {
     next_question_type?: string | null;
     progress: number;
   };
+  product_signals: ProductSignalsSummary;
   monetization: MonetizationSummary;
 }
 
@@ -520,6 +538,7 @@ function normalizeSessionEvidence(raw: unknown): SessionEvidence | null {
     mission_type: typeof record.mission_type === 'string' ? record.mission_type : 'free_conversation',
     mode: typeof record.mode === 'string' ? record.mode : null,
     task_type: typeof record.task_type === 'string' ? record.task_type : null,
+    next_mission_choice: typeof record.next_mission_choice === 'string' ? record.next_mission_choice : null,
     linked_goal_context: typeof record.linked_goal_context === 'string' ? record.linked_goal_context : null,
     mission_title: typeof record.mission_title === 'string' ? record.mission_title : 'Guided mission',
     summary: typeof record.summary === 'string' ? record.summary : '',
@@ -558,6 +577,7 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
   const progress = asRecord(record.progress);
   const sessionEvidenceRecord = asRecord(record.session_evidence);
   const setup = asRecord(record.setup);
+  const productSignals = asRecord(record.product_signals);
   const monetization = asRecord(record.monetization);
 
   const goalBrief = Object.keys(brief).length > 0 ? {
@@ -833,11 +853,26 @@ function normalizeProgramSnapshot(raw: unknown, fallbackUserId: number): Program
       next_question_type: typeof setup.next_question_type === 'string' ? setup.next_question_type : null,
       progress: Number(setup.progress ?? (goalComplete ? (assessmentComplete ? 100 : 75) : (goalBrief ? 40 : 0))),
     },
+    product_signals: {
+      activation_stage: typeof productSignals.activation_stage === 'string' ? productSignals.activation_stage : 'goal_not_ready',
+      value_stage: typeof productSignals.value_stage === 'string' ? productSignals.value_stage : 'not_visible',
+      conversion_stage: typeof productSignals.conversion_stage === 'string' ? productSignals.conversion_stage : 'not_ready',
+      retention_stage: typeof productSignals.retention_stage === 'string' ? productSignals.retention_stage : 'not_applicable_yet',
+      completed_career_missions: Number(productSignals.completed_career_missions ?? 0),
+      reusable_answers_count: Number(productSignals.reusable_answers_count ?? 0),
+      interview_runs_completed: Number(productSignals.interview_runs_completed ?? 0),
+      latest_value_signal: typeof productSignals.latest_value_signal === 'string' ? productSignals.latest_value_signal : null,
+      next_measurement_focus: typeof productSignals.next_measurement_focus === 'string' ? productSignals.next_measurement_focus : null,
+    },
     monetization: {
       show_paid_cta: Boolean(monetization.show_paid_cta),
       paid_intent_submitted: Boolean(monetization.paid_intent_submitted),
       latest_paid_intent_at: typeof monetization.latest_paid_intent_at === 'string' ? monetization.latest_paid_intent_at : null,
       latest_paid_intent_context: typeof monetization.latest_paid_intent_context === 'string' ? monetization.latest_paid_intent_context : null,
+      value_visible: Boolean(monetization.value_visible),
+      value_signals: asStringArray(monetization.value_signals),
+      cta_reason: typeof monetization.cta_reason === 'string' ? monetization.cta_reason : null,
+      cta_source: typeof monetization.cta_source === 'string' ? monetization.cta_source : null,
     },
   };
 }

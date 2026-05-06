@@ -512,6 +512,7 @@ class SessionPersistenceService:
             envelope=envelope,
             layer="persistence",
             event="persistence_started",
+            level=logging.DEBUG,
             status=request.status,
             turn_count=request.turn_count,
         )
@@ -603,6 +604,7 @@ class SessionPersistenceService:
                     envelope=envelope,
                     layer="memory",
                     event="memory_saved",
+                    level=logging.DEBUG,
                     saved_memory_count=len(saved_memories),
                     conversation_messages=len(request.conversation_history),
                 )
@@ -643,7 +645,7 @@ class SessionPersistenceService:
                     request.session_id,
                 )
         except Exception as exc:
-            logger.warning("[VoiceSession] Persist failed (%s): %s", request.status, exc)
+            logger.warning("[VoiceSession] Persist failed (%s): %s", request.status, exc, exc_info=True)
             observe_voice_stage(
                 runtime=request.runtime,
                 stage="persist",
