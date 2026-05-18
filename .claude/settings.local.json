@@ -139,7 +139,22 @@
       "Bash(echo \"PID: $!\")",
       "Bash(venv/bin/python *)",
       "Bash(env)",
-      "Bash(wait)"
+      "Bash(wait)",
+      "Bash(CAREER_ROUTING_CLASSIFIER_TIMEOUT_SECONDS=60 CAREER_ROUTING_CLASSIFIER_MAX_TOKENS=800 venv/Scripts/python.exe *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(venv/Scripts/python.exe -m pytest tests/test_goal_routing.py tests/test_onboarding_node.py -q)",
+      "Bash(echo \"EXIT=$?\")",
+      "Read(//tmp/**)",
+      "Bash(npx tsc *)",
+      "Bash([ -s \"C:\\\\\\\\Users\\\\\\\\BADMAE~1\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-badmaev-es-englishFriend\\\\\\\\774a72b2-ac16-4ee1-ab6e-b66512ca9347\\\\\\\\tasks\\\\\\\\bjk5nl7rk.output\" ])",
+      "Bash(tasklist)",
+      "Bash(tasklist /v /fo list)",
+      "Bash(cmd.exe /c \"tasklist | findstr python\")",
+      "Bash(cmd.exe /c \"tasklist /FI \\\\\"IMAGENAME eq python.exe\\\\\" /FO CSV\")",
+      "Bash(/c/Users/badmaev_es/englishFriend/venv/Scripts/python.exe -m pytest /c/Users/badmaev_es/englishFriend/tests/test_career_routing_classifier.py /c/Users/badmaev_es/englishFriend/tests/test_onboarding_node.py /c/Users/badmaev_es/englishFriend/tests/test_product_synthetic_eval_script.py -q)",
+      "Bash(tasklist /FI \"IMAGENAME eq python.exe\" /FO CSV)",
+      "Bash(wmic process *)",
+      "Bash(git check-ignore *)"
     ]
   },
   "enableAllProjectMcpServers": true

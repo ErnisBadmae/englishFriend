@@ -1,6 +1,16 @@
 ---
 description: Canonical local/team LLM truth-state for English Friend
-last_updated: 2026-04-22
+paths:
+  - app/**/*.py
+  - scripts/**/*.py
+  - tests/**/*.py
+  - .env
+  - .env.example
+  - QUICK_START.md
+  - CLAUDE.md
+  - AGENTS.md
+  - !DOC/operations/CURRENT_PRODUCT_STATE.md
+last_updated: 2026-05-05
 ---
 
 # Local LLM Truth-State

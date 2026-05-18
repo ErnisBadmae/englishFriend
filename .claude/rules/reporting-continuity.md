@@ -1,6 +1,10 @@
 ---
 description: Single-file reporting and continuity rule for active product work
-last_updated: 2026-04-01
+paths:
+  - !DOC/operations/CURRENT_PRODUCT_STATE.md
+  - CLAUDE.md
+  - AGENTS.md
+last_updated: 2026-05-05
 ---
 
 # Reporting Continuity Rule

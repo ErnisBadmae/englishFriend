@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-04-22
+last_updated: 2026-05-05
 status: Canonical master view of product, architecture, and execution
 ---
 
@@ -150,6 +150,31 @@ It includes:
 - smoke/eval harnesses
 
 Rule: runtime should be replaceable without rewriting the career-state engine.
+
+## What We Borrow From Hermes/OpenClaw
+
+Hermes/OpenClaw-style systems are useful as internal architecture references, not as product identity.
+
+Useful patterns to borrow:
+
+- tool boundaries for bounded internal automation
+- long-lived session supervision and lifecycle handling
+- skill ergonomics for internal career-loop tasks
+- safety and sandboxing patterns around tool use
+- multi-channel delivery abstractions that do not own product state
+
+Rules for borrowing:
+
+- these patterns belong to the delivery/control layer only
+- learner state, evidence, mission routing, and monetization remain server-owned product logic
+- internal skills may inform product behavior, but may not become a second source of truth
+
+What we explicitly do not borrow:
+
+- a user-facing agent shell
+- a plugin or skill marketplace
+- generic assistant workflows as the product surface
+- memory or markdown files as an alternate learner-state owner
 
 ## Data Truth-State
 
