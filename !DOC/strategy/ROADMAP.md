@@ -1,6 +1,6 @@
 ---
-last_updated: 2026-05-06
-status: Активный founder-learning sprint
+last_updated: 2026-05-25
+status: Self-dogfood job-search loop; text-first moat hardening
 ---
 
 # Roadmap
@@ -11,6 +11,19 @@ status: Активный founder-learning sprint
 - [../MASTER_PROJECT_VIEW_2026-04-22.md](../MASTER_PROJECT_VIEW_2026-04-22.md)
 - [../architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md](../architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md)
 - [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md)
+- [TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](./TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md)
+- [../architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md](../architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md)
+- [../operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md](../operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md)
+
+## Planning Anchor
+
+For current Codex and Claude Code work, use [TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](./TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md) as the detailed task and decision anchor.
+
+The active rule is: harden the text-first interview loop and evidence moat before deeper voice provider work. Voice remains opt-in and returns to active planning only through a benchmark gate.
+
+Current execution mode: use the founder's own remote hard-currency job search as the primary dogfood loop. The immediate target is a verifiable vertical slice:
+
+`CareerProfile -> VacancyContext -> Mission -> text session -> Evidence -> Next Mission`
 
 ## Тезис спринта
 

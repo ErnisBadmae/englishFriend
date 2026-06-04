@@ -1,6 +1,6 @@
 # English Friend Documentation
 
-**Last Updated**: 2026-04-22
+**Last Updated**: 2026-05-25
 
 This directory contains the product, architecture, operations, and implementation documentation for English Friend.
 
@@ -10,6 +10,9 @@ This directory contains the product, architecture, operations, and implementatio
 
 - **Need one canonical view of the whole project?** Read [MASTER_PROJECT_VIEW_2026-04-22.md](./MASTER_PROJECT_VIEW_2026-04-22.md)
 - **Need the current product status and the immediate next step?** Read [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md)
+- **Need the active text-first workplan for Codex/Claude Code?** Read [strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](./strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md)
+- **Need the self-dogfood architecture for the founder job-search loop?** Read [architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md](./architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md)
+- **Need the local 30-day execution plan?** Read [operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md](./operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md)
 - **Need the current hot-path vs async truth-state?** Read [architecture/DATA_FLOW_TRUTH_STATE_2026-04-21.md](./architecture/DATA_FLOW_TRUTH_STATE_2026-04-21.md)
 - **Need the target architecture and moat map?** Read [architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md](./architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md)
 - **Need a Russian business/data-flow schematic?** Read [architecture/BUSINESS_AND_DATA_FLOW_RU_2026-04-21.md](./architecture/BUSINESS_AND_DATA_FLOW_RU_2026-04-21.md)
@@ -39,6 +42,9 @@ This directory contains the product, architecture, operations, and implementatio
 | --- | --- | --- |
 | [MASTER_PROJECT_VIEW_2026-04-22.md](./MASTER_PROJECT_VIEW_2026-04-22.md) | Canonical project view: product thesis, moat, architecture, execution rules, horizons | First read when you need the whole project |
 | [operations/CURRENT_PRODUCT_STATE.md](./operations/CURRENT_PRODUCT_STATE.md) | Current wedge status, known issues, live blockers, next operational step | Resuming active work |
+| [strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](./strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md) | Active text-first moat plan, task queue, product gates, and voice deferral rules | Planning current work across Codex and Claude Code |
+| [architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md](./architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md) | Clean architecture target for the founder's real job-search preparation loop | Designing domain boundaries and implementation slices |
+| [operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md](./operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md) | Step-by-step local dogfood plan with verification gates | Executing daily job-search preparation work |
 | [architecture/DATA_FLOW_TRUTH_STATE_2026-04-21.md](./architecture/DATA_FLOW_TRUTH_STATE_2026-04-21.md) | Current code truth-state for sync and async contours | Verifying what the code actually does |
 | [architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md](./architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md) | Target architecture appendix: north star, moat map, stack direction | Deep architecture work |
 | [architecture/BUSINESS_AND_DATA_FLOW_RU_2026-04-21.md](./architecture/BUSINESS_AND_DATA_FLOW_RU_2026-04-21.md) | Russian schematic of business logic and data movement | Product explanation in Russian |

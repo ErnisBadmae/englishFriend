@@ -1,3 +1,5 @@
+> Active planning note, 2026-05-20: for current Codex/Claude Code work, use `!DOC/strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md` plus `!DOC/operations/CURRENT_PRODUCT_STATE.md` as the canonical planning and task-tracking source. This file is historical sprint material unless a newer user instruction says otherwise.
+
 Discovery Phase 0 — Sprint Materials & Architectural Vision
 
 ▎ Активный артефакт спринта на discovery-first cycle. Создан после критического разбора плана Codex v2 + утверждения hybrid пути (calls + личные DMs warm контактам).
