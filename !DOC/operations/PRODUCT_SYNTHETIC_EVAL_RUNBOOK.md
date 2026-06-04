@@ -66,6 +66,14 @@ Scope: live synthetic evaluation of the `chat_v2` product loop
 
 ## Как запускать
 
+Managed Windows/local run:
+
+```powershell
+venv\Scripts\python.exe scripts\run_managed_product_eval.py --scenario interview_self_intro_gap --turn-timeout 120 --session-timeout 120
+```
+
+Managed runner starts `uvicorn main:app`, waits for `/health`, runs the product eval, and stops the managed API process.
+
 Mainline baseline:
 
 ```bash
