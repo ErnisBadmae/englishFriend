@@ -46,6 +46,10 @@ from app.services.goal_brief_contract import (
     normalize_goal_brief,
 )
 from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
+from app.services.onboarding.turn_analyzer import (
+    OnboardingTurnAnalysis,
+    analyze_onboarding_turn,
+)
 from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
 from app.services.program_snapshot_service import recommend_next_mission
@@ -106,6 +110,7 @@ _FLEXIBLE_COMPANY_CONTEXT_PATTERNS = (
     "no matter",
 )
 _FORCE_ROUTE_AFTER_GOAL_TURNS = 3
+_TURN_ANALYZER_MIN_CONFIDENCE = 0.7
 _STT_NOISE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("intarview", "interview"),
     ("intarviews", "interviews"),
@@ -480,6 +485,26 @@ async def onboarding_node(state: AgentState) -> AgentState:
         )
         _record_onboarding_assistant_turn(state)
         return state
+
+    if not state.get("goal_setup_complete"):
+        turn_analysis = await analyze_onboarding_turn(
+            user_message=user_message,
+            conversation_history=state.get("conversation_history") or [],
+            existing_goal_brief=state.get("goal_brief") or {},
+            llm=llm,
+        )
+        if turn_analysis:
+            state["last_onboarding_turn_analysis"] = turn_analysis.to_observability_payload()
+        if _apply_turn_analysis_followup_if_needed(state, turn_analysis):
+            add_decision_log(
+                state,
+                node="onboarding",
+                action="turn_analyzer_followup",
+                reason=f"next_action={turn_analysis.next_action if turn_analysis else None}",
+                data=turn_analysis.to_observability_payload() if turn_analysis else None,
+            )
+            _record_onboarding_assistant_turn(state)
+            return state
 
     # Pre-seed state with a draft goal from noisy speech before the LLM sees it.
     goal_became_routing_ready_this_turn = False
@@ -1269,6 +1294,53 @@ def _build_forced_goal_brief_if_ready(
     return _coerce_goal_brief_state(goal_brief)
 
 
+def _apply_turn_analysis_followup_if_needed(
+    state: AgentState,
+    analysis: Optional[OnboardingTurnAnalysis],
+) -> bool:
+    """Apply a high-confidence analyzer result only when it asks for a missing slot."""
+    if not analysis:
+        return False
+    if analysis.confidence < _TURN_ANALYZER_MIN_CONFIDENCE:
+        return False
+    if analysis.scope_status != "in_scope":
+        return False
+    if state.get("goal_setup_complete"):
+        return False
+    if _is_goal_brief_routing_ready(state.get("goal_brief") or {}):
+        return False
+
+    update = analysis.to_goal_brief_update()
+    if not update:
+        return False
+
+    normalized_goal_brief = _finalize_goal_brief_after_merge(
+        _merge_goal_brief(state.get("goal_brief") or {}, update)
+    )
+    if _is_goal_brief_routing_ready(normalized_goal_brief):
+        return False
+
+    if analysis.next_action not in {
+        "ask_goal",
+        "ask_target_role",
+        "ask_company_context",
+        "ask_practice_context",
+    }:
+        return False
+
+    state["goal_brief"] = normalized_goal_brief
+    state["goal_setup_complete"] = False
+    state["setup_step"] = "goal_setup"
+    state["current_phase"] = AgentPhase.ONBOARDING
+    state["needs_user_input"] = True
+    state["pending_response"] = _build_goal_followup_question(
+        normalized_goal_brief,
+        normalized_goal_brief.get("primary_goal"),
+    )
+    state["last_question_type"] = "goal_setup"
+    return True
+
+
 async def _prepare_goal_brief_turn_update(
     state: AgentState,
     *,
@@ -1804,7 +1876,12 @@ def _infer_goal_brief_from_message(
         blockers.append("Need stronger ML and interview vocabulary")
         inferred["current_blockers"] = blockers
 
-    if signal_count < 2 and not _is_goal_brief_routing_ready(existing):
+    existing_has_context = bool(existing.get("main_contexts"))
+    if (
+        signal_count < 2
+        and not _is_goal_brief_routing_ready(existing)
+        and not (existing_has_context and signal_count >= 1)
+    ):
         return None
 
     if contexts:
