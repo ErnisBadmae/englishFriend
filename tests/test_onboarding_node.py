@@ -556,7 +556,9 @@ async def test_onboarding_current_role_accepts_affirmative_prefix_answer():
 
 
 @pytest.mark.asyncio
-async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_first_mission():
+async def test_onboarding_routing_ready_goal_answer_skips_llm_and_starts_first_mission(
+    deterministic_routing,
+):
     state = create_initial_state(user_id=1, session_id="session-1")
     state["last_question_type"] = "goal_setup"
     state["last_user_message"] = "I want a machine learning engineer job abroad."
