@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
-import { HomePage } from './components/HomePage';
-import { InterviewPage } from './components/InterviewPage';
-import { InterviewResultsPage } from './components/InterviewResultsPage';
-import { ProgressPage } from './components/ProgressPage';
-import { ReviewPage } from './components/ReviewPage';
-import { SessionResultsPage } from './components/SessionResultsPage';
-import { VoiceChatV2 } from './components/VoiceChatV2';
+import { useEffect, useState } from "react";
+import { HomePage } from "./components/HomePage";
+import { InterviewPage } from "./components/InterviewPage";
+import { InterviewResultsPage } from "./components/InterviewResultsPage";
+import { ProgressPage } from "./components/ProgressPage";
+import { ReviewPage } from "./components/ReviewPage";
+import { SessionResultsPage } from "./components/SessionResultsPage";
+import { VoiceChatV2 } from "./components/VoiceChatV2";
 import {
   API_BASE,
   WS_BASE,
@@ -19,17 +19,17 @@ import {
   type MissionSummary,
   type ProgramSnapshot,
   type SessionEvidence
-} from './lib/api';
-import './App.css';
+} from "./lib/api";
+import "./App.css";
 
 type Screen =
-  | 'home'
-  | 'session'
-  | 'interview'
-  | 'review'
-  | 'progress'
-  | 'interview_results'
-  | 'session_results';
+  | "home"
+  | "session"
+  | "interview"
+  | "review"
+  | "progress"
+  | "interview_results"
+  | "session_results";
 
 interface SessionConfig {
   wsUrl: string;
@@ -43,18 +43,17 @@ interface SessionConfig {
   returnScreen: Screen;
 }
 
-const DEFAULT_STT_PROVIDER =
-  import.meta.env.VITE_STT_PROVIDER || 'composer';
+const DEFAULT_STT_PROVIDER = import.meta.env.VITE_STT_PROVIDER || "composer";
 
 function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
   if (!mission) {
     return false;
   }
   return (
-    mission.mode === 'assessment' ||
-    mission.mode === 'guided_setup' ||
-    mission.task_type === 'foundation_speaking_drill' ||
-    mission.task_type === 'grammar_rescue'
+    mission.mode === "assessment" ||
+    mission.mode === "guided_setup" ||
+    mission.task_type === "foundation_speaking_drill" ||
+    mission.task_type === "grammar_rescue"
   );
 }
 
@@ -63,9 +62,9 @@ function buildMissionSessionConfig(
   returnScreen: Screen
 ): SessionConfig {
   const mode =
-    mission.mode === 'guided_setup'
+    mission.mode === "guided_setup"
       ? undefined
-      : mission.launch_mode ?? mission.mode;
+      : (mission.launch_mode ?? mission.mode);
   return {
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
     mode,
@@ -80,24 +79,24 @@ function buildMissionSessionConfig(
 }
 
 function readScreenFromHash(): Screen {
-  const normalized = window.location.hash.replace('#', '');
+  const normalized = window.location.hash.replace("#", "");
   if (
-    normalized === 'session' ||
-    normalized === 'interview' ||
-    normalized === 'review' ||
-    normalized === 'progress' ||
-    normalized === 'interview_results' ||
-    normalized === 'session_results'
+    normalized === "session" ||
+    normalized === "interview" ||
+    normalized === "review" ||
+    normalized === "progress" ||
+    normalized === "interview_results" ||
+    normalized === "session_results"
   ) {
     return normalized as Screen;
   }
-  return 'home';
+  return "home";
 }
 
 function App() {
-  const [telegramId, setTelegramId] = useState<number>(18);
+  const [telegramId, setTelegramId] = useState<number>(22);
   const [telegramUsername, setTelegramUsername] =
-    useState<string>('Local User');
+    useState<string>("Local User");
   const [userId, setUserId] = useState<number | null>(null);
   const [snapshot, setSnapshot] = useState<ProgramSnapshot | null>(null);
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
@@ -105,7 +104,7 @@ function App() {
     wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
     sttProvider: DEFAULT_STT_PROVIDER,
     reviewBeforeSend: false,
-    returnScreen: 'progress'
+    returnScreen: "progress"
   });
   const [lastInterviewRun, setLastInterviewRun] = useState<InterviewRun | null>(
     null
@@ -131,37 +130,37 @@ function App() {
         setTelegramUsername(
           tgUser.username || tgUser.first_name || `tg_${tgUser.id}`
         );
-        console.log('Telegram user ID:', tgUser.id);
+        console.log("Telegram user ID:", tgUser.id);
       }
 
       document.documentElement.style.setProperty(
-        '--tg-theme-bg-color',
-        tg.themeParams?.bg_color || '#ffffff'
+        "--tg-theme-bg-color",
+        tg.themeParams?.bg_color || "#ffffff"
       );
       document.documentElement.style.setProperty(
-        '--tg-theme-text-color',
-        tg.themeParams?.text_color || '#000000'
+        "--tg-theme-text-color",
+        tg.themeParams?.text_color || "#000000"
       );
       document.documentElement.style.setProperty(
-        '--tg-theme-hint-color',
-        tg.themeParams?.hint_color || '#999999'
+        "--tg-theme-hint-color",
+        tg.themeParams?.hint_color || "#999999"
       );
       document.documentElement.style.setProperty(
-        '--tg-theme-button-color',
-        tg.themeParams?.button_color || '#667eea'
+        "--tg-theme-button-color",
+        tg.themeParams?.button_color || "#667eea"
       );
       document.documentElement.style.setProperty(
-        '--tg-theme-button-text-color',
-        tg.themeParams?.button_text_color || '#ffffff'
+        "--tg-theme-button-text-color",
+        tg.themeParams?.button_text_color || "#ffffff"
       );
       document.documentElement.style.setProperty(
-        '--tg-theme-secondary-bg-color',
-        tg.themeParams?.secondary_bg_color || '#f0f0f0'
+        "--tg-theme-secondary-bg-color",
+        tg.themeParams?.secondary_bg_color || "#f0f0f0"
       );
 
-      console.log('Telegram WebApp initialized');
+      console.log("Telegram WebApp initialized");
     } else {
-      console.log('Running outside Telegram');
+      console.log("Running outside Telegram");
     }
 
     setIsReady(true);
@@ -172,14 +171,14 @@ function App() {
       setScreen(readScreenFromHash());
     };
 
-    window.addEventListener('hashchange', onHashChange);
+    window.addEventListener("hashchange", onHashChange);
     return () => {
-      window.removeEventListener('hashchange', onHashChange);
+      window.removeEventListener("hashchange", onHashChange);
     };
   }, []);
 
   useEffect(() => {
-    const nextHash = screen === 'home' ? '' : `#${screen}`;
+    const nextHash = screen === "home" ? "" : `#${screen}`;
     if (window.location.hash !== nextHash) {
       window.location.hash = nextHash;
     }
@@ -208,7 +207,7 @@ function App() {
           setError(
             err instanceof Error
               ? err.message
-              : 'Failed to resolve user identity'
+              : "Failed to resolve user identity"
           );
         }
       } finally {
@@ -237,7 +236,7 @@ function App() {
       return data;
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Failed to load program snapshot'
+        err instanceof Error ? err.message : "Failed to load program snapshot"
       );
       return null;
     } finally {
@@ -250,7 +249,7 @@ function App() {
   }, [userId]);
 
   useEffect(() => {
-    if (screen === 'home' || screen === 'progress' || screen === 'interview') {
+    if (screen === "home" || screen === "progress" || screen === "interview") {
       void refreshSnapshot();
     }
   }, [screen]);
@@ -260,7 +259,7 @@ function App() {
       return;
     }
 
-    if (snapshot.mission.mode === 'mock_interview') {
+    if (snapshot.mission.mode === "mock_interview") {
       const recommendedTrackId =
         snapshot.mission.interview_track_id ??
         snapshot.interview.recommended_track.id;
@@ -268,9 +267,9 @@ function App() {
         id: recommendedTrackId,
         title: snapshot.mission.title,
         subtitle: snapshot.mission.reason,
-        description: '',
-        prompt_focus: '',
-        starter_question: '',
+        description: "",
+        prompt_focus: "",
+        starter_question: "",
         rubric_focus: [],
         recommended:
           recommendedTrackId === snapshot.interview.recommended_track.id,
@@ -280,62 +279,62 @@ function App() {
       return;
     }
 
-    if (snapshot.mission.mode === 'guided_setup') {
-      setSessionConfig(buildMissionSessionConfig(snapshot.mission, 'home'));
-      setScreen('session');
+    if (snapshot.mission.mode === "guided_setup") {
+      setSessionConfig(buildMissionSessionConfig(snapshot.mission, "home"));
+      setScreen("session");
       return;
     }
 
-    setSessionConfig(buildMissionSessionConfig(snapshot.mission, 'progress'));
-    setScreen('session');
+    setSessionConfig(buildMissionSessionConfig(snapshot.mission, "progress"));
+    setScreen("session");
   }
 
   function startInterviewTrack(track: InterviewTrack) {
     setSessionConfig({
       wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
-      mode: 'mock_interview',
+      mode: "mock_interview",
       interviewTrackId: track.id,
       sttProvider: DEFAULT_STT_PROVIDER,
       title: track.title,
       subtitle: track.subtitle,
       reviewBeforeSend: false,
-      returnScreen: 'interview'
+      returnScreen: "interview"
     });
-    setScreen('session');
+    setScreen("session");
   }
 
   async function handleSessionEnded(_payload: {
     sessionId: string | null;
-    messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+    messages: Array<{ role: "user" | "assistant"; text: string }>;
     completionReason?: string;
     returnScreen?: Screen | string;
   }) {
     const fresh = await refreshSnapshot();
     const requestedReturnScreen =
-      _payload.returnScreen === 'home' ||
-      _payload.returnScreen === 'session' ||
-      _payload.returnScreen === 'interview' ||
-      _payload.returnScreen === 'review' ||
-      _payload.returnScreen === 'progress' ||
-      _payload.returnScreen === 'interview_results' ||
-      _payload.returnScreen === 'session_results'
+      _payload.returnScreen === "home" ||
+      _payload.returnScreen === "session" ||
+      _payload.returnScreen === "interview" ||
+      _payload.returnScreen === "review" ||
+      _payload.returnScreen === "progress" ||
+      _payload.returnScreen === "interview_results" ||
+      _payload.returnScreen === "session_results"
         ? _payload.returnScreen
         : undefined;
-    if (_payload.completionReason === 'baseline_complete') {
-      setScreen(requestedReturnScreen ?? 'home');
+    if (_payload.completionReason === "baseline_complete") {
+      setScreen(requestedReturnScreen ?? "home");
       return;
     }
     if (
-      sessionConfig.mode === 'mock_interview' &&
+      sessionConfig.mode === "mock_interview" &&
       fresh?.interview.latest_run
     ) {
       setLastInterviewRun(fresh.interview.latest_run);
       setLastMission(fresh.mission);
-      setScreen('interview_results');
+      setScreen("interview_results");
     } else if (fresh?.session_evidence.latest) {
       setLastSessionEvidence(fresh.session_evidence.latest);
       setLastMission(fresh.mission);
-      setScreen('session_results');
+      setScreen("session_results");
     } else {
       setScreen(requestedReturnScreen ?? sessionConfig.returnScreen);
     }
@@ -376,7 +375,7 @@ function App() {
 
       <main
         className={`app-content ${
-          screen === 'session' ? 'session-layout' : ''
+          screen === "session" ? "session-layout" : ""
         }`}
       >
         {isLoadingSnapshot && !snapshot ? (
@@ -388,11 +387,11 @@ function App() {
 
         {snapshot ? (
           <>
-            {screen === 'home' && (
+            {screen === "home" && (
               <HomePage
                 snapshot={snapshot}
                 onStartSession={startGuidedSession}
-                onOpenProgress={() => setScreen('progress')}
+                onOpenProgress={() => setScreen("progress")}
                 onRefresh={() => {
                   void refreshSnapshot();
                 }}
@@ -406,7 +405,7 @@ function App() {
                     setError(
                       err instanceof Error
                         ? err.message
-                        : 'Failed to save vacancy'
+                        : "Failed to save vacancy"
                     );
                   }
                 }}
@@ -422,7 +421,7 @@ function App() {
                     setError(
                       err instanceof Error
                         ? err.message
-                        : 'Failed to save project notes'
+                        : "Failed to save project notes"
                     );
                   }
                 }}
@@ -430,21 +429,25 @@ function App() {
                   if (!userId) return;
                   try {
                     setError(null);
-                    const ctaSource = snapshot?.monetization.cta_source || 'generic';
-                    const valueStage = snapshot?.product_signals.value_stage || 'unknown';
-                    await submitPaidIntent(userId, { source: `home_cta:${ctaSource}:${valueStage}` });
+                    const ctaSource =
+                      snapshot?.monetization.cta_source || "generic";
+                    const valueStage =
+                      snapshot?.product_signals.value_stage || "unknown";
+                    await submitPaidIntent(userId, {
+                      source: `home_cta:${ctaSource}:${valueStage}`
+                    });
                     await refreshSnapshot();
                   } catch (err) {
                     setError(
                       err instanceof Error
                         ? err.message
-                        : 'Failed to save paid beta intent'
+                        : "Failed to save paid beta intent"
                     );
                   }
                 }}
               />
             )}
-            {screen === 'session' && (
+            {screen === "session" && (
               <VoiceChatV2
                 userId={userId}
                 wsUrl={sessionConfig.wsUrl}
@@ -460,13 +463,13 @@ function App() {
                 }}
               />
             )}
-            {screen === 'interview' && (
+            {screen === "interview" && (
               <InterviewPage
                 userId={userId}
                 onStartTrack={startInterviewTrack}
               />
             )}
-            {screen === 'interview_results' && lastInterviewRun && (
+            {screen === "interview_results" && lastInterviewRun && (
               <InterviewResultsPage
                 run={lastInterviewRun}
                 mission={lastMission ?? undefined}
@@ -475,48 +478,48 @@ function App() {
                     id: lastInterviewRun.track_id,
                     title: lastInterviewRun.track_title,
                     subtitle: lastInterviewRun.track_subtitle,
-                    description: '',
-                    prompt_focus: '',
-                    starter_question: '',
+                    description: "",
+                    prompt_focus: "",
+                    starter_question: "",
                     rubric_focus: [],
                     recommended: false,
                     completed_runs: 0
                   };
                   startInterviewTrack(track);
                 }}
-                onBack={() => setScreen('interview')}
+                onBack={() => setScreen("interview")}
                 onStartMission={() => {
                   if (!lastMission) return;
-                  if (lastMission.mode === 'mock_interview') {
-                    setScreen('interview');
+                  if (lastMission.mode === "mock_interview") {
+                    setScreen("interview");
                   } else {
                     setSessionConfig(
-                      buildMissionSessionConfig(lastMission, 'progress')
+                      buildMissionSessionConfig(lastMission, "progress")
                     );
-                    setScreen('session');
+                    setScreen("session");
                   }
                 }}
               />
             )}
-            {screen === 'session_results' && lastSessionEvidence && (
+            {screen === "session_results" && lastSessionEvidence && (
               <SessionResultsPage
                 evidence={lastSessionEvidence}
                 mission={lastMission ?? undefined}
-                onBack={() => setScreen('home')}
+                onBack={() => setScreen("home")}
                 onStartMission={() => {
                   if (!lastMission) return;
-                  if (lastMission.mode === 'mock_interview') {
-                    setScreen('interview');
+                  if (lastMission.mode === "mock_interview") {
+                    setScreen("interview");
                     return;
                   }
                   setSessionConfig(
-                    buildMissionSessionConfig(lastMission, 'progress')
+                    buildMissionSessionConfig(lastMission, "progress")
                   );
-                  setScreen('session');
+                  setScreen("session");
                 }}
               />
             )}
-            {screen === 'review' && (
+            {screen === "review" && (
               <ReviewPage
                 userId={userId}
                 onReviewed={() => {
@@ -524,7 +527,7 @@ function App() {
                 }}
               />
             )}
-            {screen === 'progress' && <ProgressPage snapshot={snapshot} />}
+            {screen === "progress" && <ProgressPage snapshot={snapshot} />}
           </>
         ) : (
           <div className="empty-state-card">
@@ -545,31 +548,31 @@ function App() {
 
       <nav className="bottom-nav">
         <button
-          className={screen === 'home' ? 'nav-item active' : 'nav-item'}
-          onClick={() => setScreen('home')}
+          className={screen === "home" ? "nav-item active" : "nav-item"}
+          onClick={() => setScreen("home")}
         >
           Home
         </button>
         {snapshot?.vocabulary?.stats?.due_now ? (
           <button
-            className={screen === 'review' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setScreen('review')}
+            className={screen === "review" ? "nav-item active" : "nav-item"}
+            onClick={() => setScreen("review")}
           >
             Review
           </button>
         ) : null}
         {snapshot?.setup?.assessment_complete ? (
           <button
-            className={screen === 'progress' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setScreen('progress')}
+            className={screen === "progress" ? "nav-item active" : "nav-item"}
+            onClick={() => setScreen("progress")}
           >
             Progress
           </button>
         ) : null}
-        {snapshot?.setup?.state === 'ready_for_program' ? (
+        {snapshot?.setup?.state === "ready_for_program" ? (
           <button
-            className={screen === 'interview' ? 'nav-item active' : 'nav-item'}
-            onClick={() => setScreen('interview')}
+            className={screen === "interview" ? "nav-item active" : "nav-item"}
+            onClick={() => setScreen("interview")}
           >
             Career
           </button>

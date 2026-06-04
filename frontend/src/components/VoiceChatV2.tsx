@@ -1008,13 +1008,16 @@ export function VoiceChatV2({
     return 'Start speaking';
   };
 
+  const usesComposerInput = sttProvider === 'composer';
+  const speechInputUnavailable = !usesComposerInput && !usesBackendStt && (!speechRecognitionReady || speechRecognitionLoading);
+
   const primaryDisabled = guidedReviewMode
     ? (!isConnected
-      ? (!speechRecognitionReady || speechRecognitionLoading || isConnecting)
-      : (isPlaying || backendIsProcessing || (!draftText.trim() && (!speechRecognitionReady || speechRecognitionLoading) && !usesBackendStt)))
+      ? (isConnecting || speechInputUnavailable)
+      : (isPlaying || backendIsProcessing || (!draftText.trim() && speechInputUnavailable)))
     : (!isConnected
-      ? (!speechRecognitionReady || speechRecognitionLoading || isConnecting)
-      : (!speechRecognitionReady || speechRecognitionLoading || isPlaying || backendIsProcessing));
+      ? (isConnecting || speechInputUnavailable)
+      : (speechInputUnavailable || isPlaying || backendIsProcessing));
 
   return (
     <div className="voice-chat">
