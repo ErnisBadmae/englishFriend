@@ -140,6 +140,16 @@ class AgentState(TypedDict, total=False):
     last_intent: Optional[dict[str, Any]]  # Shadow-mode intent classification for the latest user turn
     last_onboarding_turn_analysis: Optional[dict[str, Any]]
 
+    # === Fallback / Recovery Telemetry ===
+    # Written only on error/degradation paths to explain why a safe fallback
+    # fired. All optional (total=False) and absent on the normal happy path.
+    fallback_reason: Optional[str]  # Exception type or reason that triggered the fallback
+    fallback_stage: Optional[str]  # Recovery stage: onboarding | assessment | learning
+    mission_task_type_at_fallback: Optional[str]  # Active mission task type at fallback time
+    retry_attempted: bool  # Whether a first-turn transient-error retry was attempted
+    session_end_fallback_used: bool  # session_end used a generated simple farewell
+    session_end_fallback_reason: Optional[str]  # Why session_end fell back to a simple farewell
+
     # === Response ===
     pending_response: Optional[str]  # Response to send to user
     pending_audio: Optional[bytes]  # TTS audio to send
