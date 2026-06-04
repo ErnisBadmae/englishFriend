@@ -1,7 +1,10 @@
--- Migration 008: Extend memory_kind enum to include error_pattern
--- Adds new 'error_pattern' value to memory_kind enum for tracking recurring user errors
+-- Migration 008: Align memory_kind enum with application values
+-- Adds canonical memory values used by MemoryKind in app/models/enums_and_dimensions.py
 
--- Add new enum value for error patterns
+ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'fact';
+ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'preference';
+ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'experience';
+ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'goal';
 ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'error_pattern';
 
 -- Create index for filtering by metadata type
@@ -12,10 +15,10 @@ WHERE kind = 'error_pattern';
 
 -- Update enum comment for documentation
 COMMENT ON TYPE memory_kind IS 'Memory types:
-- episodic: Individual memories of events and conversations
-- semantic: General factual knowledge about the user
-- persona: Personality traits and characteristics
-- skill: Learned abilities and competencies
+- fact: Stable facts about the learner
+- preference: Learning and interaction preferences
+- experience: Relevant background, projects, and events
+- goal: Learning and career goals
 - error_pattern: Recurring mistakes to watch for and help correct';
 
 -- Verification query (for testing)

@@ -1,7 +1,7 @@
 -- pgTAP suite for memories, learning_plan, and xp_events.
 begin;
 
-select plan(19);
+select plan(24);
 
 select has_table('public', 'memories', 'memories table exists');
 select has_index('public', 'memories', 'memories_user_kind_idx', 'memories user/kind index exists');
@@ -16,6 +16,36 @@ select lives_ok(
   $$insert into memories (user_id, kind, content, meta)
   values (currval('users_id_seq'), 'episodic', 'First memory', '{"source_session":"00000000-0000-0000-0000-000000000000"}')$$,
   'insert memory for trigger test'
+);
+
+select lives_ok(
+  $$insert into memories (user_id, kind, content)
+  values (currval('users_id_seq'), 'fact', 'Learner is preparing for remote ML roles')$$,
+  'insert fact memory succeeds'
+);
+
+select lives_ok(
+  $$insert into memories (user_id, kind, content)
+  values (currval('users_id_seq'), 'preference', 'Learner prefers short guided drills')$$,
+  'insert preference memory succeeds'
+);
+
+select lives_ok(
+  $$insert into memories (user_id, kind, content)
+  values (currval('users_id_seq'), 'experience', 'Learner built a recommendation project')$$,
+  'insert experience memory succeeds'
+);
+
+select lives_ok(
+  $$insert into memories (user_id, kind, content)
+  values (currval('users_id_seq'), 'goal', 'Learner wants a remote hard-currency role')$$,
+  'insert goal memory succeeds'
+);
+
+select lives_ok(
+  $$insert into memories (user_id, kind, content)
+  values (currval('users_id_seq'), 'error_pattern', 'Learner omits articles before nouns')$$,
+  'insert error_pattern memory succeeds'
 );
 
 select lives_ok(
@@ -57,7 +87,7 @@ grant usage, select on all sequences in schema public to test_rls_user_memories;
 
 select set_config('app.user_id', currval('users_id_seq')::text, true);
 set role test_rls_user_memories;
-select results_eq($$select count(*) from memories$$, $$values (1::bigint)$$, 'RLS exposes memories for current user');
+select results_eq($$select count(*) from memories$$, $$values (6::bigint)$$, 'RLS exposes memories for current user');
 select results_eq($$select count(*) from learning_plan$$, $$values (1::bigint)$$, 'RLS exposes learning_plan for current user');
 select results_eq($$select count(*) from xp_events$$, $$values (1::bigint)$$, 'RLS exposes xp_events for current user');
 set role postgres;

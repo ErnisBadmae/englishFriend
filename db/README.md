@@ -19,7 +19,11 @@ psql $DATABASE_URL -f db/migrations/postgres/003_sessions_utterances.sql
 psql $DATABASE_URL -f db/migrations/postgres/004_partition_management.sql
 psql $DATABASE_URL -f db/migrations/postgres/005_memories_learning_plan.sql
 psql $DATABASE_URL -f db/migrations/postgres/006_materialized_views.sql
+psql $DATABASE_URL -f db/migrations/postgres/007_publications.sql
+psql $DATABASE_URL -f db/migrations/postgres/008_extend_memory_kind.sql
+psql $DATABASE_URL -f db/migrations/postgres/009_vocabulary_srs.sql
 psql $DATABASE_URL -f db/migrations/postgres/010_streaks_gamification.sql
+psql $DATABASE_URL -f db/migrations/postgres/011_goal_prompts_ab.sql
 psql $DATABASE_URL -f db/seed/001_reference_seed.sql
 bash scripts/manage_partitions.sh create 3
 bash scripts/manage_partitions.sh verify
