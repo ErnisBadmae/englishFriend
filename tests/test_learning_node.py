@@ -338,6 +338,41 @@ def test_matches_recent_project_for_pet_project_language():
 
 
 @pytest.mark.asyncio
+async def test_learning_node_jumps_to_project_anchor_when_user_answers_project_before_current_work():
+    state = _foundation_state()
+    state["last_user_message"] = (
+        "i've created llm agent and RAG pipeline for finding errors in construction documents"
+    )
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action":"continue","response_text":"Good project example. What was your contribution, and what was the result?","should_end":false}'
+    )
+    prompt_service = MagicMock()
+    prompt_service.log_usage = AsyncMock()
+
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=prompt_service,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    system_prompt = llm.generate.call_args.kwargs["system_prompt"].lower()
+    assert "active anchor label: one recent ml project" in system_prompt
+    assert "active anchor stage: primary" in system_prompt
+    assert updated["anchor_question_id"] == 1
+    assert updated["anchor_follow_up_pending"] is True
+    assert "what was your contribution" in updated["pending_response"].lower()
+    assert any(
+        item.get("action") == "anchor_jump"
+        for item in updated.get("decision_log", [])
+    )
+
+
+@pytest.mark.asyncio
 async def test_learning_node_dedupes_repeated_anchor_question_with_paraphrase():
     state = _foundation_state()
     state["last_user_message"] = "I am building an LLM mentor app now."
@@ -411,6 +446,69 @@ async def test_learning_node_uses_technical_mission_opener_without_llm():
 
     assert "technical explanation drill" in updated["pending_response"].lower()
     assert "metric" in updated["pending_response"].lower()
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_project_walkthrough_scaffolds_partial_answer_without_repeating_checklist():
+    state = _technical_state("technical_project_walkthrough")
+    state["mission_title"] = "Walk through one technical project"
+    state["last_user_message"] = "i ve created llm agent and rag pipeline to analys documents in buildings"
+
+    llm = MagicMock()
+    llm.generate = AsyncMock()
+
+    with patch(
+        "app.agent.nodes_v2.learning.get_llm_provider",
+        return_value=llm,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    response = updated["pending_response"].lower()
+    assert "llm agent and rag pipeline" in response
+    assert "metric or success signal" in response
+    assert "problem, approach, metric, and impact" not in response
+    assert updated["mission_slots"]["problem"] == "captured"
+    assert updated["mission_slots"]["approach"] == "captured"
+    assert "metric" not in updated["mission_slots"]
+    llm.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_learning_node_project_walkthrough_asks_impact_after_metric():
+    state = _technical_state("technical_project_walkthrough")
+    state["mission_slots"] = {
+        "project": "captured",
+        "problem": "captured",
+        "approach": "captured",
+    }
+    state["last_user_message"] = "We measured answer accuracy and retrieval quality."
+
+    llm = MagicMock()
+    llm.generate = AsyncMock()
+
+    with patch(
+        "app.agent.nodes_v2.learning.get_llm_provider",
+        return_value=llm,
+    ), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        updated = await learning_node(state)
+
+    response = updated["pending_response"].lower()
+    assert "what changed after this project" in response
+    assert "business impact" in response
+    assert updated["mission_slots"]["metric"] == "captured"
     llm.generate.assert_not_awaited()
 
 

@@ -23,6 +23,7 @@ from app.services.pedagogy_logger import get_pedagogy_logger
 from app.services.prompt_service import get_prompt_service
 from app.services.ai.llm_provider import LLMEmptyContentError, get_llm_provider
 from app.services.ai.mode_prompts import LearningMode
+from app.services.missions.contracts import get_mission_contract, plan_mission_turn
 from app.core.metrics import (
     agent_v2_llm_latency,
     agent_v2_parse_success,
@@ -212,9 +213,16 @@ ANCHOR_SIGNAL_PATTERNS = {
     ),
 }
 STATIC_CAREER_KEYWORDS = {
+    "accuracy",
+    "agent",
+    "answer",
+    "answers",
+    "analysis",
     "career",
     "data",
     "deployment",
+    "document",
+    "documents",
     "engineer",
     "engineering",
     "english",
@@ -225,11 +233,13 @@ STATIC_CAREER_KEYWORDS = {
     "inference",
     "interview",
     "job",
+    "latency",
     "machine",
     "metrics",
     "mission",
     "ml",
     "model",
+    "precision",
     "pipeline",
     "plan",
     "prepare",
@@ -238,6 +248,10 @@ STATIC_CAREER_KEYWORDS = {
     "product",
     "program",
     "project",
+    "quality",
+    "rag",
+    "recall",
+    "retrieval",
     "role",
     "skill",
     "step",
@@ -348,6 +362,18 @@ async def learning_node(state: AgentState) -> AgentState:
     if mission_anchored:
         state["low_signal_turn_streak"] = 0
         _apply_anchor_shift_if_needed(state, user_message)
+        _apply_anchor_jump_if_needed(state, user_message)
+        scaffold_action = _build_mission_contract_scaffold_action(state, user_message)
+        if scaffold_action:
+            return _record_learning_turn(
+                state,
+                scaffold_action,
+                pedagogy,
+                conversation_history,
+                user_message,
+                reason="Mission contract slot scaffold",
+                strategy="mission_contract_scaffold",
+            )
 
     template = None
     template_variant = "fallback"
@@ -1073,6 +1099,32 @@ def _build_supportive_anchor_action(state: AgentState, *, user_message: Optional
     }
 
 
+def _build_mission_contract_scaffold_action(
+    state: AgentState,
+    user_message: Optional[str],
+) -> Optional[dict]:
+    contract = get_mission_contract(state.get("mission_task_type"))
+    if not contract:
+        return None
+
+    decision = plan_mission_turn(
+        contract,
+        user_message,
+        existing_slots=state.get("mission_slots") or {},
+        final_requested=bool(state.get("mission_final_requested")),
+    )
+    if not decision:
+        return None
+
+    state["mission_slots"] = decision.updated_slots
+    state["mission_final_requested"] = decision.final_requested
+    return {
+        "action": "continue",
+        "response_text": decision.response_text,
+        "should_end": False,
+    }
+
+
 def _build_mission_error_action(state: AgentState, reason: str) -> dict:
     mission_task_type = state.get("mission_task_type") or ""
     if mission_task_type in TECHNICAL_MISSION_SPECS:
@@ -1205,6 +1257,34 @@ def _apply_anchor_shift_if_needed(state: AgentState, user_message: Optional[str]
     if _matches_anchor(ANCHORS[next_index]["id"], user_message):
         state["anchor_question_id"] = next_index
         state["anchor_follow_up_pending"] = False
+
+
+def _apply_anchor_jump_if_needed(state: AgentState, user_message: Optional[str]) -> None:
+    """Accept useful answers that arrive out of the expected anchor order."""
+    if state.get("mission_task_type") in TECHNICAL_MISSION_SPECS:
+        return
+    current_index = int(state.get("anchor_question_id", 0) or 0)
+    current_anchor = _get_anchor(state)
+    if _matches_anchor(current_anchor["id"], user_message):
+        return
+
+    for target_index in range(current_index + 1, len(ANCHORS)):
+        target_anchor = ANCHORS[target_index]
+        if not _matches_anchor(target_anchor["id"], user_message):
+            continue
+        state["anchor_question_id"] = target_index
+        state["anchor_follow_up_pending"] = False
+        add_decision_log(
+            state,
+            node="learning",
+            action="anchor_jump",
+            reason="user answered a later foundation anchor before the current one",
+            data={
+                "from_anchor": current_anchor["id"],
+                "to_anchor": target_anchor["id"],
+            },
+        )
+        return
 
 
 def _matches_anchor(anchor_id: str, text: Optional[str]) -> bool:

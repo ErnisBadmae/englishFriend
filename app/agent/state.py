@@ -110,6 +110,8 @@ class AgentState(TypedDict, total=False):
     anchor_follow_up_pending: bool
     last_anchor_question_text: Optional[str]
     recent_assistant_questions: list[str]
+    mission_slots: dict[str, str]
+    mission_final_requested: bool
     next_mission_choice: Optional[str]
 
     # === Vocabulary (FSRS) ===
@@ -136,6 +138,7 @@ class AgentState(TypedDict, total=False):
     # === Logging ===
     decision_log: list[DecisionLogEntry]  # Log of key decisions
     last_intent: Optional[dict[str, Any]]  # Shadow-mode intent classification for the latest user turn
+    last_onboarding_turn_analysis: Optional[dict[str, Any]]
 
     # === Response ===
     pending_response: Optional[str]  # Response to send to user
@@ -234,6 +237,8 @@ def create_initial_state(
         anchor_follow_up_pending=False,
         last_anchor_question_text=None,
         recent_assistant_questions=[],
+        mission_slots={},
+        mission_final_requested=False,
         next_mission_choice=None,
 
         # Vocabulary
@@ -260,6 +265,7 @@ def create_initial_state(
         # Logging
         decision_log=[],
         last_intent=None,
+        last_onboarding_turn_analysis=None,
 
         # Response
         pending_response=None,

@@ -419,6 +419,11 @@ async def initialize_session_v2(
         "low_signal_turn_streak": 0,
         "anchor_question_id": 0,
         "anchor_follow_up_pending": False,
+        "last_anchor_question_text": None,
+        "recent_assistant_questions": [],
+        "mission_slots": {},
+        "mission_final_requested": False,
+        "next_mission_choice": None,
 
         # Vocabulary
         "due_vocabulary_count": due_vocabulary_count,
@@ -440,6 +445,7 @@ async def initialize_session_v2(
         # Logging
         "decision_log": [],
         "last_intent": None,
+        "last_onboarding_turn_analysis": None,
 
         # Response
         "pending_response": None,
