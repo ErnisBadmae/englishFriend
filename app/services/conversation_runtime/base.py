@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal, Optional
 
 
-VoiceStatus = Literal["completed", "disconnected", "error"]
+RuntimeStatus = Literal["completed", "disconnected", "error"]
 TurnDisposition = Literal["commit", "end", "ignore"]
 STTEventType = Literal["partial", "final", "error"]
 
@@ -34,19 +34,19 @@ class TurnDetection:
 
 
 @dataclass
-class VoiceControllerOutcome:
+class ControllerOutcome:
     """Batch of outbound events plus loop control flags."""
 
     events: list[dict[str, Any]] = field(default_factory=list)
     should_close: bool = False
-    status: Optional[VoiceStatus] = None
+    status: Optional[RuntimeStatus] = None
 
 
 @dataclass
-class VoiceRuntimeResult:
+class RuntimeResult:
     """Final result returned by a runtime session."""
 
-    status: VoiceStatus
+    status: RuntimeStatus
     final_mode: str
 
 

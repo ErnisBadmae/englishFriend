@@ -112,12 +112,12 @@ from app.agent.graph_v2 import (
     initialize_session_v2,
     run_agent_turn_v2,
 )
-from app.services.voice_runtime import (
+from app.services.conversation_runtime import (
     EdgeTTSTTSProvider,
     ExplicitMessageTurnDetector,
     ParakeetSTTProvider,
     PassthroughTextSTTProvider,
-    VoiceSessionController,
+    ConversationController,
     WebSocketTransport,
 )
 from app.services.voice_observability import (
@@ -226,7 +226,7 @@ async def voice_chat_realtime(
     session_status = "disconnected"
 
     try:
-        controller = VoiceSessionController(
+        controller = ConversationController(
             db=db,
             user_id=user_id,
             mode=mode,
@@ -811,7 +811,7 @@ async def voice_chat_v2(
     session_status = "disconnected"
 
     try:
-        controller = VoiceSessionController(
+        controller = ConversationController(
             db=db,
             user_id=user_id,
             mode=mode,

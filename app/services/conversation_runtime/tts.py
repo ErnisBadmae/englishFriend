@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.services.ai.tts_service import TTSService, get_tts_service
-from app.services.voice_runtime.base import TTSProvider
+from app.services.conversation_runtime.base import TTSProvider
 
 
 class EdgeTTSTTSProvider(TTSProvider):

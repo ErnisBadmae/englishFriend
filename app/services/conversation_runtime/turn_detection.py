@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.voice_runtime.base import TurnDetection, TurnDetector
+from app.services.conversation_runtime.base import TurnDetection, TurnDetector
 
 
 class ExplicitMessageTurnDetector(TurnDetector):

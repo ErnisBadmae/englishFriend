@@ -27,13 +27,13 @@ from app.services.voice_session import (
     SessionPersistenceService,
     VoiceSessionDependencies,
 )
-from app.services.voice_runtime.base import (
+from app.services.conversation_runtime.base import (
     STTProvider,
     TTSProvider,
     TransportAdapter,
     TurnDetector,
-    VoiceControllerOutcome,
-    VoiceRuntimeResult,
+    ControllerOutcome,
+    RuntimeResult,
 )
 from app.services.voice_observability import (
     VoiceSessionScope,
@@ -54,10 +54,10 @@ def _enum_value(value: Any, default: str) -> str:
     return getattr(value, "value", str(value))
 
 
-VoiceRuntimeDependencies = VoiceSessionDependencies
+ConversationRuntimeDependencies = VoiceSessionDependencies
 
 
-class VoiceSessionController:
+class ConversationController:
     """Transport-neutral conversation runtime.
 
     Despite the name, this controller is modality-agnostic: it orchestrates
@@ -90,7 +90,7 @@ class VoiceSessionController:
         stt_provider: STTProvider,
         tts_provider: TTSProvider,
         turn_detector: TurnDetector,
-        dependencies: Optional[VoiceRuntimeDependencies] = None,
+        dependencies: Optional[ConversationRuntimeDependencies] = None,
         use_v2_agent: Optional[bool] = None,
         runtime_label: str = "realtime",
     ) -> None:
@@ -110,7 +110,7 @@ class VoiceSessionController:
         self._stt_provider = stt_provider
         self._tts_provider = tts_provider
         self._turn_detector = turn_detector
-        self._deps = dependencies or VoiceRuntimeDependencies()
+        self._deps = dependencies or ConversationRuntimeDependencies()
         self._use_v2_agent = True
 
         self._bootstrap_service = SessionBootstrapService(db, dependencies=self._deps)
@@ -139,7 +139,7 @@ class VoiceSessionController:
             stt_provider=self._stt_provider_name,
         )
 
-    async def run(self) -> VoiceRuntimeResult:
+    async def run(self) -> RuntimeResult:
         """Run the modular runtime until the session closes."""
         await self._transport.accept()
 
@@ -152,7 +152,7 @@ class VoiceSessionController:
                     message = await self._transport.receive()
                 except WebSocketDisconnect:
                     disconnect_outcome = await self.handle_disconnect()
-                    return VoiceRuntimeResult(
+                    return RuntimeResult(
                         status=disconnect_outcome.status or "disconnected",
                         final_mode=self._final_mode,
                     )
@@ -160,18 +160,18 @@ class VoiceSessionController:
                 outcome = await self.handle_message(message)
                 await self._send_events(outcome.events)
                 if outcome.should_close:
-                    return VoiceRuntimeResult(
+                    return RuntimeResult(
                         status=outcome.status or "completed",
                         final_mode=self._final_mode,
                     )
         except WebSocketDisconnect:
             disconnect_outcome = await self.handle_disconnect()
-            return VoiceRuntimeResult(
+            return RuntimeResult(
                 status=disconnect_outcome.status or "disconnected",
                 final_mode=self._final_mode,
             )
 
-    async def initialize(self) -> VoiceControllerOutcome:
+    async def initialize(self) -> ControllerOutcome:
         """Load user/product context and emit the initial greeting."""
         self._context = await self._bootstrap_service.build(
             user_id=self._user_id,
@@ -250,15 +250,15 @@ class VoiceSessionController:
                 )
             )
 
-        return VoiceControllerOutcome(events=events)
+        return ControllerOutcome(events=events)
 
-    async def handle_message(self, message: dict[str, Any]) -> VoiceControllerOutcome:
+    async def handle_message(self, message: dict[str, Any]) -> ControllerOutcome:
         """Handle a single normalized client message."""
         decision = self._turn_detector.detect(message)
 
         if decision.disposition == "ignore":
             if decision.reason == "unsupported_message":
-                return VoiceControllerOutcome(
+                return ControllerOutcome(
                     events=[
                         {
                             "type": "error",
@@ -266,7 +266,7 @@ class VoiceSessionController:
                         }
                     ]
                 )
-            return VoiceControllerOutcome()
+            return ControllerOutcome()
 
         if decision.disposition == "end":
             return await self._complete_session()
@@ -297,7 +297,7 @@ class VoiceSessionController:
         bind_voice_context(scope, turn_id=turn_id)
         if stt_event.type == "error":
             voice_errors_total.labels(stage="stt").inc()
-            return VoiceControllerOutcome(
+            return ControllerOutcome(
                 events=[
                     enrich_ws_event(
                         {
@@ -312,7 +312,7 @@ class VoiceSessionController:
 
         user_text = stt_event.text.strip()
         if not user_text:
-            return VoiceControllerOutcome()
+            return ControllerOutcome()
 
         if self._agent_state.get("session_complete_reason"):
             events = self._build_session_complete_events()
@@ -326,7 +326,7 @@ class VoiceSessionController:
                     envelope=envelope,
                 )
             )
-            return VoiceControllerOutcome(events=events)
+            return ControllerOutcome(events=events)
 
         turn_start = time.time()
         voice_messages_total.labels(direction="inbound", type="text").inc()
@@ -458,15 +458,15 @@ class VoiceSessionController:
             events.extend(self._build_session_finishing_events())
             await self._persist_session(status="completed")
             events.extend(self._build_session_complete_events())
-            return VoiceControllerOutcome(
+            return ControllerOutcome(
                 events=events,
                 should_close=True,
                 status="completed",
             )
 
-        return VoiceControllerOutcome(events=events)
+        return ControllerOutcome(events=events)
 
-    async def handle_disconnect(self) -> VoiceControllerOutcome:
+    async def handle_disconnect(self) -> ControllerOutcome:
         """Persist best-effort state on disconnect."""
         log_voice_event(
             logger,
@@ -482,9 +482,9 @@ class VoiceSessionController:
             event="session_disconnected",
         )
         await self._persist_session(status="disconnected")
-        return VoiceControllerOutcome(should_close=True, status="disconnected")
+        return ControllerOutcome(should_close=True, status="disconnected")
 
-    async def _complete_session(self) -> VoiceControllerOutcome:
+    async def _complete_session(self) -> ControllerOutcome:
         """Explicitly end the session via the agent session_end path."""
         self._agent_state["should_end_session"] = True
         self._agent_state = await self._run_agent_turn(user_message=None)
@@ -504,7 +504,7 @@ class VoiceSessionController:
         events.extend(self._build_session_finishing_events())
         await self._persist_session(status="completed")
         events.extend(self._build_session_complete_events())
-        return VoiceControllerOutcome(events=events, should_close=True, status="completed")
+        return ControllerOutcome(events=events, should_close=True, status="completed")
 
     async def _run_agent_turn(self, user_message: Optional[str]) -> dict[str, Any]:
         return await run_agent_turn_v2(self._agent_state, user_message=user_message)
@@ -587,7 +587,7 @@ class VoiceSessionController:
 
         return events
 
-    async def _persist_session(self, *, status: str) -> VoiceControllerOutcome:
+    async def _persist_session(self, *, status: str) -> ControllerOutcome:
         """Persist the session state using the shared lifecycle service."""
         request = SessionPersistRequest.from_agent_state(
             status=status,
@@ -601,7 +601,7 @@ class VoiceSessionController:
         completion = await self._persistence_service.persist(request)
         if completion.error:
             logger.warning("[VoiceRuntime] Persist failed (%s): %s", status, completion.error)
-        return VoiceControllerOutcome(status=completion.status)
+        return ControllerOutcome(status=completion.status)
 
     def _build_session_complete_events(self) -> list[dict[str, Any]]:
         if self._completion_signal_sent or not self._agent_state.get("session_complete_reason"):

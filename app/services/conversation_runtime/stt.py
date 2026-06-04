@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 
 from app.core.config import settings
-from app.services.voice_runtime.base import STTEvent, STTProvider
+from app.services.conversation_runtime.base import STTEvent, STTProvider
 
 
 class PassthroughTextSTTProvider(STTProvider):

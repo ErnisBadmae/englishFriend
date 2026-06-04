@@ -8,13 +8,13 @@ from app.agent.graph_v2 import initialize_session_v2, run_agent_turn_v2
 from app.agent.state import AgentPhase, LearningModeEnum
 from app.services.ai.memory_contracts import LearnerProfileSummary, MissionMemoryContext
 from app.services.voice_session import BootstrapContext, SessionCompletion
-from app.services.voice_runtime.controller import VoiceRuntimeDependencies, VoiceSessionController
-from app.services.voice_runtime.stt import ParakeetSTTProvider, PassthroughTextSTTProvider
-from app.services.voice_runtime.turn_detection import ExplicitMessageTurnDetector
-from app.services.voice_runtime.tts import EdgeTTSTTSProvider
+from app.services.conversation_runtime.controller import ConversationRuntimeDependencies, ConversationController
+from app.services.conversation_runtime.stt import ParakeetSTTProvider, PassthroughTextSTTProvider
+from app.services.conversation_runtime.turn_detection import ExplicitMessageTurnDetector
+from app.services.conversation_runtime.tts import EdgeTTSTTSProvider
 
 
-def _mock_dependencies() -> VoiceRuntimeDependencies:
+def _mock_dependencies() -> ConversationRuntimeDependencies:
     user_service = MagicMock()
     learning_plan_service = MagicMock()
     learning_plan_service.increment_session_count = AsyncMock()
@@ -31,7 +31,7 @@ def _mock_dependencies() -> VoiceRuntimeDependencies:
         return_value=MissionMemoryContext(relevant_memories=["Goal: ML Engineer abroad"])
     )
 
-    return VoiceRuntimeDependencies(
+    return ConversationRuntimeDependencies(
         user_service_factory=lambda db: user_service,
         learning_plan_service_factory=lambda db: learning_plan_service,
         vocabulary_service_factory=lambda db: vocabulary_service,
@@ -78,7 +78,7 @@ async def test_parakeet_stt_provider_normalizes_transcription_payload():
     client.__aenter__.return_value = client
     client.post = AsyncMock(return_value=response)
 
-    with patch("app.services.voice_runtime.stt.httpx.AsyncClient", return_value=client):
+    with patch("app.services.conversation_runtime.stt.httpx.AsyncClient", return_value=client):
         provider = ParakeetSTTProvider(base_url="http://parakeet.local")
         event = await provider.transcribe_audio(
             b"audio-bytes",
@@ -110,7 +110,7 @@ async def test_controller_processes_text_turn_with_phase_change_and_audio():
     tts_provider = MagicMock()
     tts_provider.synthesize = AsyncMock(return_value=b"audio")
 
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=1,
         mode=None,
@@ -146,7 +146,7 @@ async def test_controller_processes_text_turn_with_phase_change_and_audio():
     }
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(return_value=next_state),
     ):
         outcome = await controller.handle_message({"type": "text", "text": "Hi"})
@@ -183,7 +183,7 @@ async def test_controller_processes_text_turn_with_phase_change_and_audio():
 
 @pytest.mark.asyncio
 async def test_controller_explicit_end_runs_farewell_and_persists_state():
-    deps = VoiceRuntimeDependencies(
+    deps = ConversationRuntimeDependencies(
         user_service_factory=lambda db: MagicMock(),
         learning_plan_service_factory=lambda db: MagicMock(),
         vocabulary_service_factory=lambda db: MagicMock(),
@@ -193,7 +193,7 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
     tts_provider = MagicMock()
     tts_provider.synthesize = AsyncMock(return_value=b"bye-audio")
 
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=7,
         mode=None,
@@ -235,7 +235,7 @@ async def test_controller_explicit_end_runs_farewell_and_persists_state():
     }
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(return_value=farewell_state),
     ):
         outcome = await controller.handle_message({"type": "end"})
@@ -263,7 +263,7 @@ async def test_controller_regular_turn_emits_finishing_before_completion_when_ag
     tts_provider = MagicMock()
     tts_provider.synthesize = AsyncMock(return_value=b"audio")
 
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=8,
         mode=None,
@@ -304,7 +304,7 @@ async def test_controller_regular_turn_emits_finishing_before_completion_when_ag
     }
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(return_value=next_state),
     ):
         outcome = await controller.handle_message({"type": "text", "text": "Hi"})
@@ -323,7 +323,7 @@ async def test_controller_regular_turn_emits_finishing_before_completion_when_ag
 
 @pytest.mark.asyncio
 async def test_controller_initialize_passes_explicit_mission_contract_to_bootstrap():
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=11,
         mode="free_conversation",
@@ -352,7 +352,7 @@ async def test_controller_initialize_passes_explicit_mission_contract_to_bootstr
     )
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(
             return_value={
                 "pending_response": "What do you do now?",
@@ -381,7 +381,7 @@ async def test_controller_initialize_passes_explicit_mission_contract_to_bootstr
 
 @pytest.mark.asyncio
 async def test_controller_initialize_connected_payload_contains_runtime_metadata():
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=5,
         mode=None,
@@ -409,7 +409,7 @@ async def test_controller_initialize_connected_payload_contains_runtime_metadata
     )
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(
             return_value={
                 "pending_response": "Hello there",
@@ -430,7 +430,7 @@ async def test_controller_initialize_connected_payload_contains_runtime_metadata
 
 @pytest.mark.asyncio
 async def test_controller_initialize_uses_resolved_user_id_from_bootstrap_context():
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=900123,
         mode=None,
@@ -454,7 +454,7 @@ async def test_controller_initialize_uses_resolved_user_id_from_bootstrap_contex
     )
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(
             return_value={
                 "pending_response": "Hello there",
@@ -486,7 +486,7 @@ async def test_controller_survives_tts_failure_without_error_event():
     tts_provider = MagicMock()
     tts_provider.synthesize = AsyncMock(side_effect=RuntimeError("tts offline"))
 
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=1,
         mode=None,
@@ -522,7 +522,7 @@ async def test_controller_survives_tts_failure_without_error_event():
     }
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(return_value=next_state),
     ):
         outcome = await controller.handle_message({"type": "text", "text": "Hi"})
@@ -542,7 +542,7 @@ async def test_controller_skips_tts_for_text_only_sessions():
     tts_provider = MagicMock()
     tts_provider.synthesize = AsyncMock(return_value=b"audio")
 
-    controller = VoiceSessionController(
+    controller = ConversationController(
         db=AsyncMock(),
         user_id=1,
         mode=None,
@@ -580,7 +580,7 @@ async def test_controller_skips_tts_for_text_only_sessions():
     }
 
     with patch(
-        "app.services.voice_runtime.controller.run_agent_turn_v2",
+        "app.services.conversation_runtime.controller.run_agent_turn_v2",
         new=AsyncMock(return_value=next_state),
     ):
         outcome = await controller.handle_message({"type": "text", "text": "Hi", "source": "composer"})

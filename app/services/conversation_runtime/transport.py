@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from fastapi import WebSocket
 
-from app.services.voice_runtime.base import TransportAdapter
+from app.services.conversation_runtime.base import TransportAdapter
 
 
 class WebSocketTransport(TransportAdapter):
