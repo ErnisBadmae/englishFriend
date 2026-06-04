@@ -58,11 +58,18 @@ VoiceRuntimeDependencies = VoiceSessionDependencies
 
 
 class VoiceSessionController:
-    """Feature-flagged modular voice runtime.
+    """Transport-neutral conversation runtime.
 
-    The controller keeps transport, STT/TTS, turn detection, and product-state
-    orchestration separate so the endpoint stays thin and future providers can
-    be swapped in without rewriting the session loop.
+    Despite the name, this controller is modality-agnostic: it orchestrates
+    product state over a turn loop and is text-first by default. Audio output
+    (TTS) is an optional delivery layer, emitted only when ``text_only`` is
+    False. Keeping transport, STT/TTS, turn detection, and product-state
+    orchestration separate lets the endpoint stay thin and lets providers be
+    swapped without rewriting the session loop.
+
+    Note: ``text_only`` is the explicit modality switch. The controller does
+    not inspect STT provider names to decide whether to speak — the endpoint
+    translates client transport details into this flag at the boundary.
     """
 
     def __init__(
@@ -78,6 +85,7 @@ class VoiceSessionController:
         mission_success_signal: Optional[str] = None,
         mission_linked_goal_context: Optional[str] = None,
         stt_provider_name: Optional[str] = None,
+        text_only: bool = False,
         transport: TransportAdapter,
         stt_provider: STTProvider,
         tts_provider: TTSProvider,
@@ -97,6 +105,7 @@ class VoiceSessionController:
         self._mission_success_signal = mission_success_signal
         self._mission_linked_goal_context = mission_linked_goal_context
         self._stt_provider_name = stt_provider_name or getattr(stt_provider, "provider_id", None)
+        self._text_only = bool(text_only)
         self._transport = transport
         self._stt_provider = stt_provider
         self._tts_provider = tts_provider
@@ -529,7 +538,8 @@ class VoiceSessionController:
             )
         ]
 
-        if str(self._stt_provider_name or "").strip().lower() == "composer":
+        # Text-first turns deliver the transcript only; audio is opt-in.
+        if self._text_only:
             return events
 
         try:

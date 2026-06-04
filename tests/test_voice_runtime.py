@@ -538,7 +538,7 @@ async def test_controller_survives_tts_failure_without_error_event():
 
 
 @pytest.mark.asyncio
-async def test_controller_skips_tts_for_composer_sessions():
+async def test_controller_skips_tts_for_text_only_sessions():
     tts_provider = MagicMock()
     tts_provider.synthesize = AsyncMock(return_value=b"audio")
 
@@ -548,6 +548,7 @@ async def test_controller_skips_tts_for_composer_sessions():
         mode=None,
         interview_track=None,
         stt_provider_name="composer",
+        text_only=True,
         transport=MagicMock(),
         stt_provider=PassthroughTextSTTProvider(),
         tts_provider=tts_provider,
