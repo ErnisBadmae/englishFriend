@@ -72,18 +72,6 @@ openai_api_tokens_total = Counter(
     ['type']  # 'prompt' или 'completion'
 )
 
-# Метрики агента
-agent_chat_sessions_total = Counter(
-    'agent_chat_sessions_total',
-    'Общее количество чат-сессий с агентом'
-)
-
-agent_chat_messages_total = Counter(
-    'agent_chat_messages_total',
-    'Общее количество сообщений в чате',
-    ['speaker']  # 'user' или 'assistant'
-)
-
 # ============ VOICE WEBSOCKET METRICS ============
 
 # Активные сессии
