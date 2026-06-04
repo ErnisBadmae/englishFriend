@@ -12,6 +12,29 @@ from app.agent.nodes_v2.onboarding import (
 from app.agent.graph_v2 import initialize_session_v2, run_agent_turn_v2
 from app.agent.state import AgentPhase, LearningModeEnum, create_initial_state
 from app.services.ai.llm_provider import LLMEmptyContentError
+from app.services.onboarding.turn_analyzer import OnboardingTurnAnalysis
+
+
+@pytest.fixture
+def deterministic_routing(monkeypatch):
+    """Force the deterministic lexical goal-routing path in run_agent_turn_v2 tests.
+
+    The onboarding TurnAnalyzer and the shadow career classifier both make live
+    LLM calls during goal setup, which makes end-to-end turn tests flaky. Make
+    the analyzer fail (returns None, so no early slot-followup) and the
+    classifier return None, leaving the deterministic lexical inference as the
+    sole routing authority.
+    """
+    failing_llm = MagicMock()
+    failing_llm.generate = AsyncMock(side_effect=RuntimeError("Connection error."))
+    monkeypatch.setattr(
+        "app.agent.nodes_v2.onboarding.get_llm_provider", lambda: failing_llm
+    )
+    monkeypatch.setattr(
+        "app.agent.nodes_v2.onboarding_goal_brief.classify_career_routing",
+        AsyncMock(return_value=None),
+    )
+    return failing_llm
 
 
 def test_coerce_goal_brief_marks_routing_ready_goal_as_draft():
@@ -88,6 +111,20 @@ def test_infer_goal_brief_accumulates_short_answers_from_transcript():
     assert brief["main_contexts"][0] == "interviews"
 
 
+def test_infer_goal_brief_completes_existing_context_with_later_target_role():
+    brief = _infer_goal_brief_from_message(
+        "ML engineer",
+        {"main_contexts": ["interviews"], "status": "incomplete"},
+        cumulative_text="hr interview\nML engineer",
+    )
+
+    assert brief is not None
+    assert brief["status"] == "draft"
+    assert brief["target_role"] == "ML Engineer"
+    assert brief["domain"] == "machine_learning"
+    assert brief["main_contexts"][0] == "interviews"
+
+
 def test_infer_goal_brief_normalizes_stt_noise_into_interview_context():
     brief = _infer_goal_brief_from_message(
         "I wont intarview practis for ML injineer jab abrod.",
@@ -137,7 +174,7 @@ async def test_onboarding_project_tradeoff_goal_becomes_routing_ready_without_co
     )
 
     with patch(
-        "app.agent.nodes_v2.onboarding.classify_career_routing",
+        "app.agent.nodes_v2.onboarding_goal_brief.classify_career_routing",
         AsyncMock(return_value=None),
     ), patch(
         "app.agent.nodes_v2.onboarding.get_prompt_service",
@@ -172,7 +209,7 @@ async def test_onboarding_scope_gate_keeps_low_signal_in_needs_narrowing():
     state["last_question_type"] = "goal_setup"
 
     with patch(
-        "app.agent.nodes_v2.onboarding.classify_career_routing",
+        "app.agent.nodes_v2.onboarding_goal_brief.classify_career_routing",
         AsyncMock(return_value=None),
     ), patch(
         "app.agent.nodes_v2.onboarding.get_prompt_service",
@@ -207,7 +244,7 @@ async def test_onboarding_negated_interview_routes_to_workplace_after_three_turn
     state["last_question_type"] = "goal_setup"
 
     with patch(
-        "app.agent.nodes_v2.onboarding.classify_career_routing",
+        "app.agent.nodes_v2.onboarding_goal_brief.classify_career_routing",
         AsyncMock(return_value=None),
     ), patch(
         "app.agent.nodes_v2.onboarding.get_prompt_service",
@@ -259,6 +296,51 @@ async def test_transition_to_learning_moves_routing_ready_goal_to_first_useful_m
     # foundation speaking drill, regardless of the ML domain field.
     assert updated["mission_task_type"] == "foundation_speaking_drill"
     assert "real mission" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_turn_analyzer_hr_interview_answer_asks_target_role_without_repeating_goal_question():
+    state = create_initial_state(user_id=1, session_id="session-hr-interview")
+    state["last_question_type"] = "goal_setup"
+    state["last_user_message"] = "hi, wanna try to prepare to hr interview"
+
+    llm = MagicMock()
+    llm.generate = AsyncMock(return_value="{}")
+
+    with patch(
+        "app.agent.nodes_v2.onboarding_goal_brief.classify_career_routing",
+        AsyncMock(return_value=None),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.get_llm_provider",
+        return_value=llm,
+    ), patch(
+        "app.agent.nodes_v2.onboarding.analyze_onboarding_turn",
+        AsyncMock(
+            return_value=OnboardingTurnAnalysis(
+                scope_status="in_scope",
+                main_contexts=("interviews",),
+                next_action="ask_target_role",
+                confidence=0.88,
+                rationale="The learner selected HR interview preparation.",
+            )
+        ),
+    ):
+        updated = await onboarding_node(state)
+
+    assert updated["goal_setup_complete"] is False
+    assert updated["goal_brief"]["main_contexts"][0] == "interviews"
+    assert "target_role" not in updated["goal_brief"]
+    assert updated["current_phase"] == AgentPhase.ONBOARDING
+    assert "what is closest right now" not in updated["pending_response"].lower()
+    assert "which role is closest" in updated["pending_response"].lower()
+    assert updated["last_onboarding_turn_analysis"]["next_action"] == "ask_target_role"
+    llm.generate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -515,7 +597,7 @@ async def test_onboarding_llm_error_preserves_inferred_goal_signal():
 
 
 @pytest.mark.asyncio
-async def test_run_agent_turn_v2_first_goal_answer_transitions_to_first_mission():
+async def test_run_agent_turn_v2_first_goal_answer_transitions_to_first_mission(deterministic_routing):
     state = await initialize_session_v2(
         user_id=1,
         session_id="session-1",
@@ -537,7 +619,7 @@ async def test_run_agent_turn_v2_first_goal_answer_transitions_to_first_mission(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_turn_v2_second_turn_routes_into_learning_after_first_mission_handoff():
+async def test_run_agent_turn_v2_second_turn_routes_into_learning_after_first_mission_handoff(deterministic_routing):
     state = await initialize_session_v2(
         user_id=1,
         session_id="session-1",
@@ -585,7 +667,7 @@ async def test_onboarding_current_role_assessment_does_not_reorder_explicit_work
 
 
 @pytest.mark.asyncio
-async def test_run_agent_turn_v2_workplace_goal_survives_into_first_mission_selection():
+async def test_run_agent_turn_v2_workplace_goal_survives_into_first_mission_selection(deterministic_routing):
     state = await initialize_session_v2(
         user_id=1,
         session_id="session-1",

@@ -619,6 +619,9 @@ async def test_runtime_facing_first_turn_onboarding_connection_glitch_degrades_c
     ), patch(
         "app.agent.nodes_v2.onboarding.get_pedagogy_logger",
         return_value=MagicMock(),
+    ), patch(
+        "app.agent.nodes_v2.onboarding.analyze_onboarding_turn",
+        AsyncMock(return_value=None),
     ):
         updated = await run_agent_turn_v2(
             state,

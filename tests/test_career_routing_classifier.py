@@ -264,7 +264,7 @@ async def test_onboarding_node_uses_classifier_mainline_for_weak_lexical_case():
     try:
         settings.career_routing_classifier_mode = "mainline"
         with patch(
-            "app.agent.nodes_v2.onboarding.classify_career_routing",
+            "app.agent.nodes_v2.onboarding_goal_brief.classify_career_routing",
             AsyncMock(return_value=classifier_result),
         ), patch(
             "app.agent.nodes_v2.onboarding.get_prompt_service",
