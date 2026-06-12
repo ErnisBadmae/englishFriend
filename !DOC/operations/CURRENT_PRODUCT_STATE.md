@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-05-25
+Last updated: 2026-06-11
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
@@ -15,6 +15,9 @@ Canonical active workplan:
 Self-dogfood architecture and execution:
 [../architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md](../architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md)
 [SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md](./SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md)
+
+Moat and metrics doctrine (commoditized-intelligence era):
+[../strategy/MOAT_AND_METRICS_DOCTRINE_2026-06-11.md](../strategy/MOAT_AND_METRICS_DOCTRINE_2026-06-11.md)
 
 ## Reporting Rule
 Этот файл - единая короткая точка состояния для Codex и Claude Code.
@@ -81,10 +84,9 @@ Self-dogfood architecture and execution:
 - Если replay показывает weak mission relevance или generic feedback, чинить бизнесовую логику до voice work.
 
 ## Last Update
-- Founder dogfood exposed a project-walkthrough loop issue; backend now handles it through `MissionContract` rather than case-specific learning-node branches.
-- Founder dogfood also exposed onboarding repetition on `hr interview`; next step now uses `TurnAnalyzer` structured output to ask for the missing target role instead of hardcoding an auto-route.
-- Founder dogfood exposed foundation anchor drift after a project answer; learning state now moves to the matched later anchor instead of re-asking current-role wording.
-- `memory_kind` blocker закрыт: dev DB принимает `fact/preference/experience/goal/error_pattern`, SQL bootstrap migration обновлена.
-- `interview_self_intro_gap` synthetic eval прошел через managed local runner: PASS, score 100%.
-- Следующий gate: founder typed/composer self-dogfood run и replay по `session_id`.
+- Delivery-layer cleanup завершен: один движок (`graph_v2`), `onboarding` разрезан на focused-модули, честная `AgentState` schema + drift-guard test, `conversation_runtime` (text-first, `text_only` явный), границы routing задокументированы.
+- Codex WIP (MissionContract, TurnAnalyzer, memory_kind migration, eval runner, frontend composer) закоммичен логическими чекпойнтами; флаки onboarding-тестов стабилизированы (`deterministic_routing` fixture).
+- Принята moat & metrics doctrine: модель = заменяемый порт, моат = evidence ledger + measurement + coaching policy; обязательные provenance stamps и error-taxonomy persistence (см. canonical link выше).
+- Утвержден порядок: dogfood -> typed domain core -> LLM-as-judge на качество фидбэка; метрики L1/L2/L3 определены в доктрине.
+- Следующий gate: founder typed/composer self-dogfood run и replay по `session_id`; первый наблюдаемый blocker задает приоритет.
 - Voice benchmark остается нужным, но только после text/product gates и наблюдаемой нужды в speaking pressure.
