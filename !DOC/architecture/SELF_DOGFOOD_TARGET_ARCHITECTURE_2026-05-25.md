@@ -296,7 +296,7 @@ This document narrows the existing target architecture for the current real use 
 
 Use it together with:
 
-- [TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md](./TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md)
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) (live global map; the April target architecture is archived)
 - [DATA_FLOW_TRUTH_STATE_2026-04-21.md](./DATA_FLOW_TRUTH_STATE_2026-04-21.md)
 - [../strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](../strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md)
 - [../operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md](../operations/SELF_DOGFOOD_30_DAY_PLAN_2026-05-25.md)

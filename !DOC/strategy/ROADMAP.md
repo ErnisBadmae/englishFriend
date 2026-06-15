@@ -8,8 +8,7 @@ status: Self-dogfood job-search loop; text-first moat hardening
 Это канонический план текущего цикла.
 
 Связанные документы:
-- [../MASTER_PROJECT_VIEW_2026-04-22.md](../MASTER_PROJECT_VIEW_2026-04-22.md)
-- [../architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md](../architecture/TARGET_PRODUCT_ARCHITECTURE_2026-04-21.md)
+- [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md)
 - [TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](./TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md)
 - [../architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md](../architecture/SELF_DOGFOOD_TARGET_ARCHITECTURE_2026-05-25.md)

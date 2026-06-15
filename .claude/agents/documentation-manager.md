@@ -460,11 +460,12 @@ This agent is designed to work with the future Documentation Management System (
 When working with English Friend documentation:
 
 **Key documentation files:**
-- `!DOC/SYSTEM_OVERVIEW.md` - High-level architecture
-- `!DOC/TECHNICAL_SPECIFICATION.md` - Detailed technical specs
-- `!DOC/DB.md` - Database schema and migrations
-- `!DOC/STRATEGY.md` - Product strategy and roadmap
-- `!DOC/concept.md` - Architecture decisions and rationale
+- `!DOC/README.md` - Tiered documentation index (load by tier)
+- `!DOC/ARCHITECTURE.md` - Global architecture map and invariants
+- `!DOC/operations/CURRENT_PRODUCT_STATE.md` - Living now/next state
+- `!DOC/strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md` - Active workplan
+- `db/README.md` and local subsystem READMEs (`app/agent/`, `app/services/conversation_runtime/`)
+- `!DOC/archive/` - history; never auto-load
 
 **Common code references to validate:**
 - `app/services/ai/llm_provider.py` - Groq LLM integration

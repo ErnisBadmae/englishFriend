@@ -6,8 +6,8 @@ Status: Active source of truth for product progress and agent continuity
 Canonical long-form vision and architecture:
 [../research/deep-research-report.md](../research/deep-research-report.md)
 
-Canonical master project view:
-[../MASTER_PROJECT_VIEW_2026-04-22.md](../MASTER_PROJECT_VIEW_2026-04-22.md)
+Global architecture map:
+[../ARCHITECTURE.md](../ARCHITECTURE.md)
 
 Canonical active workplan:
 [../strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](../strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md)

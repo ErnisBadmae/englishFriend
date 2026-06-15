@@ -491,11 +491,10 @@ englishFriend/
 
 ## 📖 Дополнительная документация
 
-- **Система управления документацией**: [!DOC/DOCUMENTATION_SYSTEM.md](!DOC/DOCUMENTATION_SYSTEM.md) - Как агенты поддерживают документацию
-- **Полная документация системы**: [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)
-- **Стратегия развития**: [!DOC/STRATEGY.md](!DOC/STRATEGY.md)
+- **Индекс документации (по тирам)**: [!DOC/README.md](!DOC/README.md)
+- **Глобальная архитектура**: [!DOC/ARCHITECTURE.md](!DOC/ARCHITECTURE.md)
+- **Активный workplan**: [!DOC/strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](!DOC/strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md)
 - **Интеграция CDC**: [cdc/README.md](cdc/README.md)
-- **Упрощение кода**: [SIMPLIFICATION_PROGRESS.md](SIMPLIFICATION_PROGRESS.md)
 - **База данных**: [db/README.md](db/README.md)
 - **Graph layer (Neo4j)**: [graph/README.md](graph/README.md)
 
@@ -537,9 +536,9 @@ Start here before changing product logic or continuing an interrupted session:
 
 - Active product state: [!DOC/operations/CURRENT_PRODUCT_STATE.md](!DOC/operations/CURRENT_PRODUCT_STATE.md)
 - Documentation index: [!DOC/README.md](!DOC/README.md)
-- Legacy detailed history: [!DOC/CLAUDE_SESSION_LOG.md](!DOC/CLAUDE_SESSION_LOG.md)
+- Global architecture: [!DOC/ARCHITECTURE.md](!DOC/ARCHITECTURE.md)
 
 Rule:
 - Use `!DOC/operations/CURRENT_PRODUCT_STATE.md` as the single active continuity file
 - Keep updates short and operational
-- Do not append normal progress updates to `CLAUDE_SESSION_LOG.md`
+- Historical session logs live in `!DOC/archive/` and are never appended to

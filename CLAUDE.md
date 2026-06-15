@@ -42,13 +42,17 @@ Main runtime:
 
 Only open these when relevant:
 - `!DOC/operations/CURRENT_PRODUCT_STATE.md` for current operational state
+- `!DOC/ARCHITECTURE.md` for the global system map and invariants
 - `QUICK_START.md` for environment and commands
 - `.claude/rules/*.md` for scoped rules
-- `app/agent/README.md` and other local READMEs for subsystem details
+- `app/agent/README.md`, `app/services/conversation_runtime/README.md`, `db/README.md` for subsystem details
 
-Canonical long-form references:
-- `!DOC/MASTER_PROJECT_VIEW_2026-04-22.md`
+Canonical long-form references (load only for strategic decisions):
+- `!DOC/strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md`
+- `!DOC/strategy/MOAT_AND_METRICS_DOCTRINE_2026-06-11.md`
 - `!DOC/research/deep-research-report.md`
+
+`!DOC/README.md` is the tiered index; `!DOC/archive/` is history — never auto-load it.
 
 ## Common Commands
 

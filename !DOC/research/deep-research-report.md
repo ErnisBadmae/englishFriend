@@ -706,9 +706,9 @@ It mostly improves:
 
 ## Related Documents
 
-- Short strategic manifesto: [../strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md](../strategy/HYBRID_COACH_AGENT_STRATEGY_2026-04-02.md)
+- Current strategy and moat: [../strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md](../strategy/TEXT_FIRST_MOAT_WORKPLAN_2026-05-20.md), [../strategy/MOAT_AND_METRICS_DOCTRINE_2026-06-11.md](../strategy/MOAT_AND_METRICS_DOCTRINE_2026-06-11.md)
 - Operational continuity and latest status: [../operations/CURRENT_PRODUCT_STATE.md](../operations/CURRENT_PRODUCT_STATE.md)
-- Technical history and older strategy comparisons: [../strategy/TECHNICAL_STRATEGY.md](../strategy/TECHNICAL_STRATEGY.md), [../STRATEGY.md](../STRATEGY.md)
+- Older strategy comparisons (archived): [../archive/strategy/](../archive/strategy/), [../archive/STRATEGY.md](../archive/STRATEGY.md)
 - External references:
   - DeepTutor repo: https://github.com/HKUDS/DeepTutor
   - Praktika case study: https://openai.com/index/praktika/
