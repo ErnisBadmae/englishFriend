@@ -77,6 +77,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Replay по `session_id` должен стать обязательной частью pilot workflow, а не ad hoc debug.
 - В репозитории остаются transitional voice paths; их не расширять до прохождения text gates.
 - Старые документы про voice-first и три bucket'а читать только через призму текущего text-first interview sprint.
+- `scripts/run_managed_product_eval.py` и STT benchmark не входят в offline night queue: это кандидаты только после подъёма API/DB/voice stack.
 
 ## Next Step
 - Провести первый founder typed/composer run: profile -> mission -> answer -> evidence -> next mission.
@@ -90,3 +91,5 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Утвержден порядок: dogfood -> typed domain core -> LLM-as-judge на качество фидбэка; метрики L1/L2/L3 определены в доктрине.
 - Следующий gate: founder typed/composer self-dogfood run и replay по `session_id`; первый наблюдаемый blocker задает приоритет.
 - Voice benchmark остается нужным, но только после text/product gates и наблюдаемой нужды в speaking pressure.
+- Подготовлена реплика `night_runner` v1.1 для EnglishFriend: `C:/tmp/englishfriend-qwen-runs`, очередь `scripts/night_queue.json`, offline no-prompt baseline из двух pytest-наборов + `lint-imports`.
+- Layering-прививка в работе: роутеры берут `get_db` из `app.core.deps`, shared voice-session persistence вынесен из `app.api.voice_helpers` в сервисный слой без изменения поведения.

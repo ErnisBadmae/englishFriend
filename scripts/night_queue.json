@@ -1,0 +1,49 @@
+[
+  {
+    "id": "pytest-goal-brief-baseline",
+    "comment": "Offline deterministic baseline for goal-brief contract normalization. No executor prompt.",
+    "prompt": null,
+    "acceptance": [
+      [
+        "{PY}",
+        "-m",
+        "pytest",
+        "tests/test_goal_brief_contract.py",
+        "-q"
+      ]
+    ],
+    "timeout": 900
+  },
+  {
+    "id": "pytest-routing-baseline",
+    "comment": "Offline deterministic baseline for routing policy and analyzer behavior. No executor prompt.",
+    "prompt": null,
+    "acceptance": [
+      [
+        "{PY}",
+        "-m",
+        "pytest",
+        "tests/test_goal_routing.py",
+        "tests/test_routing_scoped_gate.py",
+        "tests/test_onboarding_turn_analyzer.py",
+        "-q"
+      ]
+    ],
+    "timeout": 900
+  },
+  {
+    "id": "lint-imports-layering",
+    "comment": "Import-linter layering guard for app/services -> app/api and app.* -> main. No executor prompt.",
+    "prompt": null,
+    "acceptance": [
+      [
+        "{PY}",
+        "-m",
+        "importlinter.cli",
+        "--config",
+        "pyproject.toml"
+      ]
+    ],
+    "timeout": 600
+  }
+]
