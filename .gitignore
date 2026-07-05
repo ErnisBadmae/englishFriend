@@ -441,3 +441,5 @@ Desktop.ini
 *.temp
 *.swp
 *.swo
+
+graphify-out/

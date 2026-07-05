@@ -94,7 +94,7 @@ function readScreenFromHash(): Screen {
 }
 
 function App() {
-  const [telegramId, setTelegramId] = useState<number>(22);
+  const [telegramId, setTelegramId] = useState<number>(23);
   const [telegramUsername, setTelegramUsername] =
     useState<string>("Local User");
   const [userId, setUserId] = useState<number | null>(null);
