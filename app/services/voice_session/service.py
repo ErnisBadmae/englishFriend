@@ -12,12 +12,6 @@ from typing import Any, Callable, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph_v2 import initialize_session_v2
-from app.api.voice_helpers import (
-    award_session_gamification,
-    persist_goal_state_if_needed,
-    persist_interview_run_if_needed,
-    persist_session_evidence_if_needed,
-)
 from app.core.metrics import voice_errors_total
 from app.schemas.user import UserCreate
 from app.services.ai.learner_profile_service import (
@@ -35,6 +29,12 @@ from app.services.voice_observability import (
     make_turn_envelope,
     observe_voice_stage,
     record_voice_persistence,
+)
+from app.services.voice_session.persistence import (
+    award_session_gamification,
+    persist_goal_state_if_needed,
+    persist_interview_run_if_needed,
+    persist_session_evidence_if_needed,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class SessionPersistRequest:
         runtime: str,
         existing_goal: Optional[str],
         agent_state: dict[str, Any],
-        ) -> "SessionPersistRequest":
+    ) -> "SessionPersistRequest":
         """Build a persistence request from the current agent state."""
         assessment_source = agent_state.get("assessment_source")
         return cls(

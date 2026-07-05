@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
-from app.core.database import get_db
+from app.core.deps import get_db
 from app.services.gamification import XPService, StreakService
 from app.models.core_tables import User
 

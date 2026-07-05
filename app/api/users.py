@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.schemas.user import UserCreate, UserUpdate, UserResponse, UserListResponse
 from app.services.database import UserService
-from app.core.database import get_db
+from app.core.deps import get_db
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 

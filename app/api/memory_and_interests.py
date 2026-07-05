@@ -13,7 +13,7 @@ from app.services.memory_and_interests import (
     UserInterestService, MemoryService, LearningPlanService,
     XPEventService
 )
-from app.core.database import get_db
+from app.core.deps import get_db
 from app.models.enums_and_dimensions import MemoryKind
 from app.api.response_mappers import (
     map_interest_to_response,

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.deps import get_db
 from app.models.core_tables import User
 from app.models.extended_tables import VocabularyCard
 from app.services.ai.vocabulary_service import ReviewRating, VocabularyService

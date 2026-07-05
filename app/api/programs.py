@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.deps import get_db
 from app.services.program_snapshot_service import ProgramSnapshotService
 
 router = APIRouter(prefix="/api/v1/programs", tags=["programs"])

@@ -46,5 +46,6 @@ urllib3>=2.0.0  # Требуется для types-requests и совместим
 black==23.11.0
 isort==5.12.0
 flake8==6.1.0
+import-linter==2.3
 mypy==1.7.1
 pre-commit==3.6.0

@@ -9,7 +9,7 @@ from app.schemas.dimensions import (
     DimAccentCreate, DimAccentResponse
 )
 from app.services.dimensions import DimensionService
-from app.core.database import get_db
+from app.core.deps import get_db
 
 router = APIRouter(prefix="/api/v1/dimensions", tags=["dimensions"])
 

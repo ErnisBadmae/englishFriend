@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.session import SessionCreate, SessionUpdate, SessionResponse
 from app.services.database import SessionService
-from app.core.database import get_db
+from app.core.deps import get_db
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 

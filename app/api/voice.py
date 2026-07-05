@@ -51,7 +51,7 @@ from app.core.metrics import (
 
 logger = logging.getLogger(__name__)
 
-from app.core.database import get_db
+from app.core.deps import get_db
 from app.services.database import UserService
 from app.schemas.user import UserCreate
 from app.services.ai.llm_provider import get_llm_provider
@@ -1457,4 +1457,3 @@ async def voice_stream_legacy(
     finally:
         await provider.disconnect()
         await websocket.close()
-

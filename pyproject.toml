@@ -47,3 +47,31 @@ module = [
     "pydantic.*",
 ]
 ignore_missing_imports = true
+
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "services do not import api"
+type = "forbidden"
+source_modules = ["app.services"]
+forbidden_modules = ["app.api"]
+
+[[tool.importlinter.contracts]]
+name = "app does not import main"
+type = "forbidden"
+source_modules = ["app"]
+forbidden_modules = ["main"]
+
+[tool.docs-maintenance]
+doc_dir = "!DOC"
+session_log = "!DOC/operations/SESSION_LOG.md"
+archive_dir = "!DOC/operations/archive"
+tier0_files = [
+  "!DOC/README.md",
+  "!DOC/ARCHITECTURE.md",
+  "!DOC/operations/CURRENT_PRODUCT_STATE.md",
+  "!DOC/operations/SESSION_LOG.md"
+]
+context_budget_lines = 2000

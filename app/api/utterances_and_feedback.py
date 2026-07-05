@@ -11,7 +11,7 @@ from app.schemas.additional_schemas import (
     FeedbackCreate, FeedbackResponse, FeedbackUpdate
 )
 from app.services.utterances_and_feedback import UtteranceService, FeedbackService, CorrectionService
-from app.core.database import get_db
+from app.core.deps import get_db
 
 router = APIRouter(prefix="/api/v1", tags=["utterances", "feedback", "corrections"])
 
