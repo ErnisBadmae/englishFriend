@@ -13,8 +13,15 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "C:\\Users\\badmaev_es\\englishFriend"
+        "C:\\Users\\badmaev_es\\develop\\englishFriend"
       ]
+    },
+    "ml_technical": {
+      "command": "C:\\Users\\badmaev_es\\develop\\englishFriend\\venv\\Scripts\\python.exe",
+      "args": ["-m", "app.mcp.ml_technical_server"],
+      "env": {
+        "PYTHONPATH": "C:\\Users\\badmaev_es\\develop\\englishFriend"
+      }
     },
     "context7": {
       "command": "npx",

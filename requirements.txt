@@ -10,6 +10,7 @@ alembic==1.12.1
 # Переменные окружения
 python-dotenv==1.0.0
 pydantic-settings==2.11.0
+PyYAML>=6.0,<7
 
 # AI / Voice
 websockets==12.0
@@ -27,6 +28,8 @@ openai-agents==0.4.2
 openai==2.6.1
 anyio>=4.5,<5  # Для mcp и openai
 mcp==1.19.0
+aiogram>=3.13,<4
+aiohttp-socks>=0.8,<1
 
 # LangGraph Agent
 langgraph>=0.2.0
