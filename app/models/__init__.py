@@ -3,6 +3,7 @@
 from app.models.enums_and_dimensions import *
 from app.models.core_tables import *
 from app.models.extended_tables import *
+from app.models.ml_technical import *
 
 try:
     from app.models.prompt_models import *
@@ -15,6 +16,8 @@ __all__ = [
     'DimEmotion', 'DimTopic', 'DimAccent', 'DimLearningGoal',
     'User', 'UserChannelIdentity', 'Session', 'Utterance', 'Feedback', 'Correction',
     'UserInterest', 'Memory', 'LearningPlan', 'XPEvent',
+    'MlTechnicalSession', 'MlTechnicalSessionItem', 'MlTechnicalAttempt', 'MlTechnicalExternalReview',
+    'MlQuestionRevision', 'MlQuestionReview', 'MlProgressReview',
 ]
 
 if _HAS_PROMPT_MODELS:
