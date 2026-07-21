@@ -43,6 +43,19 @@ INTERVIEW_TRACKS: list[dict[str, Any]] = [
         "rubric_focus": ["accuracy", "clarity", "professional_tone"],
         "goal_keywords": ["work", "team", "meeting", "standup", "office", "communication"],
     },
+    {
+        "id": "ml_technical",
+        "title": "ML Technical Interview",
+        "subtitle": "Проверь техническую готовность на русском",
+        "description": (
+            "Отвечай на реальные вопросы по ML/DL по темам, получай разбор по рубрике "
+            "от локальной модели и отслеживай прогресс по каждому вопросу."
+        ),
+        "prompt_focus": "техническая точность ответа и структура объяснения на русском языке",
+        "starter_question": "Выбери тему и ответь на технический вопрос своими словами.",
+        "rubric_focus": ["technical_accuracy", "coverage", "explanation_structure"],
+        "goal_keywords": ["ml technical", "dl interview", "техническое собеседование", "deep learning interview"],
+    },
 ]
 
 

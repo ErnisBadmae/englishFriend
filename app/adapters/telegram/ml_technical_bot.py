@@ -1,0 +1,668 @@
+"""Private Telegram adapter for Russian ML/DL interview practice.
+
+The module deliberately imports aiogram only inside runtime/markup functions,
+so its controller and persistence boundary are testable without Telegram or
+network access. PostgreSQL is the only source of active-session state.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import os
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional, Protocol
+from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.core.config import settings
+from app.core.database import get_async_session
+from app.data.ml_technical_questions import (
+    get_ml_technical_topic,
+    list_ml_technical_topics,
+)
+from app.models.core_tables import User
+from app.services.ml_technical_service import (
+    ANSWER_KIND_DONT_KNOW,
+    ANSWER_KIND_NORMAL,
+    MlTechnicalConflictError,
+    MlTechnicalService,
+)
+
+MAX_SESSION_QUESTIONS = 5
+
+
+@dataclass(frozen=True)
+class FallbackButton:
+    text: str
+    callback_data: str
+
+
+@dataclass(frozen=True)
+class FallbackMarkup:
+    inline_keyboard: list[list[FallbackButton]]
+
+
+def _markup(rows: list[list[tuple[str, str]]]) -> Any:
+    """Build aiogram markup at runtime, with a dependency-free test fallback."""
+    try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    except ImportError:
+        return FallbackMarkup(
+            [[FallbackButton(text, data) for text, data in row] for row in rows]
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=text, callback_data=data) for text, data in row]
+            for row in rows
+        ]
+    )
+
+
+def _compact_uuid(value: str) -> str:
+    return base64.urlsafe_b64encode(UUID(value).bytes).decode("ascii").rstrip("=")
+
+
+def _expand_uuid(value: str) -> str:
+    raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    return str(UUID(bytes=raw))
+
+
+def _item_callback(action: str, session_id: str, item_id: str) -> str:
+    return f"{action}:{_compact_uuid(session_id)}:{_compact_uuid(item_id)}"
+
+
+def _parse_item_callback(data: str, action: str) -> tuple[str, str]:
+    prefix, session_id, item_id = data.split(":", 2)
+    if prefix != action:
+        raise ValueError("unexpected callback action")
+    return _expand_uuid(session_id), _expand_uuid(item_id)
+
+
+class TelegramPracticeGateway(Protocol):
+    async def resolve_user(self, telegram_id: int) -> Optional[int]:
+        ...
+
+    async def start_daily(
+        self, user_id: int, *, practice_date: Any, seed: str
+    ) -> dict[str, Any]:
+        ...
+
+    async def start_topic(
+        self, user_id: int, *, topic_id: str, seed: str
+    ) -> dict[str, Any]:
+        ...
+
+    async def active(self, user_id: int) -> Optional[dict[str, Any]]:
+        ...
+
+    async def progress(self, user_id: int) -> dict[str, Any]:
+        ...
+
+    async def skip(
+        self, user_id: int, *, session_id: str, item_id: str
+    ) -> dict[str, Any]:
+        ...
+
+    async def cancel(self, user_id: int) -> dict[str, Any]:
+        ...
+
+    async def submit(
+        self,
+        user_id: int,
+        *,
+        session_id: str,
+        question_id: str,
+        answer_text: str,
+        answer_kind: str,
+        source_event_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+
+class DbTelegramPracticeGateway:
+    """Thin adapter opening a fresh DB session for every operation."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+        self.session_factory = session_factory
+
+    async def resolve_user(self, telegram_id: int) -> Optional[int]:
+        async with self.session_factory() as db:
+            return await db.scalar(
+                select(User.id).where(
+                    User.telegram_id == telegram_id,
+                    User.deleted_at.is_(None),
+                )
+            )
+
+    async def start_daily(
+        self, user_id: int, *, practice_date: Any, seed: str
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await MlTechnicalService(db).start_daily_session(
+                user_id,
+                practice_date=practice_date,
+                session_seed=seed,
+                channel="telegram",
+                max_questions=MAX_SESSION_QUESTIONS,
+            )
+
+    async def start_topic(
+        self, user_id: int, *, topic_id: str, seed: str
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            result = await MlTechnicalService(db).start_topic_session(
+                user_id,
+                topic_id,
+                seed,
+                channel="telegram",
+                max_questions=MAX_SESSION_QUESTIONS,
+            )
+            return await MlTechnicalService(db).get_session_snapshot(
+                user_id, result["session_id"]
+            )
+
+    async def active(self, user_id: int) -> Optional[dict[str, Any]]:
+        async with self.session_factory() as db:
+            return await MlTechnicalService(db).get_active_telegram_session(user_id)
+
+    async def progress(self, user_id: int) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await MlTechnicalService(db).get_progress(user_id)
+
+    async def skip(
+        self, user_id: int, *, session_id: str, item_id: str
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await MlTechnicalService(db).skip_telegram_item(
+                user_id, session_id=session_id, item_id=item_id
+            )
+
+    async def cancel(self, user_id: int) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await MlTechnicalService(db).cancel_active_telegram_session(user_id)
+
+    async def submit(
+        self,
+        user_id: int,
+        *,
+        session_id: str,
+        question_id: str,
+        answer_text: str,
+        answer_kind: str,
+        source_event_id: str,
+    ) -> dict[str, Any]:
+        # Clean-session contract: user resolution and current-item lookup happen
+        # in other sessions. This new session has no implicit transaction before
+        # submit_answer takes ownership of its transaction boundaries.
+        async with self.session_factory() as db:
+            return await MlTechnicalService(db).submit_answer(
+                user_id,
+                session_id=session_id,
+                question_id=question_id,
+                answer_text=answer_text,
+                answer_kind=answer_kind,
+                source_channel="telegram",
+                source_event_id=source_event_id,
+            )
+
+
+class MlTechnicalTelegramController:
+    def __init__(
+        self,
+        gateway: TelegramPracticeGateway,
+        *,
+        allowed_ids: frozenset[int],
+        timezone_name: str = "Europe/Moscow",
+    ) -> None:
+        self.gateway = gateway
+        self.allowed_ids = allowed_ids
+        try:
+            self.timezone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            if timezone_name != "Europe/Moscow":
+                raise
+            # Windows Python installations may not ship the IANA tz database.
+            # Moscow has used fixed UTC+3 since 2014.
+            self.timezone = timezone(timedelta(hours=3), name="Europe/Moscow")
+
+    @staticmethod
+    def _message(event: Any) -> Any:
+        return getattr(event, "message", None) or event
+
+    async def _callback_ack(self, event: Any, text: str = "") -> None:
+        if hasattr(event, "answer") and getattr(event, "message", None) is not None:
+            await event.answer(text)
+
+    async def _authorize(self, event: Any) -> Optional[int]:
+        message = self._message(event)
+        chat = message.chat
+        if getattr(chat, "type", "private") != "private":
+            await message.answer("Бот работает только в личном чате.")
+            await self._callback_ack(event)
+            return None
+        actor = (
+            getattr(event, "from_user", None)
+            if getattr(event, "message", None) is not None
+            else getattr(message, "from_user", None)
+        )
+        telegram_id = int(actor.id) if actor is not None else int(chat.id)
+        if telegram_id not in self.allowed_ids:
+            await message.answer(f"Доступ не настроен. Ваш Telegram ID: {telegram_id}.")
+            await self._callback_ack(event)
+            return None
+        user_id = await self.gateway.resolve_user(telegram_id)
+        if user_id is None:
+            await message.answer(
+                f"Telegram ID {telegram_id} разрешен, но не связан с профилем EnglishFriend. "
+                "Добавьте его в существующую запись пользователя."
+            )
+            await self._callback_ack(event)
+            return None
+        return user_id
+
+    @staticmethod
+    def _home_markup() -> Any:
+        return _markup(
+            [
+                [("Сегодня", "menu:today")],
+                [("Срез по теме", "menu:slice")],
+                [("Прогресс", "menu:progress")],
+            ]
+        )
+
+    @staticmethod
+    def _topics_markup(progress: dict[str, Any]) -> Any:
+        rows: list[list[tuple[str, str]]] = []
+        for topic_progress in progress.get("topics", []):
+            topic = get_ml_technical_topic(topic_progress["topic_id"])
+            count = int(topic_progress.get("total_questions") or 0)
+            if topic is None:
+                continue
+            if count:
+                rows.append(
+                    [(f"{topic['title_ru']} ({count})", f"slice:{topic['id']}")]
+                )
+        return _markup(rows)
+
+    @staticmethod
+    def _task_markup(snapshot: dict[str, Any]) -> Any:
+        item = snapshot["current_item"]
+        return _markup(
+            [
+                [
+                    (
+                        "Не знаю - показать разбор",
+                        _item_callback("dk", snapshot["session_id"], item["item_id"]),
+                    )
+                ],
+                [
+                    (
+                        "Пропустить",
+                        _item_callback("sk", snapshot["session_id"], item["item_id"]),
+                    )
+                ],
+            ]
+        )
+
+    async def _show_current(
+        self, message: Any, user_id: int, snapshot: Optional[dict[str, Any]] = None
+    ) -> None:
+        snapshot = snapshot or await self.gateway.active(user_id)
+        if snapshot is None:
+            await message.answer(
+                "Нет активной тренировки. Выберите /today или /slice.",
+                reply_markup=self._home_markup(),
+            )
+            return
+        if snapshot.get("status") == "cancelled":
+            await message.answer(
+                "Дневная тренировка на эту дату была отменена. "
+                "Она не возобновляется автоматически. Можно выбрать /slice.",
+                reply_markup=self._home_markup(),
+            )
+            return
+        item = snapshot.get("current_item")
+        if item is None:
+            await message.answer(
+                "Тренировка завершена.", reply_markup=self._home_markup()
+            )
+            return
+        question = item["question"]
+        await message.answer(
+            f"Вопрос {item['position']}/{snapshot['total_items']}\n\n"
+            f"{question['question_ru']}\n\n"
+            "Ответьте следующим сообщением.",
+            reply_markup=self._task_markup(snapshot),
+        )
+
+    async def on_start(self, message: Any) -> None:
+        if await self._authorize(message) is None:
+            return
+        await message.answer(
+            "Тренажер вопросов по ML/DL. Начните дневную тренировку, "
+            "срез по теме или посмотрите прогресс.",
+            reply_markup=self._home_markup(),
+        )
+
+    async def on_today(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        await self._start_today(message, user_id)
+
+    async def _start_today(self, message: Any, user_id: int) -> None:
+        today = datetime.now(self.timezone).date()
+        try:
+            snapshot = await self.gateway.start_daily(
+                user_id, practice_date=today, seed=f"{user_id}:{today.isoformat()}"
+            )
+        except MlTechnicalConflictError:
+            snapshot = await self.gateway.active(user_id)
+            await message.answer(
+                "У вас уже есть активная тренировка. Сначала завершите или отмените ее."
+            )
+        await self._show_current(message, user_id, snapshot)
+
+    async def on_slice(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        progress = await self.gateway.progress(user_id)
+        await message.answer(
+            "Выберите тему:", reply_markup=self._topics_markup(progress)
+        )
+
+    async def on_slice_topic(self, callback: Any) -> None:
+        user_id = await self._authorize(callback)
+        if user_id is None:
+            return
+        topic_id = str(callback.data).split(":", 1)[1]
+        if get_ml_technical_topic(topic_id) is None:
+            await callback.answer("Тема пока пуста")
+            return
+        try:
+            snapshot = await self.gateway.start_topic(
+                user_id,
+                topic_id=topic_id,
+                seed=f"telegram:{user_id}:{topic_id}",
+            )
+        except MlTechnicalConflictError:
+            snapshot = await self.gateway.active(user_id)
+            await callback.answer("Уже есть активная тренировка")
+        except ValueError:
+            await callback.answer("Тема пока пуста")
+            return
+        else:
+            await callback.answer()
+        await self._show_current(callback.message, user_id, snapshot)
+
+    async def on_progress(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        await self._show_progress(message, user_id)
+
+    async def _show_progress(self, message: Any, user_id: int) -> None:
+        progress = await self.gateway.progress(user_id)
+        topic_titles = {
+            topic["id"]: topic["title_ru"] for topic in list_ml_technical_topics()
+        }
+        non_empty = [
+            topic for topic in progress.get("topics", []) if topic["total_questions"]
+        ]
+        weakest = sorted(
+            non_empty,
+            key=lambda topic: (
+                topic["average_latest_score_percent"]
+                if topic["average_latest_score_percent"] is not None
+                else -1,
+                topic["topic_id"],
+            ),
+        )[:3]
+        weak_lines = [
+            f"- {topic_titles.get(t['topic_id'], t['topic_id'])}: "
+            f"{t['average_latest_score_percent'] if t['average_latest_score_percent'] is not None else 0}%"
+            for t in weakest
+        ]
+        await message.answer(
+            "Прогресс ML/DL\n"
+            f"Освоено: {progress['passed']}/{progress['total_questions']}\n"
+            f"К повторению: {progress['due_for_repetition']}\n"
+            f"Ожидают проверки: {progress['needs_review']}\n"
+            "Слабые темы:\n"
+            + ("\n".join(weak_lines) if weak_lines else "- пока нет данных"),
+            reply_markup=self._home_markup(),
+        )
+
+    async def on_skip(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        snapshot = await self.gateway.active(user_id)
+        if snapshot is None or snapshot.get("current_item") is None:
+            await message.answer("Нет активного вопроса.")
+            return
+        item = snapshot["current_item"]
+        result = await self.gateway.skip(
+            user_id, session_id=snapshot["session_id"], item_id=item["item_id"]
+        )
+        await message.answer(
+            "Вопрос пропущен." if result["changed"] else "Уже обработано."
+        )
+        await self._show_current(message, user_id, result["session"])
+
+    async def on_skip_callback(self, callback: Any) -> None:
+        user_id = await self._authorize(callback)
+        if user_id is None:
+            return
+        try:
+            session_id, item_id = _parse_item_callback(str(callback.data), "sk")
+            result = await self.gateway.skip(
+                user_id, session_id=session_id, item_id=item_id
+            )
+        except (ValueError, MlTechnicalConflictError):
+            await callback.answer("Кнопка устарела")
+            return
+        await callback.answer("Пропущено" if result["changed"] else "Уже обработано")
+        await self._show_current(callback.message, user_id, result["session"])
+
+    async def on_cancel(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        result = await self.gateway.cancel(user_id)
+        await message.answer(
+            "Тренировка отменена."
+            if result["cancelled"]
+            else "Нет активной тренировки.",
+            reply_markup=self._home_markup(),
+        )
+
+    async def _submit_current(
+        self,
+        event: Any,
+        *,
+        user_id: int,
+        snapshot: dict[str, Any],
+        answer_text: str,
+        answer_kind: str,
+        source_event_id: str,
+    ) -> None:
+        message = self._message(event)
+        item = snapshot["current_item"]
+        try:
+            result = await self.gateway.submit(
+                user_id,
+                session_id=snapshot["session_id"],
+                question_id=item["question"]["id"],
+                answer_text=answer_text,
+                answer_kind=answer_kind,
+                source_event_id=source_event_id,
+            )
+        except MlTechnicalConflictError:
+            await self._callback_ack(event, "Уже обработано")
+            await self._show_current(message, user_id)
+            return
+
+        await self._callback_ack(event)
+        review = result["review"]
+        if review["status"] == "needs_review":
+            summary = "Ответ сохранен и ожидает ручной проверки."
+        else:
+            summary = f"Оценка: {review['score_percent']}%."
+            if review.get("feedback"):
+                summary += f"\n{review['feedback']}"
+        # Reference is emitted only after gateway.submit has persisted an attempt.
+        await message.answer(
+            f"{summary}\n\nРазбор:\n{result['reference_explanation_ru']}"
+        )
+        await self._show_current(message, user_id)
+
+    async def on_dont_know(self, callback: Any) -> None:
+        user_id = await self._authorize(callback)
+        if user_id is None:
+            return
+        try:
+            session_id, item_id = _parse_item_callback(str(callback.data), "dk")
+        except ValueError:
+            await callback.answer("Кнопка устарела")
+            return
+        snapshot = await self.gateway.active(user_id)
+        if (
+            snapshot is None
+            or snapshot.get("current_item") is None
+            or snapshot["session_id"] != session_id
+            or snapshot["current_item"]["item_id"] != item_id
+        ):
+            await callback.answer("Кнопка устарела")
+            return
+        source_event_id = f"callback:{getattr(callback, 'id', str(callback.data))}"
+        await self._submit_current(
+            callback,
+            user_id=user_id,
+            snapshot=snapshot,
+            answer_text="",
+            answer_kind=ANSWER_KIND_DONT_KNOW,
+            source_event_id=source_event_id,
+        )
+
+    async def on_text(self, message: Any) -> None:
+        if str(message.text or "").lstrip().startswith("/"):
+            await self.on_unknown_command(message)
+            return
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        snapshot = await self.gateway.active(user_id)
+        if snapshot is None or snapshot.get("current_item") is None:
+            await message.answer("Нет активного вопроса. Выберите /today или /slice.")
+            return
+        source_event_id = f"message:{message.chat.id}:{message.message_id}"
+        await self._submit_current(
+            message,
+            user_id=user_id,
+            snapshot=snapshot,
+            answer_text=str(message.text or ""),
+            answer_kind=ANSWER_KIND_NORMAL,
+            source_event_id=source_event_id,
+        )
+
+    async def on_unknown_command(self, message: Any) -> None:
+        if await self._authorize(message) is None:
+            return
+        await message.answer(
+            "Неизвестная команда. Используйте /start, /today, /slice, "
+            "/progress, /skip или /cancel."
+        )
+
+    async def on_menu(self, callback: Any) -> None:
+        action = str(callback.data).split(":", 1)[1]
+        user_id = await self._authorize(callback)
+        if user_id is None:
+            return
+        if action == "today":
+            await self._start_today(callback.message, user_id)
+        elif action == "slice":
+            progress = await self.gateway.progress(user_id)
+            await callback.message.answer(
+                "Выберите тему:", reply_markup=self._topics_markup(progress)
+            )
+        elif action == "progress":
+            await self._show_progress(callback.message, user_id)
+        else:
+            await callback.answer("Неизвестное действие")
+            return
+        await callback.answer()
+
+
+def build_dispatcher(controller: MlTechnicalTelegramController) -> Any:
+    from aiogram import Dispatcher, F
+    from aiogram.filters import Command, CommandStart
+
+    dispatcher = Dispatcher()
+    dispatcher.message.register(controller.on_start, CommandStart())
+    dispatcher.message.register(controller.on_today, Command("today"))
+    dispatcher.message.register(controller.on_slice, Command("slice"))
+    dispatcher.message.register(controller.on_progress, Command("progress"))
+    dispatcher.message.register(controller.on_skip, Command("skip"))
+    dispatcher.message.register(controller.on_cancel, Command("cancel"))
+    dispatcher.message.register(controller.on_unknown_command, F.text.startswith("/"))
+    dispatcher.callback_query.register(controller.on_menu, F.data.startswith("menu:"))
+    dispatcher.callback_query.register(
+        controller.on_slice_topic, F.data.startswith("slice:")
+    )
+    dispatcher.callback_query.register(
+        controller.on_dont_know, F.data.startswith("dk:")
+    )
+    dispatcher.callback_query.register(
+        controller.on_skip_callback, F.data.startswith("sk:")
+    )
+    dispatcher.message.register(controller.on_text, F.text)
+    return dispatcher
+
+
+async def _run() -> None:
+    if not settings.ml_technical_telegram_bot_token:
+        raise RuntimeError(
+            "ML_TECHNICAL_TELEGRAM_BOT_TOKEN is empty; Telegram adapter is disabled"
+        )
+    from aiogram import Bot
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiogram.types import BotCommand
+
+    proxy = settings.proxy_url or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    bot_session = AiohttpSession(proxy=proxy) if proxy else None
+    bot = Bot(token=settings.ml_technical_telegram_bot_token, session=bot_session)
+    controller = MlTechnicalTelegramController(
+        DbTelegramPracticeGateway(get_async_session()),
+        allowed_ids=settings.ml_technical_telegram_allowed_id_set,
+        timezone_name=settings.ml_technical_telegram_timezone,
+    )
+    dispatcher = build_dispatcher(controller)
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="today", description="Пять вопросов на сегодня"),
+            BotCommand(command="slice", description="Срез по теме"),
+            BotCommand(command="progress", description="Мой прогресс"),
+            BotCommand(command="skip", description="Пропустить вопрос"),
+            BotCommand(command="cancel", description="Отменить тренировку"),
+        ]
+    )
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await bot.session.close()
+
+
+def main() -> None:
+    asyncio.run(_run())
+
+
+if __name__ == "__main__":
+    main()
