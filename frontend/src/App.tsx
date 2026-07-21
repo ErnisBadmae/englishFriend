@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { HomePage } from "./components/HomePage";
 import { InterviewPage } from "./components/InterviewPage";
 import { InterviewResultsPage } from "./components/InterviewResultsPage";
+import { MlTechnicalPage } from "./components/MlTechnicalPage";
 import { ProgressPage } from "./components/ProgressPage";
 import { ReviewPage } from "./components/ReviewPage";
 import { SessionResultsPage } from "./components/SessionResultsPage";
@@ -26,6 +27,7 @@ type Screen =
   | "home"
   | "session"
   | "interview"
+  | "ml_technical"
   | "review"
   | "progress"
   | "interview_results"
@@ -83,6 +85,7 @@ function readScreenFromHash(): Screen {
   if (
     normalized === "session" ||
     normalized === "interview" ||
+    normalized === "ml_technical" ||
     normalized === "review" ||
     normalized === "progress" ||
     normalized === "interview_results" ||
@@ -112,6 +115,8 @@ function App() {
   const [lastSessionEvidence, setLastSessionEvidence] =
     useState<SessionEvidence | null>(null);
   const [lastMission, setLastMission] = useState<MissionSummary | null>(null);
+  const [mlTechnicalReturnScreen, setMlTechnicalReturnScreen] =
+    useState<"home" | "interview">("home");
   const [isReady, setIsReady] = useState(false);
   const [isResolvingUser, setIsResolvingUser] = useState(true);
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false);
@@ -249,7 +254,12 @@ function App() {
   }, [userId]);
 
   useEffect(() => {
-    if (screen === "home" || screen === "progress" || screen === "interview") {
+    if (
+      screen === "home" ||
+      screen === "progress" ||
+      screen === "interview" ||
+      screen === "ml_technical"
+    ) {
       void refreshSnapshot();
     }
   }, [screen]);
@@ -290,6 +300,11 @@ function App() {
   }
 
   function startInterviewTrack(track: InterviewTrack) {
+    if (track.id === "ml_technical") {
+      setMlTechnicalReturnScreen("interview");
+      setScreen("ml_technical");
+      return;
+    }
     setSessionConfig({
       wsUrl: `${WS_BASE}/api/v1/voice/chat/v2`,
       mode: "mock_interview",
@@ -314,6 +329,7 @@ function App() {
       _payload.returnScreen === "home" ||
       _payload.returnScreen === "session" ||
       _payload.returnScreen === "interview" ||
+      _payload.returnScreen === "ml_technical" ||
       _payload.returnScreen === "review" ||
       _payload.returnScreen === "progress" ||
       _payload.returnScreen === "interview_results" ||
@@ -391,6 +407,10 @@ function App() {
               <HomePage
                 snapshot={snapshot}
                 onStartSession={startGuidedSession}
+                onOpenMlTechnical={() => {
+                  setMlTechnicalReturnScreen("home");
+                  setScreen("ml_technical");
+                }}
                 onOpenProgress={() => setScreen("progress")}
                 onRefresh={() => {
                   void refreshSnapshot();
@@ -467,6 +487,12 @@ function App() {
               <InterviewPage
                 userId={userId}
                 onStartTrack={startInterviewTrack}
+              />
+            )}
+            {screen === "ml_technical" && (
+              <MlTechnicalPage
+                userId={userId}
+                onBack={() => setScreen(mlTechnicalReturnScreen)}
               />
             )}
             {screen === "interview_results" && lastInterviewRun && (

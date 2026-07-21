@@ -5,6 +5,7 @@ import type { ProgramSnapshot } from '../lib/api';
 interface HomePageProps {
   snapshot: ProgramSnapshot;
   onStartSession: () => void;
+  onOpenMlTechnical: () => void;
   onOpenProgress: () => void;
   onRefresh: () => void;
   onSubmitVacancy: (vacancyText: string) => Promise<void>;
@@ -15,6 +16,7 @@ interface HomePageProps {
 export function HomePage({
   snapshot,
   onStartSession,
+  onOpenMlTechnical,
   onOpenProgress,
   onRefresh,
   onSubmitVacancy,
@@ -120,6 +122,20 @@ export function HomePage({
 
   return (
     <div className="miniapp-page">
+      <section className="content-card">
+        <div className="section-label">Технические собеседования</div>
+        <h2>Тренировка по ML и DL</h2>
+        <p>
+          Выберите тему, ответьте на русском своими словами, получите разбор по рубрике,
+          короткое объяснение теории и план повторения.
+        </p>
+        <div className="hero-actions">
+          <button className="primary-action" onClick={onOpenMlTechnical}>
+            Начать тренировку
+          </button>
+        </div>
+      </section>
+
       <section className="hero-card">
         <div className="eyebrow">EnglishFriend</div>
         <h1>{heroTitle}</h1>

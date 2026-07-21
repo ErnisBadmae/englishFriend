@@ -927,6 +927,129 @@ export async function createInterviewRun(userId: number, payload: CreateIntervie
   });
 }
 
+export interface MlTechnicalTopic {
+  id: string;
+  title_ru: string;
+  description_ru: string;
+}
+
+export interface MlTechnicalQuestionProgress {
+  question_id: string;
+  topic_id: string;
+  unseen: boolean;
+  attempted: boolean;
+  attempt_count: number;
+  latest_pass: boolean;
+  needs_review: boolean;
+  due_for_repetition: boolean;
+  best_score_percent?: number | null;
+  latest_score_percent?: number | null;
+  last_attempted_at?: string | null;
+}
+
+export interface MlTechnicalTopicProgress {
+  topic_id: string;
+  total_questions: number;
+  unseen: number;
+  attempted: number;
+  passed: number;
+  needs_review: number;
+  due_for_repetition: number;
+  average_latest_score_percent?: number | null;
+  questions: MlTechnicalQuestionProgress[];
+}
+
+export interface MlTechnicalTrackProgress {
+  track_id: string;
+  pass_threshold_percent: number;
+  repetition_due_days: number;
+  total_questions: number;
+  unseen: number;
+  attempted: number;
+  passed: number;
+  needs_review: number;
+  due_for_repetition: number;
+  readiness_percent: number;
+  topics: MlTechnicalTopicProgress[];
+}
+
+export interface MlTechnicalTopicsResponse {
+  topics: MlTechnicalTopic[];
+  progress: MlTechnicalTrackProgress;
+}
+
+export interface MlTechnicalSessionQuestion {
+  id: string;
+  topic_id: string;
+  question_ru: string;
+  difficulty: string;
+  tags: string[];
+}
+
+export interface MlTechnicalStartSessionResponse {
+  session_id: string;
+  topic_id: string;
+  questions: MlTechnicalSessionQuestion[];
+}
+
+export interface MlTechnicalReview {
+  status: 'graded' | 'needs_review';
+  model_id: string;
+  prompt_version: string;
+  rubric_version?: string | null;
+  score_percent?: number | null;
+  covered_points: string[];
+  missing_points: string[];
+  covered_points_text: string[];
+  missing_points_text: string[];
+  incorrect_claims: string[];
+  feedback?: string | null;
+  follow_up_question?: string | null;
+  confidence?: number | null;
+  failure_reason?: string | null;
+}
+
+export interface MlTechnicalAnswerResponse {
+  attempt_id: string;
+  review: MlTechnicalReview;
+  reference_explanation_ru: string;
+  next_question?: MlTechnicalSessionQuestion | null;
+  question_progress: MlTechnicalQuestionProgress;
+  topic_progress: MlTechnicalTopicProgress;
+}
+
+export interface MlTechnicalSubmitAnswerPayload {
+  session_id: string;
+  question_id: string;
+  answer_text: string;
+  answer_kind: 'normal' | 'dont_know';
+  source_channel: 'web';
+}
+
+export async function getMlTechnicalTopics(userId: number): Promise<MlTechnicalTopicsResponse> {
+  return fetchJson<MlTechnicalTopicsResponse>(`/api/v1/ml-technical/${userId}/topics`);
+}
+
+export async function startMlTechnicalSession(
+  userId: number,
+  topicId: string,
+): Promise<MlTechnicalStartSessionResponse> {
+  return fetchJson<MlTechnicalStartSessionResponse>(`/api/v1/ml-technical/${userId}/sessions`, {
+    method: 'POST',
+    body: JSON.stringify({ topic_id: topicId }),
+  });
+}
+
+export async function submitMlTechnicalAnswer(
+  userId: number,
+  payload: MlTechnicalSubmitAnswerPayload,
+): Promise<MlTechnicalAnswerResponse> {
+  return fetchJson<MlTechnicalAnswerResponse>(`/api/v1/ml-technical/${userId}/answers`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function submitVacancy(userId: number, payload: SubmitVacancyPayload): Promise<void> {
   await fetchJson(`/api/v1/career/${userId}/vacancy`, {
     method: 'POST',
