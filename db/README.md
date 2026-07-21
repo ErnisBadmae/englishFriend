@@ -24,6 +24,10 @@ psql $DATABASE_URL -f db/migrations/postgres/008_extend_memory_kind.sql
 psql $DATABASE_URL -f db/migrations/postgres/009_vocabulary_srs.sql
 psql $DATABASE_URL -f db/migrations/postgres/010_streaks_gamification.sql
 psql $DATABASE_URL -f db/migrations/postgres/011_goal_prompts_ab.sql
+psql $DATABASE_URL -f db/migrations/postgres/012_ml_technical_practice.sql
+psql $DATABASE_URL -f db/migrations/postgres/013_ml_technical_telegram.sql
+psql $DATABASE_URL -f db/migrations/postgres/014_ml_question_bank.sql
+psql $DATABASE_URL -f db/migrations/postgres/015_ml_progress_reviews.sql
 psql $DATABASE_URL -f db/seed/001_reference_seed.sql
 bash scripts/manage_partitions.sh create 3
 bash scripts/manage_partitions.sh verify
@@ -32,6 +36,7 @@ pg_prove db/tests/020_sessions_utterances.sql
 pg_prove db/tests/030_partition_management.sql
 pg_prove db/tests/040_memories_learning_plan.sql
 pg_prove db/tests/050_mv_weekly_summary.sql
+pg_prove db/tests/060_ml_technical_practice.sql
 ```
 
 > Adjust connection variables to point at your local Postgres instance. The migrations are idempotent and may be re-applied safely in dev. Tests rely on pgTAP being installed in the target database.
