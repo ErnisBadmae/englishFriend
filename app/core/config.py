@@ -8,8 +8,12 @@ class Settings(BaseSettings):
     """Настройки приложения."""
 
     # База данных
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/englishfriend_dev"
-    database_url_sync: str = "postgresql://postgres:postgres@localhost:5432/englishfriend_dev"
+    database_url: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/englishfriend_dev"
+    )
+    database_url_sync: str = (
+        "postgresql://postgres:postgres@localhost:5432/englishfriend_dev"
+    )
 
     # Database pool
     db_pool_size: int = 10
@@ -30,6 +34,23 @@ class Settings(BaseSettings):
 
     # Proxy
     proxy_url: Optional[str] = None
+
+    # Private ML technical Telegram adapter
+    ml_technical_telegram_bot_token: str = ""
+    ml_technical_telegram_allowed_ids: str = ""
+    ml_technical_telegram_timezone: str = "Europe/Moscow"
+    ml_question_curator_enabled: bool = False
+    ml_question_admin_enabled: bool = False
+    ml_progress_review_append_enabled: bool = False
+
+    @property
+    def ml_technical_telegram_allowed_id_set(self) -> frozenset[int]:
+        values: set[int] = set()
+        for raw in self.ml_technical_telegram_allowed_ids.split(","):
+            value = raw.strip()
+            if value:
+                values.add(int(value))
+        return frozenset(values)
 
     # ======= LLM Provider =======
     # vllm - OpenAI-compatible endpoint (self-hosted or corporate)
@@ -79,7 +100,9 @@ class Settings(BaseSettings):
     vector_memory_enabled: bool = True
 
     # Career routing classifier rollout
-    career_routing_classifier_mode: Literal["off", "shadow", "gate", "mainline"] = "shadow"
+    career_routing_classifier_mode: Literal[
+        "off", "shadow", "gate", "mainline"
+    ] = "shadow"
     career_routing_classifier_min_confidence: float = 0.72
     career_routing_classifier_max_tokens: int = 4096
     career_routing_classifier_timeout_seconds: float = 240.0
@@ -92,7 +115,9 @@ class Settings(BaseSettings):
     realtime_runtime_enabled: bool = False
 
     # Backend STT
-    stt_backend_default: Literal["browser_vosk", "parakeet_v3", "composer"] = "browser_vosk"
+    stt_backend_default: Literal[
+        "browser_vosk", "parakeet_v3", "composer"
+    ] = "browser_vosk"
     parakeet_base_url: str = ""
     parakeet_api_key: str = ""
     parakeet_model: str = "parakeet-v3"

@@ -14,6 +14,7 @@ from app.api import (
     gamification,
     interviews,
     memory_and_interests,
+    ml_technical,
     programs,
     sessions,
     users,
@@ -155,6 +156,7 @@ app.include_router(gamification.router)
 app.include_router(vocabulary.router)
 app.include_router(programs.router)
 app.include_router(interviews.router)
+app.include_router(ml_technical.router)
 
 
 @app.get("/health")
