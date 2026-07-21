@@ -391,6 +391,9 @@ vectors/
 
 # Model files (if using ML)
 models/
+!app/models/
+app/models/*
+!app/models/ml_technical.py
 *.model
 *.pkl
 *.joblib

@@ -192,7 +192,9 @@
       "PowerShell($env:PYTHONPATH=\".\"; .\\\\venv\\\\Scripts\\\\python.exe -m pytest tests/test_learning_node.py tests/test_mission_contracts.py tests/test_session_end_node.py -q --no-header 2>&1 | Select-String -Pattern \"passed|failed|FAILED|Error\" | Select-Object -First 8)",
       "PowerShell($env:PYTHONPATH=\".\"; .\\\\venv\\\\Scripts\\\\python.exe -m pytest tests/test_onboarding_node.py tests/test_learning_node.py tests/test_mission_contracts.py tests/test_session_end_node.py tests/test_career_routing_classifier.py tests/test_onboarding_turn_analyzer.py tests/test_voice_runtime.py -q --no-header 2>&1 | Select-String -Pattern \"passed|failed|FAILED\" | Select-Object -First 4; Write-Output \"=== git log \\(this session's commits\\) ===\"; git log --oneline -11)",
       "PowerShell($env:PYTHONPATH=\".\"; 1..3 | ForEach-Object { Write-Output \"--- run $_ ---\"; .\\\\venv\\\\Scripts\\\\python.exe -m pytest tests/test_onboarding_node.py -q --no-header 2>&1 | Select-String -Pattern \"passed|failed|FAILED\" | Select-Object -First 3 })",
-      "PowerShell($env:PYTHONPATH=\".\"; .\\\\venv\\\\Scripts\\\\python.exe -m pytest tests/test_onboarding_node.py tests/test_learning_node.py tests/test_mission_contracts.py tests/test_session_end_node.py tests/test_career_routing_classifier.py tests/test_onboarding_turn_analyzer.py tests/test_voice_runtime.py -q --no-header 2>&1 | Select-String -Pattern \"passed|failed|FAILED\" | Select-Object -First 4)"
+      "PowerShell($env:PYTHONPATH=\".\"; .\\\\venv\\\\Scripts\\\\python.exe -m pytest tests/test_onboarding_node.py tests/test_learning_node.py tests/test_mission_contracts.py tests/test_session_end_node.py tests/test_career_routing_classifier.py tests/test_onboarding_turn_analyzer.py tests/test_voice_runtime.py -q --no-header 2>&1 | Select-String -Pattern \"passed|failed|FAILED\" | Select-Object -First 4)",
+      "Read(//c/Users/badmaev_es/develop/articles/grounded-judge-gate//**)",
+      "Read(//c/Users/badmaev_es/develop/articles/grounded-judge-gate/**)"
     ]
   },
   "enableAllProjectMcpServers": true

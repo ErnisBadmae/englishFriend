@@ -1,0 +1,811 @@
+schema_version: "ml-question-batch-v1"
+batch_id: "ml-question-batch-01"
+status: "draft"
+content_fingerprint_metadata:
+  algorithm: "sha256"
+  logical_content: "question_text + reference_answer"
+  source_fields:
+    - "question_ru"
+    - "reference_explanation_ru"
+  canonicalization_ru: >-
+    Каждое поле приводится к Unicode NFC, все последовательности пробельных
+    символов заменяются одним ASCII-пробелом, пробелы по краям удаляются.
+    Очищенные question_ru и reference_explanation_ru соединяются одним LF,
+    результат кодируется в UTF-8 и хешируется SHA-256.
+  purpose_ru: >-
+    Отпечаток фиксирует версию содержимого вопроса и помогает находить точные
+    дубли внутри подготовленного пакета. Он не является проверкой совпадений
+    с частным корпусом.
+  scope_note_ru: >-
+    Это локальный source-content fingerprint по двум полям (question_ru +
+    reference_explanation_ru), рассчитанный только для целей данного черновика
+    и по описанной здесь канонизации. Это НЕ MlQuestionBankService.question_content_hash
+    и не future-версия будущего БД content_hash - это самостоятельная,
+    отдельная от БД величина. При импорте MlQuestionBankService пересчитывает
+    свой content_hash отдельно, по собственному набору из 19 полей и своей
+    собственной канонизации; значения 15 fingerprint из этого файла с ним не
+    совпадают и не предназначены для сравнения с ним.
+aggregate_provenance:
+  note_ru: >-
+    Пакет составлен по локальным очищенным сводкам вопросов с технических
+    собеседований. Формулировки, разборы и критерии ответа созданы заново:
+    частные источники, ссылки, имена людей и названия компаний не переносились.
+    Материал предназначен только для внутренней подготовки и не может быть
+    импортирован или опубликован без технического ревью и одобрения владельца.
+  source_kind: "private_corpus"
+  source_label: "anonymized interview corpus"
+  source_uri_public: null
+  source_fingerprint: null
+  derivation_kind: "paraphrase"
+  publication_scope: "internal_only"
+  license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+coverage_table:
+  recsys_ranking: 6
+  ml_fundamentals: 4
+  rag_agents_evaluation: 3
+  dl_training: 1
+  inference_mlops: 1
+  total: 15
+questions:
+  - question_key: "mltech_016"
+    revision_no: 1
+    content_fingerprint: "017eb6614a1d8075307aed31b17e55393a8e08d20b480cfd4c2a38a4b62bef84"
+    status: "draft"
+    topic_id: "recsys_ranking"
+    question_ru: "Зачем рекомендательной системе два этапа - отбор кандидатов и ранжирование - и чем должны отличаться их цели и модели?"
+    difficulty: "medium"
+    tags:
+      - "candidate_generation"
+      - "ranking"
+      - "two_stage_recsys"
+      - "recall_at_k"
+    rubric_points:
+      - id: "catalog_reduction"
+        point_ru: "Отбор кандидатов быстро сокращает весь каталог до небольшого набора, который можно обработать более дорогой моделью."
+      - id: "first_stage_objective"
+        point_ru: "Первый этап оптимизируют на высокий охват подходящих объектов, иначе потерянный объект уже не вернётся на этапе ранжирования."
+      - id: "second_stage_objective"
+        point_ru: "Ранжирование использует больше признаков и точнее упорядочивает кандидатов под продуктовую цель."
+      - id: "different_models"
+        point_ru: "Для отбора подходят быстрые методы близости, матричные модели или правила, а для ранжирования - бустинг или нейросеть."
+      - id: "end_to_end_measurement"
+        point_ru: "Качество проверяют отдельно по этапам и целиком: охват кандидатов, метрики порядка, задержка и продуктовый результат."
+    reference_explanation_ru: >-
+      Полный каталог обычно слишком велик для сложной модели на каждый запрос.
+      Поэтому быстрый первый этап выбирает сотни кандидатов с упором на охват,
+      а второй использует более богатые признаки и упорядочивает десятки лучших.
+      Ошибка первого этапа необратима: объект, не попавший в кандидаты, ранжировщик
+      уже не увидит. Из-за этого этапы требуют разных моделей, бюджетов задержки и метрик.
+    follow_ups:
+      - "Как измерить, что первый этап не стал узким местом всей системы?"
+      - "Какие источники кандидатов можно объединить для нового и постоянного пользователя?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик под вакансию первого специалиста по данным. Проверить полноту метрик двух этапов."
+
+  - question_key: "mltech_017"
+    revision_no: 1
+    content_fingerprint: "d88b3443a9b4f0af0b82ddb66d93ff9d3c72034e7bce8c066ba65f105f7fd9d8"
+    status: "draft"
+    topic_id: "recsys_ranking"
+    question_ru: "Как обучается ALS для неявной обратной связи и почему отсутствие взаимодействия нельзя считать явной отрицательной оценкой?"
+    difficulty: "medium"
+    tags:
+      - "als"
+      - "implicit_feedback"
+      - "matrix_factorization"
+      - "confidence_weighting"
+    rubric_points:
+      - id: "latent_factors"
+        point_ru: "ALS раскладывает матрицу пользователь-объект на скрытые векторы пользователей и объектов."
+      - id: "alternating_updates"
+        point_ru: "Алгоритм попеременно фиксирует одну матрицу факторов и решает задачу наименьших квадратов для другой."
+      - id: "binary_preference"
+        point_ru: "В классической постановке бинарное предпочтение задают как p_ui = 1[r_ui > 0], а для ненаблюдаемой пары p_ui = 0."
+      - id: "confidence_weighting"
+        point_ru: "Вес уверенности отделяют от предпочтения, например c_ui = 1 + alpha * r_ui; у ненаблюдаемой пары остаётся ненулевой базовый вес."
+      - id: "weighted_objective"
+        point_ru: "Цель суммирует c_ui * (p_ui - x_u^T y_i)^2 по наблюдаемым и ненаблюдаемым парам и добавляет регуляризацию факторов."
+      - id: "missing_not_negative"
+        point_ru: "p_ui = 0 означает отсутствие подтверждённого предпочтения, а не достоверный отказ: пользователь мог не увидеть объект."
+    reference_explanation_ru: >-
+      ALS приближает разреженную матрицу взаимодействий произведением двух матриц
+      скрытых факторов и по очереди обновляет факторы пользователей и объектов.
+      В классической постановке для неявной обратной связи задают предпочтение
+      p_ui = 1[r_ui > 0] и уверенность c_ui = 1 + alpha * r_ui. Затем минимизируют
+      сумму c_ui * (p_ui - x_u^T y_i)^2 по всем парам пользователь-объект с
+      регуляризацией факторов. Ненаблюдаемая пара участвует в цели с p_ui = 0 и
+      ненулевым базовым весом, но не считается достоверным отрицательным классом:
+      пользователь мог просто не увидеть объект.
+    follow_ups:
+      - "Как ранг факторов и регуляризация влияют на качество и стоимость ALS?"
+      - "Как добавить в такую систему признаки пользователя и объекта?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить формулировку цели для implicit ALS и границу с явными оценками."
+
+  - question_key: "mltech_018"
+    revision_no: 1
+    content_fingerprint: "0393c07b44619806b0e74bf18a2e25d8c85c838507e8d467a98a12855100b123"
+    status: "draft"
+    topic_id: "recsys_ranking"
+    question_ru: "Чем отличаются Recall@K, MRR, MAP@K и NDCG@K и какую метрику выбрать для разных рекомендательных сценариев?"
+    difficulty: "medium"
+    tags:
+      - "offline_metrics"
+      - "recall_at_k"
+      - "mrr"
+      - "map_at_k"
+      - "ndcg"
+    rubric_points:
+      - id: "recall_meaning"
+        point_ru: "Recall@K измеряет долю релевантных объектов, попавших в первые K позиций, и полезен для проверки полноты кандидатов."
+      - id: "mrr_meaning"
+        point_ru: "MRR зависит от позиции первого релевантного результата и подходит, когда достаточно одного хорошего ответа."
+      - id: "map_meaning"
+        point_ru: "В этом пакете AP@K = sum(P@i * rel_i) / min(K, R), а MAP@K - среднее AP@K по запросам; AP не смешивают с трапецеидальной площадью под PR-кривой."
+      - id: "ndcg_meaning"
+        point_ru: "NDCG@K делит DCG на идеальный DCG, сильнее штрафует полезные объекты на низких позициях и поддерживает градации релевантности."
+      - id: "edge_cases"
+        point_ru: "Запросы с R = 0 или IDCG = 0 исключают из среднего и отдельно показывают их долю; при одном релевантном объекте Recall@K становится индикатором попадания, а AP и MRR зависят от его позиции."
+      - id: "candidate_protocol"
+        point_ru: "Метрики зависят от кандидатного набора, правил разметки и построения теста, поэтому значения из разных протоколов напрямую не сравнивают."
+      - id: "metric_choice"
+        point_ru: "Метрику выбирают по пользовательскому действию и месту этапа в системе, а не по максимальному значению одной удобной метрики."
+    reference_explanation_ru: >-
+      Эти метрики отвечают на разные вопросы. Recall@K проверяет, сколько нужного
+      найдено; MRR - насколько высоко стоит первый полезный объект. Здесь AP@K
+      определена как сумма P@i на релевантных позициях, делённая на min(K, R),
+      а MAP@K - как среднее AP@K; это не трапецеидальная площадь под PR-кривой.
+      NDCG@K нормирует DCG на идеальный порядок и поддерживает градации полезности.
+      Запросы без релевантных объектов или с IDCG = 0 исключаются из среднего, а
+      их доля показывается отдельно. При единственном релевантном объекте Recall@K
+      становится индикатором попадания, а AP и MRR учитывают его позицию. Сравнение
+      имеет смысл только при одном составе кандидатов, протоколе теста и разметке.
+    follow_ups:
+      - "Почему рост NDCG может не привести к росту продуктовой метрики?"
+      - "Как считать метрики, если у пользователя в тесте только одно взаимодействие?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Формулы намеренно не включены в основной вопрос, но смысл метрик должен быть проверен строго."
+
+  - question_key: "mltech_019"
+    revision_no: 1
+    content_fingerprint: "5f706e2ec44ec052e9e3c70c9d5f2f9bc78cd2c218ab2391c97d9b647b117a43"
+    status: "draft"
+    topic_id: "recsys_ranking"
+    question_ru: "Как выбирать отрицательные примеры для обучения рекомендательной модели и какие смещения создаёт случайная выборка из всего каталога?"
+    difficulty: "hard"
+    tags:
+      - "negative_sampling"
+      - "exposure_bias"
+      - "hard_negatives"
+      - "implicit_feedback"
+    rubric_points:
+      - id: "unobserved_ambiguity"
+        point_ru: "Отсутствие действия не доказывает неприязнь: объект мог не попасть в поле зрения пользователя."
+      - id: "exposed_negatives"
+        point_ru: "Показ без целевого действия информативнее случайного объекта, но не является честным отрицательным примером без учёта позиции, интерфейса и политики показа."
+      - id: "easy_negative_bias"
+        point_ru: "Случайная выборка создаёт слишком простые отрицательные примеры и может завысить офлайн-качество."
+      - id: "hard_negatives"
+        point_ru: "Сложные отрицательные примеры берут из похожих или высоко оценённых объектов, но контролируют ложные отрицательные метки у непросмотренных и неудачно показанных объектов."
+      - id: "exposure_correction"
+        point_ru: "Смещение показа оценивают через рандомизированный exploration-трафик или корректируют по известной вероятности показа, учитывая дисперсию и ограничение больших весов."
+      - id: "sampling_vs_calibration"
+        point_ru: "Веса исправляют известное изменение распределения выборки, а калибровка на представительном наборе меняет шкалу оценок, но сама не устраняет смещение обучения."
+    reference_explanation_ru: >-
+      В неявных данных нет готового класса отказа. Случайный объект из огромного
+      каталога часто не видел пользователь, поэтому модель учится отличать очевидно
+      нерелевантное и выглядит лучше, чем есть. Показ без действия информативнее,
+      но остаётся смещён позицией, интерфейсом и прежней политикой рекомендаций.
+      Для оценки причинного эффекта показа полезен рандомизированный exploration-трафик;
+      при известных вероятностях показа применяют propensity weighting с контролем
+      дисперсии. Сложные отрицательные примеры полезны, но повышают риск ложной метки.
+      Коррекция выборки и калибровка решают разные задачи: первая исправляет известное
+      изменение распределения, вторая на представительном наборе настраивает шкалу
+      оценок и сама по себе не убирает смещение обучения.
+    follow_ups:
+      - "Когда сложные отрицательные примеры начинают вредить обучению?"
+      - "Как изменится оценка модели, если отрицательные примеры выбирать иначе на обучении и на тесте?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Требуется особенно внимательно проверить причинные утверждения про показы и пропуски."
+
+  - question_key: "mltech_020"
+    revision_no: 1
+    content_fingerprint: "4e52d937e2c5effa5f6aefa24e2885428f2a8e87aec8a595ca2577ca07ef6c3e"
+    status: "draft"
+    topic_id: "recsys_ranking"
+    question_ru: "Как построить временную проверку рекомендательной системы без утечки будущего и отдельно измерить холодный старт?"
+    difficulty: "hard"
+    tags:
+      - "temporal_validation"
+      - "data_leakage"
+      - "cold_start"
+      - "offline_evaluation"
+    rubric_points:
+      - id: "time_boundary"
+        point_ru: "Обучение использует только события до временной границы, а проверка - более поздние события."
+      - id: "feature_cutoff"
+        point_ru: "Все признаки и агрегаты вычисляют на момент рекомендации, не используя будущие действия пользователя или объекта."
+      - id: "candidate_availability"
+        point_ru: "В кандидаты допускают только объекты, которые были доступны в соответствующий момент времени."
+      - id: "label_horizon"
+        point_ru: "Для метки задают горизонт после cutoff; события из незавершённого окна не попадают в обучение частично, а пересекающиеся окна при необходимости разделяют gap или embargo."
+      - id: "separate_cold_start"
+        point_ru: "Новый пользователь или объект отсутствует в обучающей истории на момент оценки, а не просто редко встречается; эти случаи считают отдельными срезами."
+      - id: "repeated_windows"
+        point_ru: "Несколько последовательных временных окон помогают проверить устойчивость к сезонности и дрейфу."
+    reference_explanation_ru: >-
+      Случайное перемешивание взаимодействий переносит сведения из будущего в
+      обучение и признаки. Честная схема воспроизводит момент рекомендации: история,
+      агрегаты и доступный каталог обрезаются по времени, затем качество считается на
+      последующих действиях. Для метки задают полный горизонт после cutoff, а для
+      пересекающихся окон при необходимости оставляют gap или embargo. Новый
+      пользователь или объект должен отсутствовать в обучающей истории на момент
+      оценки, а не просто иметь мало событий. Сценарии с известными пользователями и
+      объектами нельзя смешивать с холодным стартом. Несколько окон дают более
+      устойчивую оценку, чем единственная дата разделения.
+    follow_ups:
+      - "Какая утечка возникнет, если популярность объекта посчитать по всему периоду?"
+      - "Как сравнить модель для новых пользователей с моделью для пользователей с историей?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить, что временной протокол применим и к набору кандидатов, и к признакам."
+
+  - question_key: "mltech_021"
+    revision_no: 1
+    content_fingerprint: "f4df458a309af3bbeb3556b7ebe2f40f501724a53c8980c462e838d65e980ede"
+    status: "draft"
+    topic_id: "recsys_ranking"
+    question_ru: "Чем поточечное, попарное и списочное обучение ранжированию отличаются по цели и как подготовить группы запросов для YetiRank в CatBoost?"
+    difficulty: "hard"
+    tags:
+      - "learning_to_rank"
+      - "pointwise"
+      - "pairwise"
+      - "listwise"
+      - "catboost"
+      - "yetirank"
+    rubric_points:
+      - id: "pointwise"
+        point_ru: "Поточечный подход предсказывает метку или полезность каждого объекта независимо и напрямую не оптимизирует порядок."
+      - id: "pairwise"
+        point_ru: "Попарный подход учится правильно упорядочивать пары объектов внутри одного запроса."
+      - id: "listwise"
+        point_ru: "Списочные методы используют контекст списка и обычно оптимизируют дифференцируемый суррогат недифференцируемой метрики ранжирования, а не саму метрику напрямую."
+      - id: "group_context"
+        point_ru: "group_id обозначает один контекст выбора, например запрос или показ; вся история пользователя является одной группой только если объекты действительно конкурировали в одном решении."
+      - id: "group_layout"
+        point_ru: "Строки одной группы в CatBoost должны идти подряд, а обучающие пары не могут пересекать границу группы."
+      - id: "yetirank_role"
+        point_ru: "YetiRank Classic использует группы и стохастически создаваемые внутри группы пары; его нельзя без оговорки называть чисто списочным методом."
+      - id: "ranking_weights"
+        point_ru: "group_weight задаёт вес всей группы, pairs_weight - вес конкретной пары; это не произвольный вес строки для любой функции ранжирования."
+    reference_explanation_ru: >-
+      Поточечная модель решает обычную регрессию или классификацию для каждого объекта.
+      Попарная сравнивает объекты внутри одного контекста, а списочные методы учитывают
+      список и обычно оптимизируют суррогат метрики порядка. YetiRank Classic в
+      CatBoost использует группы и стохастически созданные внутри группы пары, поэтому
+      называть его чисто списочным методом неточно. group_id должен обозначать один
+      запрос или показ; вся история пользователя подходит только если объекты реально
+      конкурировали в одном решении. Строки группы должны идти подряд, пары не могут
+      пересекать её границу. group_weight относится ко всей группе, pairs_weight - к
+      паре; их семантика не равна произвольному весу отдельной строки.
+    follow_ups:
+      - "Когда простой поточечный ранжировщик может быть разумнее списочного?"
+      - "Что произойдёт, если случайно объединить объекты разных пользователей в одну группу?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить терминологию функций потерь и требования актуальной версии CatBoost."
+
+  - question_key: "mltech_022"
+    revision_no: 1
+    content_fingerprint: "f5c8714eee1820d4cf18665f450da7e2323fdb366a7eaca31201c7929a92f054"
+    status: "draft"
+    topic_id: "ml_fundamentals"
+    question_ru: "Как CatBoost обрабатывает категориальные признаки и почему обычное кодирование средним целевого признака создаёт утечку?"
+    difficulty: "medium"
+    tags:
+      - "catboost"
+      - "categorical_features"
+      - "target_encoding"
+      - "data_leakage"
+      - "gradient_boosting"
+    rubric_points:
+      - id: "category_representation"
+        point_ru: "CatBoost принимает категориальные значения как строки или идентификаторы и внутри строит числовые представления, не требуя внешнего наивного target encoding."
+      - id: "one_hot_or_ctr"
+        point_ru: "Часть низкокардинальных категорий кодируется one-hot, а для остальных могут строиться CTR и комбинации категориальных признаков."
+      - id: "naive_target_leakage"
+        point_ru: "Если среднее по категории считать на всей выборке, целевая метка строки прямо или косвенно попадает в её признак."
+      - id: "ordered_statistics"
+        point_ru: "Упорядоченные целевые статистики для строки используют только предыдущие объекты в перестановке и сглаживание."
+      - id: "ordered_boosting_distinction"
+        point_ru: "Упорядоченные целевые статистики и ordered boosting - связанные, но разные механизмы: первый строит признаки, второй уменьшает смещение при оценке градиента."
+      - id: "rare_categories"
+        point_ru: "Сглаживание и априорное значение уменьшают шум редких категорий и риск переобучения."
+      - id: "validation_boundary"
+        point_ru: "Преобразования для проверки и теста строятся без их целевых меток и с тем же протоколом, что будет на боевых данных."
+    reference_explanation_ru: >-
+      CatBoost принимает категориальные значения и внутри выбирает представление:
+      для части низкокардинальных признаков использует one-hot, для остальных может
+      строить CTR и комбинации категорий. Наивное среднее целевой метки по категории
+      знает ответы той же выборки и особенно опасно для редких значений. Упорядоченная
+      целевая статистика для текущей строки использует только предшествующие объекты
+      в перестановке и сглаживание. Это не то же самое, что ordered boosting:
+      статистика строит категориальный признак, а ordered boosting уменьшает смещение
+      при оценке градиента. Цели validation и test не используются; преобразования
+      строятся по train и сохранённому состоянию модели.
+    follow_ups:
+      - "Почему редкая категория особенно опасна для обычного кодирования средним?"
+      - "Когда one-hot кодирование всё же будет разумным выбором?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Перед импортом сверить детали ordered statistics с официальной документацией CatBoost."
+
+  - question_key: "mltech_023"
+    revision_no: 1
+    content_fingerprint: "11c3cd5e6c8415a2c8d5971ee37093e20213547fe42b62d1d2c93def965b8157"
+    status: "draft"
+    topic_id: "ml_fundamentals"
+    question_ru: "Чем ROC-AUC отличается от Average Precision, почему ни одна из них не задаёт рабочий порог и как выбрать порог при дисбалансе классов?"
+    difficulty: "medium"
+    tags:
+      - "roc_auc"
+      - "average_precision"
+      - "class_imbalance"
+      - "threshold_selection"
+      - "classification_metrics"
+    rubric_points:
+      - id: "roc_auc_meaning"
+        point_ru: "ROC-AUC оценивает способность ранжировать положительный объект выше отрицательного по всем порогам."
+      - id: "average_precision_meaning"
+        point_ru: "Average Precision суммирует precision с весами по приросту recall и, в отличие от трапецеидальной PR-AUC, не интерполирует линейно между точками."
+      - id: "prevalence_baseline"
+        point_ru: "Базовый уровень precision равен доле положительного класса, поэтому AP зависит от class prior и осторожно сравнивается между выборками с разной распространённостью класса."
+      - id: "threshold_independence"
+        point_ru: "Обе площади суммируют качество по множеству порогов и сами не выбирают рабочий порог."
+      - id: "business_costs"
+        point_ru: "Порог выбирают на отложенных данных по стоимости ошибок, ограничениям пропускной способности или требуемым precision и recall."
+      - id: "ranking_vs_calibration"
+        point_ru: "Высокая AUC или AP не означает корректных вероятностей; калибровка нужна для вероятностных решений, но порог по стоимости можно выбрать и по некалиброванному score."
+      - id: "target_shift"
+        point_ru: "После сдвига доли классов порог и калибровку перепроверяют на целевом распределении."
+    reference_explanation_ru: >-
+      ROC-AUC оценивает порядок пар положительных и отрицательных объектов, поэтому
+      может выглядеть высокой при сильном дисбалансе. Average Precision суммирует
+      precision с весами по приросту recall без линейной интерполяции между точками;
+      это не трапецеидальная площадь под PR-кривой. Её естественный ориентир - доля
+      положительного класса, поэтому AP зависит от class prior. Ни ROC-AUC, ни AP не
+      определяют решение для отдельного объекта. Рабочий порог выбирают на отложенных
+      данных по цене ошибок, нужной полноте, точности или доступному ресурсу. Высокое
+      качество ранжирования не означает калиброванные вероятности. После сдвига доли
+      классов порог и, если нужны вероятности, калибровку проверяют заново.
+    follow_ups:
+      - "Почему ROC-AUC может почти не измениться после монотонного преобразования оценок модели?"
+      - "Как выбрать порог, если команда может обработать только фиксированное число сигналов в день?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить, что кандидат не смешивает ранжирующие метрики и калибровку вероятностей."
+
+  - question_key: "mltech_024"
+    revision_no: 1
+    content_fingerprint: "edb6ac89f7017643a93cc1d6b02cb2d75a68cdb3218d5c74af194ebedf4c51be"
+    status: "draft"
+    topic_id: "ml_fundamentals"
+    question_ru: "Как спроектировать A/B-тест для новой модели: выбрать единицу случайного распределения, размер выборки, основную метрику и правило решения?"
+    difficulty: "hard"
+    tags:
+      - "ab_testing"
+      - "randomization"
+      - "sample_size"
+      - "p_value"
+      - "confidence_interval"
+      - "mde"
+    rubric_points:
+      - id: "hypothesis_metric"
+        point_ru: "До запуска фиксируют гипотезу, основную метрику, защитные метрики и направление ожидаемого эффекта."
+      - id: "randomization_unit"
+        point_ru: "Единицу случайного распределения выбирают так, чтобы варианты не смешивались и наблюдения не считались независимыми ошибочно."
+      - id: "sample_size"
+        point_ru: "Размер и длительность определяют по базовому уровню, минимальному полезному эффекту, мощности и допустимой вероятности ложного срабатывания."
+      - id: "p_value_scope"
+        point_ru: "p-value показывает совместимость данных с нулевой гипотезой, но не вероятность того, что гипотеза верна."
+      - id: "effect_interval"
+        point_ru: "Решение опирается не только на значимость, но и на величину эффекта и доверительный интервал."
+      - id: "quality_checks"
+        point_ru: "До вывода проверяют перекос распределения трафика, качество событий, сезонность и заранее оговорённое правило остановки."
+    reference_explanation_ru: >-
+      Хороший эксперимент начинается до запуска: фиксируются гипотеза, основная и
+      защитные метрики, единица случайного распределения, минимальный полезный эффект,
+      мощность и уровень ошибки первого рода. После запуска проверяют корректность
+      распределения трафика и данных. p-value не равен вероятности истинности гипотезы,
+      поэтому решение принимают по величине эффекта, доверительному интервалу и
+      практической ценности, а не только по границе статистической значимости.
+    follow_ups:
+      - "Почему нельзя каждый день смотреть p-value и остановиться при первом значении ниже порога?"
+      - "Когда распределять нужно по пользователю, а не по отдельному показу?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Требуется статистическое ревью терминов мощности, MDE и последовательного просмотра."
+
+  - question_key: "mltech_025"
+    revision_no: 1
+    content_fingerprint: "67a2c206e909bdcdf762ad2defd58aaa15b757ce229892920324418f2adf664a"
+    status: "draft"
+    topic_id: "ml_fundamentals"
+    question_ru: "Как выбрать между случайным, групповым и вложенным разбиением данных, чтобы проверить нужный сценарий обобщения и не получить утечку?"
+    difficulty: "medium"
+    tags:
+      - "cross_validation"
+      - "data_split"
+      - "data_leakage"
+      - "group_split"
+      - "nested_cv"
+      - "near_duplicate_leakage"
+    rubric_points:
+      - id: "iid_assumption"
+        point_ru: "Случайное разбиение допустимо только когда наблюдения достаточно независимы и одинаково распределены."
+      - id: "deployment_target"
+        point_ru: "Схему выбирают по боевому сценарию: будущие события известных групп и предсказание для новых групп требуют разных проверок."
+      - id: "group_split"
+        point_ru: "GroupKFold держит зависимую группу целиком в одном фолде, StratifiedGroupKFold дополнительно старается сохранить баланс классов, а leave-one-group-out проверяет перенос на отдельную новую группу."
+      - id: "known_vs_new_entities"
+        point_ru: "Полный holdout пользователя измеряет качество на новых пользователях и не заменяет проверку будущих событий уже известных пользователей."
+      - id: "near_duplicates"
+        point_ru: "Дубли и почти дубли документов сначала объединяют общим идентификатором и не допускают их попадания в разные фолды."
+      - id: "pipeline_fit"
+        point_ru: "Заполнение пропусков, масштабирование, отбор признаков и кодирование обучают внутри каждого обучающего фолда."
+      - id: "untouched_test"
+        point_ru: "Тестовую выборку не используют для выбора признаков, модели и гиперпараметров; к ней обращаются после завершения выбора."
+      - id: "nested_selection"
+        point_ru: "Если кросс-валидация одновременно нужна для настройки и оценки, внешний цикл измеряет качество, а внутренний выбирает модель и гиперпараметры."
+    reference_explanation_ru: >-
+      Схема проверки должна отвечать боевому сценарию обобщения. Случайный KFold
+      допустим для достаточно независимых и одинаково распределённых строк.
+      GroupKFold удерживает пользователя, объект или документ внутри одного фолда;
+      StratifiedGroupKFold дополнительно старается сохранить баланс меток, а
+      leave-one-group-out проверяет перенос на конкретную новую группу. Полный
+      holdout пользователя отвечает на вопрос о новых пользователях, а не о будущих
+      событиях известных. Дубли и почти дубли объединяют в одну группу. Все обучаемые
+      преобразования подгоняют внутри train-фолда. При настройке и оценке на CV нужен
+      вложенный протокол или отдельный нетронутый тест.
+    follow_ups:
+      - "Почему масштабирование до кросс-валидации является утечкой?"
+      - "Когда нужен вложенный цикл кросс-валидации, а когда достаточно отдельного теста?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить примеры зависимостей и не сводить любую задачу к случайному KFold."
+
+  - question_key: "mltech_026"
+    revision_no: 1
+    content_fingerprint: "754a3c689e96cdc2f01438718aa6a877173d52b8b10b537698ba8eb9c0dabc59"
+    status: "draft"
+    topic_id: "rag_agents_evaluation"
+    question_ru: "Как раздельно оценить поиск и генерацию в RAG, чтобы по итоговой метрике понять, где именно сломалась система?"
+    difficulty: "medium"
+    tags:
+      - "rag_evaluation"
+      - "retrieval_metrics"
+      - "faithfulness"
+      - "golden_set"
+      - "failure_analysis"
+    rubric_points:
+      - id: "evaluation_dataset"
+        point_ru: "Эталонный набор связывает запросы с релевантными фрагментами и, где возможно, с проверяемыми ответами."
+      - id: "retrieval_metrics"
+        point_ru: "Поиск оценивают отдельно через Recall@K, MRR или NDCG и проверяют, попало ли основание в верхние результаты."
+      - id: "generation_metrics"
+        point_ru: "Генерацию оценивают по корректности, соответствию вопросу и подтверждаемости ответа найденными источниками."
+      - id: "oracle_split"
+        point_ru: "Запуск генерации на эталонных фрагментах отделяет ошибку генератора от ошибки поиска."
+      - id: "segmented_analysis"
+        point_ru: "Результаты разбивают по типам документов, сложности запросов и причинам отказа, а не ограничиваются одним средним числом."
+    reference_explanation_ru: >-
+      Одна итоговая оценка скрывает источник ошибки. Сначала проверяют, найден ли
+      релевантный фрагмент в первых K результатах. Затем оценивают ответ на найденном
+      контексте: верность, уместность и подтверждаемость. Полезный диагностический
+      приём - дать генератору эталонный фрагмент. Если ответ всё равно неверен, проблема
+      не в поиске. Набор примеров должен хранить ожидаемые основания и поддерживать
+      разбор по типам ошибок.
+    follow_ups:
+      - "Что делать, если для вопроса существует несколько равноценных источников?"
+      - "Как доказать, что переранжирование улучшило систему, а не только одну офлайн-метрику?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить определения метрик поиска и критерий подтверждаемости ответа."
+
+  - question_key: "mltech_027"
+    revision_no: 1
+    content_fingerprint: "4bef30ed9deebe2140ee55b0f325ab00a8806744372b2bcbbdfb9dfda0835317"
+    status: "draft"
+    topic_id: "rag_agents_evaluation"
+    question_ru: "Когда LLM можно использовать как судью качества и как построить проверку, чтобы модель не принимала убедительный, но неверный ответ?"
+    difficulty: "hard"
+    tags:
+      - "llm_as_judge"
+      - "calibration"
+      - "grounded_evaluation"
+      - "fail_closed"
+      - "human_review"
+    rubric_points:
+      - id: "explicit_rubric"
+        point_ru: "Судья получает узкую проверяемую шкалу и структурированный формат, а не просьбу оценить ответ вообще."
+      - id: "human_calibration"
+        point_ru: "Эталон имеет независимую человеческую разметку, правило разрешения разногласий и отдельный holdout, который не использовали для настройки порога."
+      - id: "known_biases"
+        point_ru: "Порядок вариантов проверяют перестановками, а позиционное, стилевое и родственное модели смещения измеряют раздельно."
+      - id: "deterministic_veto"
+        point_ru: "Факты, формат, числовые ограничения и ссылки на источник по возможности повторно проверяет детерминированный код."
+      - id: "empirical_gate"
+        point_ru: "Автоматический маршрут использует эмпирически проверенный порог по классу сценария; самооценка уверенности судьи не считается вероятностью правильности."
+      - id: "safety_metrics"
+        point_ru: "На holdout считают confusion matrix и показатели по классам, особенно долю ложных принятий; одной accuracy или kappa недостаточно."
+      - id: "manual_route"
+        point_ru: "Расхождение независимых проверок, выход за область калибровки или ошибка судьи ведут в ручную проверку, а не в автоматическое принятие."
+      - id: "versioned_evidence"
+        point_ru: "Сохраняют версию шкалы, модели, входов и решения, чтобы воспроизводить регрессии."
+    reference_explanation_ru: >-
+      LLM-судья полезен для критериев, которые трудно выразить правилом, но его вывод
+      не является истиной. Надёжный контур задаёт явную шкалу, структурирует ответ,
+      сравнивает решения с независимо размеченным набором, разрешает разногласия по
+      явному правилу и оставляет отдельный holdout. Самооценка уверенности судьи не
+      является вероятностью правильности: автоматический маршрут задают по эмпирически
+      проверенному порогу для конкретного класса сценариев. На holdout считают confusion
+      matrix и показатели по классам, особенно долю ложных принятий; одной accuracy
+      или kappa недостаточно. Всё, что можно проверить кодом или по источнику, проходит
+      повторную проверку. Расхождение проверок, выход за область калибровки или ошибка
+      судьи ведут к человеку. Версии входов, шкалы и судьи сохраняются как доказательство.
+    follow_ups:
+      - "Какие примеры включить в набор калибровки судьи?"
+      - "Как заметить, что новая версия модели-судьи изменила строгость оценки?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик по паттерну проверяемого судьи. Нужен независимый просмотр на ложные принятия."
+
+  - question_key: "mltech_028"
+    revision_no: 1
+    content_fingerprint: "d32acfa08cca262951974adc2e1ca649d3db8be8975887bf90fe0b1e26dc4f8a"
+    status: "draft"
+    topic_id: "rag_agents_evaluation"
+    question_ru: "Как построить набор сценарных проверок для LLM-агента, который вызывает инструменты и меняет состояние системы?"
+    difficulty: "hard"
+    tags:
+      - "agent_evaluation"
+      - "scenario_testing"
+      - "tool_calls"
+      - "state_transitions"
+      - "idempotency"
+    rubric_points:
+      - id: "scenario_contract"
+        point_ru: "Сценарий фиксирует начальное состояние, вход пользователя, разрешённые действия и проверяемый итог."
+      - id: "tool_call_checks"
+        point_ru: "Отдельно проверяют выбор инструмента, аргументы, порядок вызовов и запрет неразрешённых действий."
+      - id: "state_checks"
+        point_ru: "Проверяют итоговое состояние и побочные эффекты, а не только правдоподобный текст ответа."
+      - id: "failure_routes"
+        point_ru: "Набор включает таймауты, пустые результаты, ошибки инструмента, повторную доставку и неоднозначный запрос."
+      - id: "idempotency"
+        point_ru: "Повтор одного события не должен создавать второй платёж, запись или другое необратимое действие."
+      - id: "operational_metrics"
+        point_ru: "Кроме успешности сценария измеряют задержку, стоимость, число вызовов и долю передачи человеку."
+    reference_explanation_ru: >-
+      Текстовый ответ не доказывает правильность агента. Сценарная проверка задаёт
+      исходное состояние и ожидаемый результат, затем проверяет вызовы инструментов,
+      аргументы, изменение данных и побочные эффекты. Обязательны пути ошибок и
+      повторной доставки, потому что именно они создают опасные двойные действия.
+      Модель можно использовать для оценки формулировки, но права на действия,
+      инварианты состояния и идемпотентность должны проверяться кодом.
+    follow_ups:
+      - "Что проверить в сценарии, где инструмент выполнил действие, но ответ не дошёл до агента?"
+      - "Какие части такой проверки допустимо поручить LLM-судье?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Проверить, что критерии отделяют качество текста от корректности действий."
+
+  - question_key: "mltech_029"
+    revision_no: 1
+    content_fingerprint: "f684348f552ed4022dc13ede5ce021262a906a9c25f492cf8a9dce2ed94aa72a"
+    status: "draft"
+    topic_id: "dl_training"
+    question_ru: "Как смешанная точность ускоряет обучение, чем FP16 отличается от BF16 и зачем при FP16 нужен масштаб функции потерь?"
+    difficulty: "medium"
+    tags:
+      - "mixed_precision"
+      - "fp16"
+      - "bf16"
+      - "loss_scaling"
+      - "training_stability"
+    rubric_points:
+      - id: "compute_memory_benefit"
+        point_ru: "Меньшая точность снижает расход памяти и на поддерживаемом ускорителе увеличивает скорость матричных операций."
+      - id: "mixed_roles"
+        point_ru: "Чувствительные операции, основные веса или состояния оптимизатора часто сохраняют в более высокой точности."
+      - id: "fp16_range"
+        point_ru: "У FP16 уже диапазон показателей степени, поэтому малые градиенты могут округляться до нуля, а большие - переполняться."
+      - id: "bf16_tradeoff"
+        point_ru: "BF16 имеет диапазон, близкий к FP32, но меньшую точность мантиссы, поэтому обычно устойчивее FP16 к переполнению."
+      - id: "loss_scaling"
+        point_ru: "Масштабирование функции потерь временно увеличивает градиенты перед обратным проходом, после чего масштаб снимается перед обновлением весов."
+      - id: "stability_checks"
+        point_ru: "Следят за NaN, переполнением, нормой градиента и качеством, а при нестабильности оставляют отдельные операции в FP32."
+    reference_explanation_ru: >-
+      Смешанная точность выполняет большую часть дорогих операций в FP16 или BF16,
+      но сохраняет чувствительные вычисления и состояния в FP32. Это уменьшает память
+      и ускоряет обучение на подходящем оборудовании. FP16 имеет узкий числовой диапазон,
+      поэтому малые градиенты могут исчезать; масштаб функции потерь сдвигает их в
+      представимый диапазон. BF16 сохраняет широкий диапазон FP32, но жертвует точностью мантиссы.
+    follow_ups:
+      - "Почему масштаб снимают до шага оптимизатора?"
+      - "Какие операции чаще оставляют в FP32 и почему?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Нужна проверка числовых форматов и практики автоматического loss scaling."
+
+  - question_key: "mltech_030"
+    revision_no: 1
+    content_fingerprint: "01ce59f1ad8b6a7fd9ce5a7a3f5d0669577039b25d85ae036acc064155b69f6a"
+    status: "draft"
+    topic_id: "inference_mlops"
+    question_ru: "Чем непрерывное пакетирование запросов к LLM отличается от статического батча и как оно меняет пропускную способность и задержку?"
+    difficulty: "hard"
+    tags:
+      - "continuous_batching"
+      - "llm_serving"
+      - "throughput"
+      - "latency"
+      - "load_testing"
+    rubric_points:
+      - id: "static_batch_limit"
+        point_ru: "Статический батч держит фиксированный состав до завершения, поэтому короткие последовательности ждут самые длинные и оставляют ускоритель недогруженным."
+      - id: "continuous_batching"
+        point_ru: "Непрерывное пакетирование добавляет новые запросы и удаляет завершённые между шагами генерации."
+      - id: "prefill_and_decode"
+        point_ru: "Prefill обрабатывает входной контекст крупными матричными операциями, а decode добавляет токены по одному; chunked prefill и приоритет decode меняют компромисс между TTFT и inter-token latency."
+      - id: "throughput_gain"
+        point_ru: "Более плотная загрузка ускорителя увеличивает число обработанных токенов и запросов в единицу времени."
+      - id: "latency_tradeoff"
+        point_ru: "Слишком большой пакет улучшает пропускную способность, но может увеличить ожидание первого токена и хвостовую задержку."
+      - id: "resource_admission"
+        point_ru: "Планировщик знает текущие длины, заявленный max_tokens, лимиты последовательностей и занятые блоки KV-cache, но не точную будущую длину генерации."
+      - id: "measurement"
+        point_ru: "Под реалистичной нагрузкой измеряют TTFT, inter-token и end-to-end latency, P95/P99, token и request throughput, ошибки и goodput при заданном SLO."
+    reference_explanation_ru: >-
+      Генерация идёт по одному токену, а запросы имеют разную длину. В статическом батче
+      завершившийся запрос оставляет пустое место до конца самого длинного. Непрерывный
+      планировщик удаляет завершённые запросы и добавляет новые между шагами, повышая
+      загрузку ускорителя. На prefill обрабатывается входной контекст, на decode токены
+      добавляются по одному; chunked prefill и приоритет decode меняют баланс TTFT и
+      inter-token latency. Планировщик учитывает текущие длины, max_tokens, лимиты и
+      KV-cache, но не знает точную будущую длину ответа. Выигрыш в throughput не
+      бесплатен: очередь и крупный пакет могут ухудшить TTFT и P95/P99. Поэтому вместе
+      измеряют TTFT, inter-token и end-to-end latency, token и request throughput,
+      ошибки и goodput при заданном SLO.
+    follow_ups:
+      - "Почему максимальная пропускная способность не всегда является правильной целью сервиса?"
+      - "Какие ограничения поставить, чтобы один длинный запрос не ухудшил задержку остальных?"
+    rubric_version: "ml-technical-v1"
+    source_kind: "private_corpus"
+    source_label: "anonymized interview corpus"
+    source_uri_public: null
+    source_fingerprint: null
+    derivation_kind: "paraphrase"
+    publication_scope: "internal_only"
+    license_note: 'Private anonymized interview-derived material; internal study only; no publication rights claimed.'
+    model_id: "openai-codex-gpt-5.5"
+    prompt_version: "ml-question-batch-01-draft-v1"
+    reviewer_note_ru: "Черновик. Перед импортом сверить детали планировщика с выбранным сервером инференса."
