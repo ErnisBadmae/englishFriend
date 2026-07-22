@@ -2,6 +2,10 @@
 
 Compact bootstrap memory for Codex and other terminal agents.
 
+Portfolio bootstrap: for strategic or cross-repository context, read
+`../PERSONAL_STRATEGY.md`, `../AGENT_OPERATING_MODEL.md`, and `../PORTFOLIO_CONTEXT.md`. Do not copy the full
+portfolio process here; this repository's local docs remain canonical for product work.
+
 ## Project Summary
 
 English Friend is a FastAPI-based career English coach. The product is for Russian-speaking ML/AI and adjacent IT specialists and should stay focused on:

@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.career import (
     CareerApplication,
     CareerApplicationEvent,
+    CareerTelegramPendingInput,
     CareerVacancySnapshot,
 )
 from app.models.core_tables import User
@@ -51,9 +52,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     STATUS_APPLIED: frozenset(
         {STATUS_SCREENING, STATUS_TECHNICAL, STATUS_REJECTED, STATUS_WITHDRAWN}
     ),
-    STATUS_SCREENING: frozenset(
-        {STATUS_TECHNICAL, STATUS_REJECTED, STATUS_WITHDRAWN}
-    ),
+    STATUS_SCREENING: frozenset({STATUS_TECHNICAL, STATUS_REJECTED, STATUS_WITHDRAWN}),
     STATUS_TECHNICAL: frozenset({STATUS_OFFER, STATUS_REJECTED, STATUS_WITHDRAWN}),
     STATUS_OFFER: frozenset({STATUS_WITHDRAWN}),
     STATUS_REJECTED: frozenset(),
@@ -63,6 +62,11 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 ACTOR_TYPE_OWNER = "owner"
 ACTOR_TYPE_SYSTEM = "system"
 VALID_ACTOR_TYPES = {ACTOR_TYPE_OWNER, ACTOR_TYPE_SYSTEM}
+
+INTENT_CAREER_ADD = "career_add"
+INTENT_CAREER_NEXT_ACTION = "career_next_action"
+VALID_PENDING_INTENTS = {INTENT_CAREER_ADD, INTENT_CAREER_NEXT_ACTION}
+PENDING_INPUT_TTL_MINUTES = 30
 
 
 class CareerLedgerError(ValueError):
@@ -118,7 +122,9 @@ def _snapshot_content_hash(
         "raw_description": raw_description,
         "external_id": external_id,
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -160,6 +166,16 @@ def _application_dict(
         result["role_title"] = snapshot.role_title
         result["url"] = snapshot.url
     return result
+
+
+def _pending_input_dict(row: CareerTelegramPendingInput) -> dict[str, Any]:
+    return {
+        "user_id": row.user_id,
+        "intent": row.intent,
+        "application_id": row.application_id,
+        "created_at": row.created_at.isoformat(),
+        "expires_at": row.expires_at.isoformat(),
+    }
 
 
 def _event_dict(row: CareerApplicationEvent) -> dict[str, Any]:
@@ -217,7 +233,9 @@ class CareerLedgerService:
         if source not in VALID_SOURCES:
             raise CareerLedgerError(f"unsupported career vacancy source: {source}")
         if actor_type != ACTOR_TYPE_OWNER:
-            raise CareerLedgerError("record_manual_application is owner-originated only")
+            raise CareerLedgerError(
+                "record_manual_application is owner-originated only"
+            )
         idempotency_key = _bounded_text(
             "idempotency_key", idempotency_key, 200, required=True
         )
@@ -372,9 +390,7 @@ class CareerLedgerService:
         model-originated calls fail closed.
         """
         if actor_type not in VALID_ACTOR_TYPES or actor_type == ACTOR_TYPE_SYSTEM:
-            raise CareerLedgerError(
-                "append_application_event is owner-originated only"
-            )
+            raise CareerLedgerError("append_application_event is owner-originated only")
         actor_id = _bounded_text("actor_id", actor_id, 160, required=True)
         next_action = _bounded_optional_text(
             "next_action", next_action, NEXT_ACTION_MAX_LEN
@@ -401,10 +417,12 @@ class CareerLedgerService:
                 }
 
         application = await self.db.scalar(
-            select(CareerApplication).where(
+            select(CareerApplication)
+            .where(
                 CareerApplication.user_id == user_id,
                 CareerApplication.id == application_id,
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         if application is None:
             raise CareerLedgerError(f"unknown career application_id: {application_id}")
@@ -481,6 +499,137 @@ class CareerLedgerService:
             "event": _event_dict(event),
         }
 
+    async def get_application(
+        self, user_id: int, application_id: str
+    ) -> Optional[dict[str, Any]]:
+        await self._ensure_user_exists(user_id)
+        row = (
+            await self.db.execute(
+                select(CareerApplication, CareerVacancySnapshot)
+                .join(
+                    CareerVacancySnapshot,
+                    CareerVacancySnapshot.id == CareerApplication.vacancy_snapshot_id,
+                )
+                .where(
+                    CareerApplication.user_id == user_id,
+                    CareerApplication.id == application_id,
+                )
+            )
+        ).first()
+        if row is None:
+            return None
+        app_row, snap_row = row
+        return _application_dict(app_row, snap_row)
+
+    async def set_next_action(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        next_action: str,
+        next_action_due_date: Optional[date],
+        idempotency_key: str,
+        actor_id: str,
+        actor_type: str = ACTOR_TYPE_OWNER,
+    ) -> dict[str, Any]:
+        """Owner-originated only. Locks the application row, updates
+        ``next_action``/``next_action_due_date`` and appends one idempotent
+        ``note`` event. Does not change ``status``.
+        """
+        if actor_type != ACTOR_TYPE_OWNER:
+            raise CareerLedgerError("set_next_action is owner-originated only")
+        actor_id = _bounded_text("actor_id", actor_id, 160, required=True)
+        idempotency_key = _bounded_text(
+            "idempotency_key", idempotency_key, 200, required=True
+        )
+        next_action = _bounded_text(
+            "next_action", next_action, NEXT_ACTION_MAX_LEN, required=True
+        )
+
+        await self._ensure_user_exists(user_id)
+
+        existing_event = await self._event_by_idempotency_key(user_id, idempotency_key)
+        if existing_event is not None:
+            application = await self.db.get(
+                CareerApplication, existing_event.application_id
+            )
+            return {
+                "created": False,
+                "application": _application_dict(application),
+                "event": _event_dict(existing_event),
+            }
+
+        application = await self.db.scalar(
+            select(CareerApplication)
+            .where(
+                CareerApplication.user_id == user_id,
+                CareerApplication.id == application_id,
+            )
+            .with_for_update()
+        )
+        if application is None:
+            raise CareerLedgerError(f"unknown career application_id: {application_id}")
+
+        # Re-check after locking the row so a concurrent retry of the same
+        # idempotency key cannot append two note events.
+        existing_event = await self._event_by_idempotency_key(user_id, idempotency_key)
+        if existing_event is not None:
+            existing_application = await self.db.get(
+                CareerApplication, existing_event.application_id
+            )
+            return {
+                "created": False,
+                "application": _application_dict(existing_application),
+                "event": _event_dict(existing_event),
+            }
+
+        now = _utcnow()
+        try:
+            application.next_action = next_action
+            application.next_action_due_date = next_action_due_date
+            application.updated_at = now
+
+            event_id = await self.db.scalar(
+                pg_insert(CareerApplicationEvent)
+                .values(
+                    id=str(uuid4()),
+                    user_id=user_id,
+                    application_id=application_id,
+                    event_type="note",
+                    from_status=None,
+                    to_status=None,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    event_metadata={
+                        "next_action": next_action,
+                        "next_action_due_date": next_action_due_date.isoformat()
+                        if next_action_due_date
+                        else None,
+                    },
+                    idempotency_key=idempotency_key,
+                    occurred_at=now,
+                )
+                .on_conflict_do_nothing()
+                .returning(CareerApplicationEvent.id)
+            )
+            if event_id is None:
+                await self.db.rollback()
+                raise CareerLedgerConflictError("duplicate career application event")
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise CareerLedgerConflictError(
+                "duplicate or conflicting career application event"
+            ) from exc
+
+        await self.db.refresh(application)
+        event = await self.db.get(CareerApplicationEvent, event_id)
+        return {
+            "created": True,
+            "application": _application_dict(application),
+            "event": _event_dict(event),
+        }
+
     async def list_applications(
         self, user_id: int, *, limit: int = RECENT_APPLICATIONS_LIMIT_DEFAULT
     ) -> list[dict[str, Any]]:
@@ -533,10 +682,109 @@ class CareerLedgerService:
             "nearest_actions": nearest_actions,
         }
 
+    async def set_pending_intent(
+        self,
+        user_id: int,
+        *,
+        intent: str,
+        application_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Upsert the owner's single active Telegram pending intent.
+
+        Replaces any previously active intent for this owner. Routing must
+        not depend on this table alone surviving forever - callers still
+        check ``expires_at`` on read.
+        """
+        if intent not in VALID_PENDING_INTENTS:
+            raise CareerLedgerError(f"unsupported pending intent: {intent}")
+        if intent == INTENT_CAREER_NEXT_ACTION:
+            if not application_id:
+                raise CareerLedgerError("career_next_action requires an application_id")
+        elif application_id is not None:
+            raise CareerLedgerError("career_add does not accept an application_id")
+
+        await self._ensure_user_exists(user_id)
+
+        if application_id is not None:
+            owned = await self.db.scalar(
+                select(CareerApplication.id).where(
+                    CareerApplication.id == application_id,
+                    CareerApplication.user_id == user_id,
+                )
+            )
+            if owned is None:
+                raise CareerLedgerError(
+                    f"unknown career application_id: {application_id}"
+                )
+
+        now = _utcnow()
+        expires_at = now + timedelta(minutes=PENDING_INPUT_TTL_MINUTES)
+
+        await self.db.execute(
+            pg_insert(CareerTelegramPendingInput)
+            .values(
+                user_id=user_id,
+                intent=intent,
+                application_id=application_id,
+                created_at=now,
+                expires_at=expires_at,
+            )
+            .on_conflict_do_update(
+                index_elements=[CareerTelegramPendingInput.user_id],
+                set_={
+                    "intent": intent,
+                    "application_id": application_id,
+                    "created_at": now,
+                    "expires_at": expires_at,
+                },
+            )
+        )
+        await self.db.commit()
+
+        row = await self.db.get(CareerTelegramPendingInput, user_id)
+        return _pending_input_dict(row)
+
+    async def get_active_pending_intent(self, user_id: int) -> Optional[dict[str, Any]]:
+        row = await self.db.scalar(
+            select(CareerTelegramPendingInput).where(
+                CareerTelegramPendingInput.user_id == user_id,
+                CareerTelegramPendingInput.expires_at > _utcnow(),
+            )
+        )
+        if row is None:
+            return None
+        return _pending_input_dict(row)
+
+    async def clear_pending_intent(self, user_id: int) -> None:
+        await self.db.execute(
+            delete(CareerTelegramPendingInput).where(
+                CareerTelegramPendingInput.user_id == user_id
+            )
+        )
+        await self.db.commit()
+
+    async def discard_expired_pending_intents(self, user_id: int) -> int:
+        """Remove this owner's pending intent if it has expired.
+
+        Owner-scoped by design: pending input is a single per-user row, and
+        callers act on one user's Telegram session at a time. A global sweep
+        would cross owner boundaries and touch rows no caller asked about.
+        """
+        result = await self.db.execute(
+            delete(CareerTelegramPendingInput).where(
+                CareerTelegramPendingInput.user_id == user_id,
+                CareerTelegramPendingInput.expires_at <= _utcnow(),
+            )
+        )
+        await self.db.commit()
+        return result.rowcount or 0
+
     async def get_review_context(self, user_id: int) -> dict[str, Any]:
         """Bounded, evidence-only facts plus a stable SHA-256 context hash."""
         summary = await self.get_pipeline_summary(user_id)
-        recent = await self.list_applications(user_id, limit=RECENT_APPLICATIONS_LIMIT_DEFAULT)
+        recent = await self.list_applications(
+            user_id, limit=RECENT_APPLICATIONS_LIMIT_DEFAULT
+        )
         context = {
             "schema_version": 1,
             "track_id": "career_ledger",
@@ -557,10 +805,14 @@ __all__ = [
     "CareerLedgerError",
     "CareerLedgerService",
     "CareerLedgerTransitionError",
+    "INTENT_CAREER_ADD",
+    "INTENT_CAREER_NEXT_ACTION",
+    "PENDING_INPUT_TTL_MINUTES",
     "STATUS_APPLIED",
     "STATUS_OFFER",
     "STATUS_REJECTED",
     "STATUS_SCREENING",
     "STATUS_TECHNICAL",
     "STATUS_WITHDRAWN",
+    "VALID_PENDING_INTENTS",
 ]

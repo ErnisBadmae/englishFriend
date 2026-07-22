@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
@@ -66,12 +66,13 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Есть product synthetic evals и отдельный STT benchmark; их нужно держать раздельно.
 
 - `ml_technical` Telegram v0 реализован как отдельный адаптер над тем же `MlTechnicalService`: `/today`, срез до 5 вопросов, progress, skip/cancel, first-class `dont_know`; состояние восстанавливается из PostgreSQL, а не из памяти процесса.
-- Миграции `012`-`016` применены и живут в PostgreSQL; PostgreSQL остается canonical storage для практики и карьерного журнала.
+- Миграции `012`-`017` применены и живут в PostgreSQL; PostgreSQL остается canonical storage для практики, карьерного журнала и ожидаемого Telegram-ввода.
 - Live-срез данных на 2026-07-22: 5 сессий, 18 items, 10 attempts, 0 external_reviews, 15 approved + 15 draft вопросов, 1 progress review, 0 карьерных откликов.
 - 137 focused pytest-тестов проходят на текущем состоянии кода и схемы.
 - Telegram ML polling теперь live; прежний блокер "нет BotFather token / нет привязанного Telegram ID" устарел.
 - Qdrant и Neo4j остаются future derived indexes для этого среза - не участвуют в bootstrap или canonical storage миграций `012`-`016`.
 - Career ledger v0 (`career_vacancy_snapshots`, `career_applications`, `career_application_events`, миграция `016_career_ledger.sql`) работает рядом с `ml_technical`: `/applied` и `/applications` в том же private Telegram-боте пишут через `CareerLedgerService`, MCP читает через `get_career_pipeline_summary` / `get_career_pipeline_review_context` (read-only, bounded, hash-stamped). Миграция `016` применена к live dev-базе 2026-07-22.
+- Telegram career menu v0.2.1 хранит 30-минутный pending intent в `career_telegram_pending_inputs`: корректность больше не зависит от `ForceReply`, `reply_to_message` и скрытых маркеров. Порядок маршрутизации: command -> pending career input -> корректные три поля -> vacancy-link guard -> ML. Успех, `Отмена` и `/start` очищают intent; 47 focused pytest зелены на отдельной PostgreSQL-базе.
 
 ## Routing Invariants
 - `primary_context` остается источником истины для first useful mission.
@@ -79,7 +80,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Voice - delivery layer; evidence - control layer.
 
 ## Known Issues
-- Career ledger включен, но еще не прошел ручную приемку реальными командами `/applied` и `/applications` владельца.
+- Career ledger v0.2.1 запущен; после исправления pending-input еще нужна повторная ручная приемка добавления, смены статуса и `Задать следующее действие` в реальном Telegram.
 - Text-first interview loop прошел synthetic check; теперь нужен founder live/dogfood run: profile -> mission -> evidence -> next mission.
 - Founder `CareerProfile` и real vacancy input пока не зафиксированы как работающий end-to-end slice.
 - Качество correction/feedback может быть все еще слишком generic для moat.
@@ -94,7 +95,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Собрать один replay bundle по `session_id` и проверить, что evidence объясняет next mission.
 - Если replay показывает weak mission relevance или generic feedback, чинить бизнесовую логику до voice work.
 - Первый founder dogfood `ml_technical` через сайт пройден: основной цикл работает, но банк из 15 вопросов все еще мал. Telegram polling теперь live; для банка - exact-match private-corpus check + owner approval для draft-ревизий `mltech_016`..`mltech_030`.
-- После ручной приемки Career ledger добавить только следующий необходимый owner-write: смену статуса и ближайшее действие; автоподачу откликов не включать.
+- Провести ручную приемку Telegram career menu v0.2.1 по пунктам 8-11 `ML_TECHNICAL_TELEGRAM_RUNBOOK.md`: ввод без reply-метаданных, невалидный формат, голая ссылка, переход статуса и следующее действие. Автоподачу откликов не включать.
 
 ## Last Update
 - Delivery-layer cleanup завершен: один движок (`graph_v2`), `onboarding` разрезан на focused-модули, честная `AgentState` schema + drift-guard test, `conversation_runtime` (text-first, `text_only` явный), границы routing задокументированы.
@@ -108,3 +109,5 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - **ml_technical** трек прошёл первый пользовательский web-dogfood: цикл функционален. Наблюдаемые ограничения - слабый ежедневный канал, тонкий банк и неатомарный JSONB read-modify-write, который нельзя оставлять без защиты при одновременной записи из Telegram и MCP.
 - 2026-07-21: миграции `012`-`015` подтверждены live в PostgreSQL, API healthy, зафиксирован live-снимок данных (3 сессии, 8 items, 6 attempts, 0 external_reviews, 15 approved + 15 draft вопросов, 90 QA-записей, 1 progress review), 137 focused тестов проходят. Telegram-адаптер реализован, polling теперь live; см. `ML_TECHNICAL_ACCEPTANCE_2026-07-21.md` для evidence-based приемки.
 - 2026-07-22: Career ledger v0 реализован Sonnet после Graphify-разбора и принят Codex: добавлена сериализация конкурентных переходов, 30 focused-тестов зелены, включая 10 PostgreSQL-backed тестов. Перед миграцией создан backup `C:\tmp\englishfriend_dev_pre_career_ledger_20260722.dump`; `016` применена к live dev-БД, read-only Telegram smoke зеленый, polling перезапущен без ошибок.
+- 2026-07-22: Career Telegram menu v0.2 реализован Sonnet после Graphify-разбора; Qwen провел read-only diff-аудит и добавил две PostgreSQL-регрессии. Codex принял срез на отдельной тестовой БД: 47 focused pytest зелены, polling перезапущен без ошибок. Ошибочная ML-попытка с HH-ссылкой, возникшая до vacancy-link guard, удалена из прогресса и соответствующий пункт помечен пропущенным. Коммит не создавался.
+- 2026-07-22: Ручная приемка вскрыла дефект `ForceReply`: Telegram-клиент не передал `reply_to_message`, а zero-width маркер отобразился. v0.2.1 переведен на PostgreSQL pending intent после Graphify-анализа; Sonnet сделал storage и основной Telegram-срез, младший Codex довел тесы, Qwen дал read-only PASS. 47/47 focused tests зелены; backup `C:\tmp\englishfriend_dev_pre_pending_20260722.dump` создан, `017` применена, polling перезапущен, read-only smoke зеленый. Коммит не создавался.

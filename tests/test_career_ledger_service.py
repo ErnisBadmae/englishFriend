@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -13,17 +14,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models.career import (
     CareerApplication,
     CareerApplicationEvent,
+    CareerTelegramPendingInput,
     CareerVacancySnapshot,
 )
 from app.models.core_tables import User
 from app.services.career_ledger_service import (
     ALLOWED_TRANSITIONS,
+    INTENT_CAREER_ADD,
+    INTENT_CAREER_NEXT_ACTION,
+    PENDING_INPUT_TTL_MINUTES,
     STATUS_APPLIED,
     STATUS_OFFER,
     STATUS_REJECTED,
     STATUS_SCREENING,
     STATUS_TECHNICAL,
     STATUS_WITHDRAWN,
+    VALID_PENDING_INTENTS,
     CareerLedgerConflictError,
     CareerLedgerError,
     CareerLedgerService,
@@ -51,6 +57,31 @@ def test_transition_map_allows_only_the_conservative_funnel():
     assert ALLOWED_TRANSITIONS[STATUS_OFFER] == frozenset({STATUS_WITHDRAWN})
     assert ALLOWED_TRANSITIONS[STATUS_REJECTED] == frozenset()
     assert ALLOWED_TRANSITIONS[STATUS_WITHDRAWN] == frozenset()
+
+
+def test_pending_intent_vocabulary_and_ttl():
+    assert VALID_PENDING_INTENTS == {INTENT_CAREER_ADD, INTENT_CAREER_NEXT_ACTION}
+    assert PENDING_INPUT_TTL_MINUTES == 30
+
+
+async def test_set_pending_intent_rejects_unknown_intent():
+    service = CareerLedgerService(db=None)  # not reached before validation
+    with pytest.raises(CareerLedgerError):
+        await service.set_pending_intent(1, intent="bogus")
+
+
+async def test_set_pending_intent_rejects_next_action_without_application_id():
+    service = CareerLedgerService(db=None)
+    with pytest.raises(CareerLedgerError):
+        await service.set_pending_intent(1, intent=INTENT_CAREER_NEXT_ACTION)
+
+
+async def test_set_pending_intent_rejects_career_add_with_application_id():
+    service = CareerLedgerService(db=None)
+    with pytest.raises(CareerLedgerError):
+        await service.set_pending_intent(
+            1, intent=INTENT_CAREER_ADD, application_id=str(uuid4())
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +177,10 @@ async def test_replaying_same_idempotency_key_creates_no_additional_rows(
             actor_id="123456",
         )
 
-        assert first["application"]["application_id"] == second["application"][
-            "application_id"
-        ]
+        assert (
+            first["application"]["application_id"]
+            == second["application"]["application_id"]
+        )
         assert second["created"] is False
         application_count = await db.scalar(
             select(func.count(CareerApplication.id)).where(
@@ -366,3 +398,308 @@ async def test_reapplying_migration_016_creates_no_duplicate_objects(pg_session_
             )
         )
         assert before == 1
+
+
+@pytest.mark.integration
+async def test_set_next_action_updates_fields_and_appends_note_event(
+    pg_session_maker,
+):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerLedgerService(db)
+
+        created = await service.record_manual_application(
+            user_id,
+            company="Globex",
+            role_title="SDE",
+            url=None,
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="1",
+        )
+        application_id = created["application"]["application_id"]
+
+        due = date(2026, 8, 1)
+        idempotency_key = f"next_action:{uuid4().hex}"
+
+        result = await service.set_next_action(
+            user_id,
+            application_id=application_id,
+            next_action="Schedule coding interview",
+            next_action_due_date=due,
+            idempotency_key=idempotency_key,
+            actor_id="1",
+        )
+
+        assert result["created"] is True
+        assert result["application"]["next_action"] == "Schedule coding interview"
+        assert result["application"]["next_action_due_date"] == due.isoformat()
+        events = (
+            await db.scalars(
+                select(CareerApplicationEvent).where(
+                    CareerApplicationEvent.user_id == user_id,
+                    CareerApplicationEvent.application_id == application_id,
+                )
+            )
+        ).all()
+        note_events = [e for e in events if e.event_type == "note"]
+        assert len(note_events) == 1
+        meta = note_events[0].event_metadata or {}
+        assert meta["next_action"] == "Schedule coding interview"
+        assert meta["next_action_due_date"] == due.isoformat()
+
+
+@pytest.mark.integration
+async def test_set_next_action_replay_creates_no_second_event(
+    pg_session_maker,
+):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerLedgerService(db)
+
+        created = await service.record_manual_application(
+            user_id,
+            company="Initech",
+            role_title="PM",
+            url=None,
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="1",
+        )
+        application_id = created["application"]["application_id"]
+
+        idempotency_key = f"next_action:{uuid4().hex}"
+        due = date(2026, 9, 15)
+
+        first = await service.set_next_action(
+            user_id,
+            application_id=application_id,
+            next_action="Send offer letter",
+            next_action_due_date=due,
+            idempotency_key=idempotency_key,
+            actor_id="1",
+        )
+        second = await service.set_next_action(
+            user_id,
+            application_id=application_id,
+            next_action="Send offer letter",
+            next_action_due_date=due,
+            idempotency_key=idempotency_key,
+            actor_id="1",
+        )
+
+        assert first["created"] is True
+        assert second["created"] is False
+        events = (
+            await db.scalars(
+                select(CareerApplicationEvent).where(
+                    CareerApplicationEvent.user_id == user_id,
+                    CareerApplicationEvent.application_id == application_id,
+                )
+            )
+        ).all()
+        note_events = [e for e in events if e.event_type == "note"]
+        assert len(note_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# Career Telegram pending input (migration 017). Skipped without a migrated
+# test DB - same isolated-DB convention as the fixture above.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture()
+async def pending_pg_session_maker():
+    if not TEST_DATABASE_URL or "postgresql" not in TEST_DATABASE_URL:
+        pytest.skip("ML_TECHNICAL_PG_TEST_URL is not configured for PostgreSQL")
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("select 1 from career_telegram_pending_inputs limit 0")
+            )
+    except (OperationalError, ProgrammingError) as exc:
+        await engine.dispose()
+        pytest.skip(f"PostgreSQL migration 017 unavailable: {exc.__class__.__name__}")
+    yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_reapplying_migration_017_creates_no_duplicate_objects(
+    pending_pg_session_maker,
+):
+    async with pending_pg_session_maker() as db:
+        policy_count = await db.scalar(
+            text(
+                "select count(*) from pg_policies "
+                "where tablename = 'career_telegram_pending_inputs' "
+                "and policyname = 'career_telegram_pending_inputs_isolation'"
+            )
+        )
+        assert policy_count == 1
+
+
+@pytest.mark.integration
+async def test_replacing_one_pending_intent_with_another_works(
+    pending_pg_session_maker,
+):
+    async with pending_pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerLedgerService(db)
+
+        first = await service.set_pending_intent(user_id, intent=INTENT_CAREER_ADD)
+        assert first["intent"] == INTENT_CAREER_ADD
+        assert first["application_id"] is None
+
+        created = await service.record_manual_application(
+            user_id,
+            company="Acme",
+            role_title="ML Engineer",
+            url=None,
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="1",
+        )
+        application_id = created["application"]["application_id"]
+
+        second = await service.set_pending_intent(
+            user_id,
+            intent=INTENT_CAREER_NEXT_ACTION,
+            application_id=application_id,
+        )
+        assert second["intent"] == INTENT_CAREER_NEXT_ACTION
+        assert second["application_id"] == application_id
+
+        row_count = await db.scalar(
+            select(func.count(CareerTelegramPendingInput.user_id)).where(
+                CareerTelegramPendingInput.user_id == user_id
+            )
+        )
+        assert row_count == 1
+
+
+@pytest.mark.integration
+async def test_active_pending_intent_survives_a_new_db_session(
+    pending_pg_session_maker,
+):
+    async with pending_pg_session_maker() as db:
+        user_id = await _create_user(db)
+        await CareerLedgerService(db).set_pending_intent(
+            user_id, intent=INTENT_CAREER_ADD
+        )
+
+    async with pending_pg_session_maker() as db:
+        active = await CareerLedgerService(db).get_active_pending_intent(user_id)
+        assert active is not None
+        assert active["intent"] == INTENT_CAREER_ADD
+
+
+@pytest.mark.integration
+async def test_expired_pending_intent_is_not_returned(pending_pg_session_maker):
+    async with pending_pg_session_maker() as db:
+        user_id = await _create_user(db)
+        now = datetime.now(timezone.utc)
+        await db.execute(
+            insert(CareerTelegramPendingInput).values(
+                user_id=user_id,
+                intent=INTENT_CAREER_ADD,
+                application_id=None,
+                created_at=now - timedelta(minutes=45),
+                expires_at=now - timedelta(minutes=15),
+            )
+        )
+        await db.commit()
+
+        active = await CareerLedgerService(db).get_active_pending_intent(user_id)
+        assert active is None
+
+
+@pytest.mark.integration
+async def test_another_user_cannot_read_or_clear_pending_intent(
+    pending_pg_session_maker,
+):
+    async with pending_pg_session_maker() as db:
+        owner = await _create_user(db)
+        other = await _create_user(db)
+        service = CareerLedgerService(db)
+        await service.set_pending_intent(owner, intent=INTENT_CAREER_ADD)
+
+        assert await service.get_active_pending_intent(other) is None
+
+        await service.clear_pending_intent(other)
+        still_active = await service.get_active_pending_intent(owner)
+        assert still_active is not None
+
+
+@pytest.mark.integration
+async def test_clear_pending_intent_removes_the_row(pending_pg_session_maker):
+    async with pending_pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerLedgerService(db)
+        await service.set_pending_intent(user_id, intent=INTENT_CAREER_ADD)
+
+        await service.clear_pending_intent(user_id)
+
+        assert await service.get_active_pending_intent(user_id) is None
+
+
+@pytest.mark.integration
+async def test_next_action_application_id_must_belong_to_same_user(
+    pending_pg_session_maker,
+):
+    async with pending_pg_session_maker() as db:
+        owner = await _create_user(db)
+        other = await _create_user(db)
+        service = CareerLedgerService(db)
+        created = await service.record_manual_application(
+            owner,
+            company="Acme",
+            role_title="ML Engineer",
+            url=None,
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="1",
+        )
+        application_id = created["application"]["application_id"]
+
+        with pytest.raises(CareerLedgerError):
+            await service.set_pending_intent(
+                other,
+                intent=INTENT_CAREER_NEXT_ACTION,
+                application_id=application_id,
+            )
+
+
+@pytest.mark.integration
+async def test_discard_expired_pending_intents_removes_only_expired_rows(
+    pending_pg_session_maker,
+):
+    async with pending_pg_session_maker() as db:
+        fresh_user = await _create_user(db)
+        stale_user = await _create_user(db)
+        now = datetime.now(timezone.utc)
+        await db.execute(
+            insert(CareerTelegramPendingInput).values(
+                user_id=fresh_user,
+                intent=INTENT_CAREER_ADD,
+                application_id=None,
+                created_at=now,
+                expires_at=now + timedelta(minutes=30),
+            )
+        )
+        await db.execute(
+            insert(CareerTelegramPendingInput).values(
+                user_id=stale_user,
+                intent=INTENT_CAREER_ADD,
+                application_id=None,
+                created_at=now - timedelta(minutes=45),
+                expires_at=now - timedelta(minutes=15),
+            )
+        )
+        await db.commit()
+
+        service = CareerLedgerService(db)
+        removed_for_fresh = await service.discard_expired_pending_intents(fresh_user)
+        removed_for_stale = await service.discard_expired_pending_intents(stale_user)
+
+        assert removed_for_fresh == 0
+        assert removed_for_stale == 1
+        assert await service.get_active_pending_intent(fresh_user) is not None
+        assert await service.get_active_pending_intent(stale_user) is None

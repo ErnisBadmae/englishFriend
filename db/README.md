@@ -29,6 +29,7 @@ psql $DATABASE_URL -f db/migrations/postgres/013_ml_technical_telegram.sql
 psql $DATABASE_URL -f db/migrations/postgres/014_ml_question_bank.sql
 psql $DATABASE_URL -f db/migrations/postgres/015_ml_progress_reviews.sql
 psql $DATABASE_URL -f db/migrations/postgres/016_career_ledger.sql
+psql $DATABASE_URL -f db/migrations/postgres/017_career_telegram_pending_inputs.sql
 psql $DATABASE_URL -f db/seed/001_reference_seed.sql
 bash scripts/manage_partitions.sh create 3
 bash scripts/manage_partitions.sh verify

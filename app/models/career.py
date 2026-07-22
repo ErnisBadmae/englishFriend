@@ -152,9 +152,7 @@ class CareerApplicationEvent(Base):
             "application_id",
             "occurred_at",
         ),
-        Index(
-            "career_application_events_user_occurred_idx", "user_id", "occurred_at"
-        ),
+        Index("career_application_events_user_occurred_idx", "user_id", "occurred_at"),
     )
 
     id: Mapped[str] = mapped_column(
@@ -178,8 +176,51 @@ class CareerApplicationEvent(Base):
     )
 
 
+class CareerTelegramPendingInput(Base):
+    """The owner's single active Telegram pending intent, if any.
+
+    PostgreSQL is canonical here; this table replaces any in-memory FSM or
+    reliance on Telegram reply metadata for routing correctness.
+    """
+
+    __tablename__ = "career_telegram_pending_inputs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["application_id", "user_id"],
+            ["career_applications.id", "career_applications.user_id"],
+            ondelete="CASCADE",
+            name="career_telegram_pending_inputs_application_fkey",
+        ),
+        CheckConstraint(
+            "intent in ('career_add', 'career_next_action')",
+            name="career_telegram_pending_inputs_intent_check",
+        ),
+        CheckConstraint(
+            "(intent = 'career_next_action' and application_id is not null) "
+            "or (intent = 'career_add' and application_id is null)",
+            name="career_telegram_pending_inputs_application_scope_check",
+        ),
+        Index("career_telegram_pending_inputs_expires_idx", "expires_at"),
+    )
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    intent: Mapped[str] = mapped_column(String(30), nullable=False)
+    application_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 __all__ = [
     "CareerVacancySnapshot",
     "CareerApplication",
     "CareerApplicationEvent",
+    "CareerTelegramPendingInput",
 ]

@@ -4,6 +4,10 @@ This file is the compact bootstrap memory for Claude Code in this repository.
 
 Load only what is needed for the current task. Do not re-scan large docs by default.
 
+Portfolio bootstrap: for strategic or cross-repository context, read
+`../PERSONAL_STRATEGY.md`, `../AGENT_OPERATING_MODEL.md`, and `../PORTFOLIO_CONTEXT.md`. Keep product execution
+anchored in this repository's local docs.
+
 ## Project In One Screen
 
 English Friend is a career-focused English coaching product for Russian-speaking ML/AI and adjacent IT specialists.

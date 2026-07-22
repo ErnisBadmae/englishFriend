@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,7 +27,20 @@ from app.data.ml_technical_questions import (
     list_ml_technical_topics,
 )
 from app.models.core_tables import User
-from app.services.career_ledger_service import CareerLedgerError, CareerLedgerService
+from app.services.career_ledger_service import (
+    ALLOWED_TRANSITIONS,
+    INTENT_CAREER_ADD,
+    INTENT_CAREER_NEXT_ACTION,
+    STATUS_APPLIED,
+    STATUS_OFFER,
+    STATUS_REJECTED,
+    STATUS_SCREENING,
+    STATUS_TECHNICAL,
+    STATUS_WITHDRAWN,
+    CareerLedgerError,
+    CareerLedgerService,
+    CareerLedgerTransitionError,
+)
 from app.services.ml_technical_service import (
     ANSWER_KIND_DONT_KNOW,
     ANSWER_KIND_NORMAL,
@@ -36,6 +50,41 @@ from app.services.ml_technical_service import (
 
 MAX_SESSION_QUESTIONS = 5
 RECENT_APPLICATIONS_DISPLAY_LIMIT = 10
+
+_VACANCY_LINK_PATTERNS = (
+    re.compile(r"hh\.ru/vacancy/", re.IGNORECASE),
+    re.compile(r"linkedin\.com/jobs/", re.IGNORECASE),
+    re.compile(r"greenhouse\.io/[^\s]*?/jobs/", re.IGNORECASE),
+    re.compile(r"lever\.co/", re.IGNORECASE),
+)
+
+STATUS_LABELS_RU: dict[str, str] = {
+    STATUS_APPLIED: "Отклик отправлен",
+    STATUS_SCREENING: "Скрининг",
+    STATUS_TECHNICAL: "Техническое интервью",
+    STATUS_REJECTED: "Отказ",
+    STATUS_OFFER: "Оффер",
+    STATUS_WITHDRAWN: "Отозвано",
+}
+
+
+def _contains_vacancy_link(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _VACANCY_LINK_PATTERNS)
+
+
+def _parse_direct_career_payload(text: str) -> Optional[tuple[str, str, str]]:
+    """Stateless fallback: exactly three non-empty ``|``-separated fields
+    whose third field is a recognized vacancy URL. Runs without any pending
+    intent, so a plain ``Company | Role | https://hh.ru/vacancy/1`` message
+    is recorded even if the owner never opened the career prompt.
+    """
+    parts = [part.strip() for part in text.split("|")]
+    if len(parts) != 3 or not all(parts):
+        return None
+    company, role_title, url = parts
+    if not _contains_vacancy_link(url):
+        return None
+    return company, role_title, url
 
 
 @dataclass(frozen=True)
@@ -83,6 +132,21 @@ def _parse_item_callback(data: str, action: str) -> tuple[str, str]:
     if prefix != action:
         raise ValueError("unexpected callback action")
     return _expand_uuid(session_id), _expand_uuid(item_id)
+
+
+def _career_app_callback(action: str, application_id: str) -> str:
+    return f"career:{action}:{_compact_uuid(application_id)}"
+
+
+def _career_status_callback(application_id: str, to_status: str) -> str:
+    return f"career:status:{_compact_uuid(application_id)}:{to_status}"
+
+
+def _parse_career_callback(data: str) -> tuple[str, list[str]]:
+    parts = data.split(":")
+    if not parts or parts[0] != "career":
+        raise ValueError("unexpected callback namespace")
+    return parts[1], parts[2:]
 
 
 class TelegramPracticeGateway(Protocol):
@@ -138,6 +202,52 @@ class TelegramPracticeGateway(Protocol):
         ...
 
     async def applications_overview(self, user_id: int) -> dict[str, Any]:
+        ...
+
+    async def get_application(
+        self, user_id: int, application_id: str
+    ) -> Optional[dict[str, Any]]:
+        ...
+
+    async def update_application_status(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        to_status: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def set_application_next_action(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        next_action: str,
+        next_action_due_date: Optional[date],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def set_pending_intent(
+        self,
+        user_id: int,
+        *,
+        intent: str,
+        application_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        ...
+
+    async def get_active_pending_intent(self, user_id: int) -> Optional[dict[str, Any]]:
+        ...
+
+    async def clear_pending_intent(self, user_id: int) -> None:
+        ...
+
+    async def discard_expired_pending_intents(self, user_id: int) -> int:
         ...
 
 
@@ -257,6 +367,78 @@ class DbTelegramPracticeGateway:
             )
             return {"summary": summary, "recent": recent}
 
+    async def get_application(
+        self, user_id: int, application_id: str
+    ) -> Optional[dict[str, Any]]:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).get_application(
+                user_id, application_id
+            )
+
+    async def update_application_status(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        to_status: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).append_application_event(
+                user_id,
+                application_id=application_id,
+                to_status=to_status,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def set_application_next_action(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        next_action: str,
+        next_action_due_date: Optional[date],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).set_next_action(
+                user_id,
+                application_id=application_id,
+                next_action=next_action,
+                next_action_due_date=next_action_due_date,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def set_pending_intent(
+        self,
+        user_id: int,
+        *,
+        intent: str,
+        application_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).set_pending_intent(
+                user_id, intent=intent, application_id=application_id
+            )
+
+    async def get_active_pending_intent(self, user_id: int) -> Optional[dict[str, Any]]:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).get_active_pending_intent(user_id)
+
+    async def clear_pending_intent(self, user_id: int) -> None:
+        async with self.session_factory() as db:
+            await CareerLedgerService(db).clear_pending_intent(user_id)
+
+    async def discard_expired_pending_intents(self, user_id: int) -> int:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).discard_expired_pending_intents(
+                user_id
+            )
+
 
 class MlTechnicalTelegramController:
     def __init__(
@@ -323,7 +505,18 @@ class MlTechnicalTelegramController:
             [
                 [("Сегодня", "menu:today")],
                 [("Срез по теме", "menu:slice")],
-                [("Прогресс", "menu:progress")],
+                [("Прогресс ML/DL", "menu:progress")],
+                [("Карьера", "menu:career")],
+            ]
+        )
+
+    @staticmethod
+    def _career_markup() -> Any:
+        return _markup(
+            [
+                [("Записать отправленный отклик", "career:add")],
+                [("Мои отклики", "career:list")],
+                [("Назад", "career:back")],
             ]
         )
 
@@ -393,11 +586,13 @@ class MlTechnicalTelegramController:
         )
 
     async def on_start(self, message: Any) -> None:
-        if await self._authorize(message) is None:
+        user_id = await self._authorize(message)
+        if user_id is None:
             return
+        await self.gateway.clear_pending_intent(user_id)
         await message.answer(
-            "Тренажер вопросов по ML/DL. Начните дневную тренировку, "
-            "срез по теме или посмотрите прогресс.",
+            "Выберите тренировку по ML/DL, посмотрите прогресс или откройте "
+            "карьерный раздел.",
             reply_markup=self._home_markup(),
         )
 
@@ -527,6 +722,7 @@ class MlTechnicalTelegramController:
         user_id = await self._authorize(message)
         if user_id is None:
             return
+        await self.gateway.clear_pending_intent(user_id)
         result = await self.gateway.cancel(user_id)
         await message.answer(
             "Тренировка отменена."
@@ -604,12 +800,46 @@ class MlTechnicalTelegramController:
         )
 
     async def on_text(self, message: Any) -> None:
+        # Routing invariant: command -> active pending career intent ->
+        # structurally valid direct career payload -> vacancy-link guard ->
+        # active ML answer -> no-active-session help. A career message must
+        # never reach local Qwen grading. Correctness never depends on
+        # ``message.reply_to_message`` - PostgreSQL is the only pending state.
         if str(message.text or "").lstrip().startswith("/"):
             await self.on_unknown_command(message)
             return
         user_id = await self._authorize(message)
         if user_id is None:
             return
+
+        await self.gateway.discard_expired_pending_intents(user_id)
+        pending = await self.gateway.get_active_pending_intent(user_id)
+        if pending is not None:
+            if pending["intent"] == INTENT_CAREER_ADD:
+                await self._handle_career_add_reply(message, user_id)
+                return
+            if pending["intent"] == INTENT_CAREER_NEXT_ACTION:
+                await self._handle_career_next_action_reply(
+                    message, user_id, pending["application_id"]
+                )
+                return
+
+        direct_payload = _parse_direct_career_payload(str(message.text or ""))
+        if direct_payload is not None:
+            company, role_title, url = direct_payload
+            await self._record_and_confirm_application(
+                message, user_id, company, role_title, url
+            )
+            return
+
+        if _contains_vacancy_link(str(message.text or "")):
+            await message.answer(
+                "Похоже на ссылку на вакансию. Чтобы записать отклик, "
+                "нажмите Карьера -> Записать отправленный отклик.",
+                reply_markup=self._career_markup(),
+            )
+            return
+
         snapshot = await self.gateway.active(user_id)
         if snapshot is None or snapshot.get("current_item") is None:
             await message.answer("Нет активного вопроса. Выберите /today или /slice.")
@@ -624,21 +854,45 @@ class MlTechnicalTelegramController:
             source_event_id=source_event_id,
         )
 
-    _APPLIED_USAGE = (
-        "Формат: /applied Компания | Роль | Ссылка\n"
-        "Пример: /applied Acme | ML Engineer | https://acme.example/jobs/42"
+    _CAREER_ADD_PROMPT_TEXT = (
+        "Добавление отклика\n"
+        "Ответьте на это сообщение одной строкой:\n"
+        "Компания | Роль | Ссылка\n\n"
+        "Пример:\n"
+        "Acme | ML Engineer | https://example.com/jobs/42"
     )
+    _CAREER_NEXT_ACTION_PROMPT_TEXT = "Действие | ГГГГ-ММ-ДД (дата необязательна)"
 
-    async def on_applied(self, message: Any) -> None:
-        user_id = await self._authorize(message)
-        if user_id is None:
-            return
-        _command, _, rest = str(message.text or "").partition(" ")
-        parts = [part.strip() for part in rest.split("|")]
-        if len(parts) != 3 or not parts[0] or not parts[1]:
-            await message.answer(self._APPLIED_USAGE)
-            return
-        company, role_title, url = parts
+    @staticmethod
+    def _cancel_markup() -> Any:
+        return _markup([[("Отмена", "career:cancel")]])
+
+    async def _prompt_career_add(
+        self, message: Any, *, error: Optional[str] = None
+    ) -> None:
+        text = self._CAREER_ADD_PROMPT_TEXT
+        if error:
+            text = f"{error}\n\n{text}"
+        await message.answer(text, reply_markup=self._cancel_markup())
+
+    @staticmethod
+    def _career_add_validation_error(parts: list[str]) -> Optional[str]:
+        if len(parts) > 3:
+            return "Слишком много полей. Используйте два разделителя |."
+        if not parts or not parts[0]:
+            return "Не указана компания."
+        if len(parts) < 2 or not parts[1]:
+            return "Не указана роль."
+        if len(parts) < 3 or not parts[2]:
+            return "Не указана ссылка."
+        return None
+
+    async def _record_and_confirm_application(
+        self, message: Any, user_id: int, company: str, role_title: str, url: str
+    ) -> bool:
+        """Record one application and reply. Returns whether it succeeded, so
+        callers holding a pending intent know whether to clear it.
+        """
         idempotency_key = f"telegram:{message.chat.id}:{message.message_id}"
         try:
             result = await self.gateway.record_application(
@@ -649,35 +903,282 @@ class MlTechnicalTelegramController:
                 idempotency_key=idempotency_key,
                 actor_id=str(self._telegram_id(message)),
             )
-        except CareerLedgerError:
-            await message.answer(self._APPLIED_USAGE)
-            return
+        except CareerLedgerError as exc:
+            await self._prompt_career_add(message, error=str(exc))
+            return False
         application = result["application"]
+        status_label = STATUS_LABELS_RU.get(
+            application["status"], application["status"]
+        )
         await message.answer(
             "Записано.\n"
             f"{application.get('company')} - {application.get('role_title')}\n"
-            f"Статус: {application['status']}"
+            f"Статус: {status_label}",
+            reply_markup=self._career_markup(),
         )
+        return True
+
+    async def _handle_career_add_reply(self, message: Any, user_id: int) -> None:
+        parts = [part.strip() for part in str(message.text or "").split("|")]
+        validation_error = self._career_add_validation_error(parts)
+        if validation_error:
+            await self._prompt_career_add(
+                message, error=f"{validation_error} Повторите ввод."
+            )
+            return
+        company, role_title, url = parts
+        if await self._record_and_confirm_application(
+            message, user_id, company, role_title, url
+        ):
+            await self.gateway.clear_pending_intent(user_id)
+
+    async def on_applied(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        _command, _, rest = str(message.text or "").partition(" ")
+        rest = rest.strip()
+        if not rest:
+            await self.gateway.set_pending_intent(user_id, intent=INTENT_CAREER_ADD)
+            await self._prompt_career_add(message)
+            return
+        parts = [part.strip() for part in rest.split("|")]
+        validation_error = self._career_add_validation_error(parts)
+        if validation_error:
+            await self.gateway.set_pending_intent(user_id, intent=INTENT_CAREER_ADD)
+            await self._prompt_career_add(
+                message, error=f"{validation_error} Повторите ввод."
+            )
+            return
+        company, role_title, url = parts
+        await self._record_and_confirm_application(
+            message, user_id, company, role_title, url
+        )
+
+    async def _show_career_list(self, message: Any, user_id: int) -> None:
+        overview = await self.gateway.applications_overview(user_id)
+        summary = overview["summary"]
+        lines = [f"Всего заявок: {summary['total']}"]
+        for status, count in summary["by_status"].items():
+            lines.append(f"- {STATUS_LABELS_RU.get(status, status)}: {count}")
+        recent = overview["recent"][:RECENT_APPLICATIONS_DISPLAY_LIMIT]
+        rows: list[list[tuple[str, str]]] = [
+            [
+                (
+                    f"{item.get('company')} - {item.get('role_title')}",
+                    _career_app_callback("app", item["application_id"]),
+                )
+            ]
+            for item in recent
+        ]
+        rows.append([("Назад", "career:back")])
+        await message.answer("\n".join(lines), reply_markup=_markup(rows))
 
     async def on_applications(self, message: Any) -> None:
         user_id = await self._authorize(message)
         if user_id is None:
             return
-        overview = await self.gateway.applications_overview(user_id)
-        summary = overview["summary"]
-        lines = [f"Всего заявок: {summary['total']}"]
-        for status, count in summary["by_status"].items():
-            lines.append(f"- {status}: {count}")
-        recent = overview["recent"]
-        if recent:
-            lines.append("")
-            lines.append("Последние:")
-            for item in recent:
-                lines.append(
-                    f"- {item.get('company')} - {item.get('role_title')} "
-                    f"({item['status']})"
+        await self._show_career_list(message, user_id)
+
+    async def _show_career_application(
+        self, message: Any, user_id: int, application_id: str
+    ) -> None:
+        application = await self.gateway.get_application(user_id, application_id)
+        if application is None:
+            await message.answer("Заявка не найдена.")
+            return
+        status = application["status"]
+        lines = [
+            f"{application.get('company')} - {application.get('role_title')}",
+            f"Ссылка: {application.get('url') or 'не указана'}",
+            f"Статус: {STATUS_LABELS_RU.get(status, status)}",
+        ]
+        next_action = application.get("next_action")
+        if next_action:
+            due_date = application.get("next_action_due_date")
+            lines.append(
+                f"Следующее действие: {next_action}"
+                + (f" ({due_date})" if due_date else "")
+            )
+        rows: list[list[tuple[str, str]]] = [
+            [
+                (
+                    STATUS_LABELS_RU.get(to_status, to_status),
+                    _career_status_callback(application_id, to_status),
                 )
-        await message.answer("\n".join(lines))
+            ]
+            for to_status in sorted(ALLOWED_TRANSITIONS.get(status, frozenset()))
+        ]
+        rows.append(
+            [
+                (
+                    "Задать следующее действие",
+                    _career_app_callback("next", application_id),
+                )
+            ]
+        )
+        rows.append([("Назад", "career:list")])
+        await message.answer("\n".join(lines), reply_markup=_markup(rows))
+
+    async def _handle_career_status_callback(
+        self, callback: Any, user_id: int, application_id: str, to_status: str
+    ) -> None:
+        idempotency_key = (
+            f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        )
+        try:
+            await self.gateway.update_application_status(
+                user_id,
+                application_id=application_id,
+                to_status=to_status,
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerLedgerTransitionError:
+            await callback.answer("Недопустимый переход")
+            return
+        except CareerLedgerError:
+            await callback.answer("Заявка не найдена")
+            return
+        await callback.answer("Статус обновлен")
+        await self._show_career_application(callback.message, user_id, application_id)
+
+    async def _prompt_career_next_action(
+        self, message: Any, *, error: Optional[str] = None
+    ) -> None:
+        text = self._CAREER_NEXT_ACTION_PROMPT_TEXT
+        if error:
+            text = f"{error}\n\n{text}"
+        await message.answer(text, reply_markup=self._cancel_markup())
+
+    async def _handle_career_next_action_reply(
+        self, message: Any, user_id: int, application_id: str
+    ) -> None:
+        parts = [part.strip() for part in str(message.text or "").split("|")]
+        if len(parts) > 2:
+            await self._prompt_career_next_action(
+                message,
+                error="Слишком много полей. Формат: Действие | ГГГГ-ММ-ДД",
+            )
+            return
+        action_text = parts[0] if parts else ""
+        date_text = parts[1] if len(parts) > 1 else ""
+        if not action_text:
+            await self._prompt_career_next_action(message, error="Не указано действие.")
+            return
+        due_date: Optional[date] = None
+        if date_text:
+            try:
+                due_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+            except ValueError:
+                await self._prompt_career_next_action(
+                    message,
+                    error="Неверный формат даты. Используйте ГГГГ-ММ-ДД.",
+                )
+                return
+        idempotency_key = f"telegram:{message.chat.id}:{message.message_id}"
+        try:
+            await self.gateway.set_application_next_action(
+                user_id,
+                application_id=application_id,
+                next_action=action_text,
+                next_action_due_date=due_date,
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(message)),
+            )
+        except CareerLedgerError as exc:
+            await self._prompt_career_next_action(message, error=str(exc))
+            return
+        await self.gateway.clear_pending_intent(user_id)
+        await message.answer("Следующее действие обновлено.")
+        await self._show_career_application(message, user_id, application_id)
+
+    async def _career_resolve_application_id(
+        self, callback: Any, raw: str
+    ) -> Optional[str]:
+        try:
+            return _expand_uuid(raw)
+        except (ValueError, TypeError):
+            await callback.answer("Кнопка устарела")
+            return None
+
+    async def _on_career_callback_add(self, callback: Any, user_id: int) -> None:
+        await self.gateway.set_pending_intent(user_id, intent=INTENT_CAREER_ADD)
+        await callback.answer()
+        await self._prompt_career_add(callback.message)
+
+    async def _on_career_callback_list(self, callback: Any, user_id: int) -> None:
+        await callback.answer()
+        await self._show_career_list(callback.message, user_id)
+
+    async def _on_career_callback_back(self, callback: Any, user_id: int) -> None:
+        await self.gateway.clear_pending_intent(user_id)
+        await callback.answer()
+        await callback.message.answer("Главное меню", reply_markup=self._home_markup())
+
+    async def _on_career_callback_cancel(self, callback: Any, user_id: int) -> None:
+        await self.gateway.clear_pending_intent(user_id)
+        await callback.answer("Отменено")
+        await callback.message.answer(
+            "Ввод отменен.", reply_markup=self._career_markup()
+        )
+
+    async def _on_career_callback_app(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        application_id = await self._career_resolve_application_id(callback, rest[0])
+        if application_id is None:
+            return
+        await callback.answer()
+        await self._show_career_application(callback.message, user_id, application_id)
+
+    async def _on_career_callback_status(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        application_id = await self._career_resolve_application_id(callback, rest[0])
+        if application_id is None:
+            return
+        await self._handle_career_status_callback(
+            callback, user_id, application_id, rest[1]
+        )
+
+    async def _on_career_callback_next(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        application_id = await self._career_resolve_application_id(callback, rest[0])
+        if application_id is None:
+            return
+        await self.gateway.set_pending_intent(
+            user_id, intent=INTENT_CAREER_NEXT_ACTION, application_id=application_id
+        )
+        await callback.answer()
+        await self._prompt_career_next_action(callback.message)
+
+    async def on_career_callback(self, callback: Any) -> None:
+        user_id = await self._authorize(callback)
+        if user_id is None:
+            return
+        try:
+            action, rest = _parse_career_callback(str(callback.data))
+        except (ValueError, IndexError):
+            await callback.answer("Кнопка устарела")
+            return
+        if action == "add":
+            await self._on_career_callback_add(callback, user_id)
+        elif action == "list":
+            await self._on_career_callback_list(callback, user_id)
+        elif action == "back":
+            await self._on_career_callback_back(callback, user_id)
+        elif action == "cancel":
+            await self._on_career_callback_cancel(callback, user_id)
+        elif action == "app" and rest:
+            await self._on_career_callback_app(callback, user_id, rest)
+        elif action == "status" and len(rest) >= 2:
+            await self._on_career_callback_status(callback, user_id, rest)
+        elif action == "next" and rest:
+            await self._on_career_callback_next(callback, user_id, rest)
+        else:
+            await callback.answer("Неизвестное действие")
 
     async def on_unknown_command(self, message: Any) -> None:
         if await self._authorize(message) is None:
@@ -701,6 +1202,8 @@ class MlTechnicalTelegramController:
             )
         elif action == "progress":
             await self._show_progress(callback.message, user_id)
+        elif action == "career":
+            await callback.message.answer("Карьера", reply_markup=self._career_markup())
         else:
             await callback.answer("Неизвестное действие")
             return
@@ -730,6 +1233,9 @@ def build_dispatcher(controller: MlTechnicalTelegramController) -> Any:
     )
     dispatcher.callback_query.register(
         controller.on_skip_callback, F.data.startswith("sk:")
+    )
+    dispatcher.callback_query.register(
+        controller.on_career_callback, F.data.startswith("career:")
     )
     dispatcher.message.register(controller.on_text, F.text)
     return dispatcher
