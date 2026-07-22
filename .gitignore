@@ -394,6 +394,7 @@ models/
 !app/models/
 app/models/*
 !app/models/ml_technical.py
+!app/models/career.py
 *.model
 *.pkl
 *.joblib

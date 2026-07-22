@@ -66,11 +66,12 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Есть product synthetic evals и отдельный STT benchmark; их нужно держать раздельно.
 
 - `ml_technical` Telegram v0 реализован как отдельный адаптер над тем же `MlTechnicalService`: `/today`, срез до 5 вопросов, progress, skip/cancel, first-class `dont_know`; состояние восстанавливается из PostgreSQL, а не из памяти процесса.
-- Миграции `012`-`015` (ml_technical_practice, ml_technical_telegram, ml_question_bank, ml_progress_reviews) применены и живут в PostgreSQL с 2026-07-21; PostgreSQL остается canonical storage, API healthy на этом состоянии схемы.
-- Live-срез данных на 2026-07-21: 3 сессии, 8 items, 6 attempts, 0 external_reviews, 15 approved вопросов в question bank, 15 draft-ревизий `mltech_016`..`mltech_030`, 45 baseline QA-записей + 45 batch QA-записей (15 schema pass, 15 technical pass, 15 source_ip needs_changes), 1 progress review (`c0bd4016-0bbb-4edf-bc5b-8eac6ca9e27f`).
+- Миграции `012`-`016` применены и живут в PostgreSQL; PostgreSQL остается canonical storage для практики и карьерного журнала.
+- Live-срез данных на 2026-07-22: 5 сессий, 18 items, 10 attempts, 0 external_reviews, 15 approved + 15 draft вопросов, 1 progress review, 0 карьерных откликов.
 - 137 focused pytest-тестов проходят на текущем состоянии кода и схемы.
-- Telegram-адаптер implemented, но polling не запущен вживую: нет отдельного BotFather token и реального Telegram ID/allowlist; локальный User id=11 имеет placeholder `telegram_id=23`, не привязанный к реальному аккаунту.
-- Qdrant и Neo4j остаются future derived indexes для этого среза - не участвуют в bootstrap или canonical storage миграций `012`-`015`.
+- Telegram ML polling теперь live; прежний блокер "нет BotFather token / нет привязанного Telegram ID" устарел.
+- Qdrant и Neo4j остаются future derived indexes для этого среза - не участвуют в bootstrap или canonical storage миграций `012`-`016`.
+- Career ledger v0 (`career_vacancy_snapshots`, `career_applications`, `career_application_events`, миграция `016_career_ledger.sql`) работает рядом с `ml_technical`: `/applied` и `/applications` в том же private Telegram-боте пишут через `CareerLedgerService`, MCP читает через `get_career_pipeline_summary` / `get_career_pipeline_review_context` (read-only, bounded, hash-stamped). Миграция `016` применена к live dev-базе 2026-07-22.
 
 ## Routing Invariants
 - `primary_context` остается источником истины для first useful mission.
@@ -78,7 +79,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Voice - delivery layer; evidence - control layer.
 
 ## Known Issues
-- Telegram v0 еще не включен вживую: нужны BotFather token, привязка реального Telegram ID к существующему `users` профилю и 3 живых drill-прохода.
+- Career ledger включен, но еще не прошел ручную приемку реальными командами `/applied` и `/applications` владельца.
 - Text-first interview loop прошел synthetic check; теперь нужен founder live/dogfood run: profile -> mission -> evidence -> next mission.
 - Founder `CareerProfile` и real vacancy input пока не зафиксированы как работающий end-to-end slice.
 - Качество correction/feedback может быть все еще слишком generic для moat.
@@ -88,11 +89,12 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - `scripts/run_managed_product_eval.py` и STT benchmark не входят в offline night queue: это кандидаты только после подъёма API/DB/voice stack.
 
 ## Next Step
-- После приемки storage cutover применить `013`, выполнить read-only bot smoke и ручной проход `/today` с реального разрешенного аккаунта.
+- Записать через `/applied` два уже отправленных отклика и сверить `/applications` с фактической воронкой.
 - Провести первый founder typed/composer run: profile -> mission -> answer -> evidence -> next mission.
 - Собрать один replay bundle по `session_id` и проверить, что evidence объясняет next mission.
 - Если replay показывает weak mission relevance или generic feedback, чинить бизнесовую логику до voice work.
-- Первый founder dogfood `ml_technical` через сайт пройден: основной цикл работает, но ежедневный вход через поднятие сайта неудобен, а банк из 15 вопросов слишком мал. Следующий gate перед включением Telegram вживую: bot credentials (BotFather token) и привязка реального Telegram ID вместо placeholder, затем 3 живых drill-прохода; для банка - exact-match private-corpus check + owner approval для draft-ревизий `mltech_016`..`mltech_030`.
+- Первый founder dogfood `ml_technical` через сайт пройден: основной цикл работает, но банк из 15 вопросов все еще мал. Telegram polling теперь live; для банка - exact-match private-corpus check + owner approval для draft-ревизий `mltech_016`..`mltech_030`.
+- После ручной приемки Career ledger добавить только следующий необходимый owner-write: смену статуса и ближайшее действие; автоподачу откликов не включать.
 
 ## Last Update
 - Delivery-layer cleanup завершен: один движок (`graph_v2`), `onboarding` разрезан на focused-модули, честная `AgentState` schema + drift-guard test, `conversation_runtime` (text-first, `text_only` явный), границы routing задокументированы.
@@ -104,4 +106,5 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Подготовлена реплика `night_runner` v1.1 для EnglishFriend: `C:/tmp/englishfriend-qwen-runs`, очередь `scripts/night_queue.json`, offline no-prompt baseline из двух pytest-наборов + `lint-imports`.
 - Layering-прививка в работе: роутеры берут `get_db` из `app.core.deps`, shared voice-session persistence вынесен из `app.api.voice_helpers` в сервисный слой без изменения поведения.
 - **ml_technical** трек прошёл первый пользовательский web-dogfood: цикл функционален. Наблюдаемые ограничения - слабый ежедневный канал, тонкий банк и неатомарный JSONB read-modify-write, который нельзя оставлять без защиты при одновременной записи из Telegram и MCP.
-- 2026-07-21: миграции `012`-`015` подтверждены live в PostgreSQL, API healthy, зафиксирован live-снимок данных (3 сессии, 8 items, 6 attempts, 0 external_reviews, 15 approved + 15 draft вопросов, 90 QA-записей, 1 progress review), 137 focused тестов проходят. Telegram-адаптер реализован, но polling не стартован из-за отсутствия отдельного bot token и реального Telegram ID; см. `ML_TECHNICAL_ACCEPTANCE_2026-07-21.md` для evidence-based приемки.
+- 2026-07-21: миграции `012`-`015` подтверждены live в PostgreSQL, API healthy, зафиксирован live-снимок данных (3 сессии, 8 items, 6 attempts, 0 external_reviews, 15 approved + 15 draft вопросов, 90 QA-записей, 1 progress review), 137 focused тестов проходят. Telegram-адаптер реализован, polling теперь live; см. `ML_TECHNICAL_ACCEPTANCE_2026-07-21.md` для evidence-based приемки.
+- 2026-07-22: Career ledger v0 реализован Sonnet после Graphify-разбора и принят Codex: добавлена сериализация конкурентных переходов, 30 focused-тестов зелены, включая 10 PostgreSQL-backed тестов. Перед миграцией создан backup `C:\tmp\englishfriend_dev_pre_career_ledger_20260722.dump`; `016` применена к live dev-БД, read-only Telegram smoke зеленый, polling перезапущен без ошибок.

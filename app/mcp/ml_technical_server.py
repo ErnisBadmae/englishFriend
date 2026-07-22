@@ -38,6 +38,7 @@ from app.services.ml_progress_review_service import (
     read_career_brief,
 )
 from app.services.ml_technical_service import MlTechnicalService
+from app.services.career_ledger_service import CareerLedgerService
 
 mcp = FastMCP("englishfriend-ml-technical")
 
@@ -320,6 +321,38 @@ async def append_ml_progress_review(
             model_id=model_id,
             prompt_version=prompt_version,
         )
+
+
+@mcp.tool()
+async def get_career_pipeline_summary(
+    user_id: Optional[int] = None,
+    telegram_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """Read bounded application counts by status and nearest next actions.
+
+    Read-only: this tool has no write path for application status, applications
+    or vacancy facts. Owner Telegram commands are the only write path.
+    """
+    session_maker = get_async_session()
+    async with session_maker() as db:
+        resolved_user_id = await _resolve_user_id(db, user_id, telegram_id)
+        return await CareerLedgerService(db).get_pipeline_summary(resolved_user_id)
+
+
+@mcp.tool()
+async def get_career_pipeline_review_context(
+    user_id: Optional[int] = None,
+    telegram_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """Read bounded career ledger facts and their stable SHA-256 context hash.
+
+    A senior model reads this alongside `get_career_brief` and reasons over
+    both; it cannot write either source.
+    """
+    session_maker = get_async_session()
+    async with session_maker() as db:
+        resolved_user_id = await _resolve_user_id(db, user_id, telegram_id)
+        return await CareerLedgerService(db).get_review_context(resolved_user_id)
 
 
 @mcp.tool()

@@ -6,8 +6,8 @@ state.
 
 ## Prerequisites
 
-1. Apply migrations `012_ml_technical_practice.sql`, then
-   `013_ml_technical_telegram.sql` during the documented storage cutover.
+1. Apply migrations `012_ml_technical_practice.sql` through
+   `016_career_ledger.sql` during the documented storage cutover.
 2. Install `requirements.txt`.
 3. Create a bot with BotFather and set:
 
@@ -50,6 +50,9 @@ directly.
    reference appears only after it is saved.
 5. Retry an old button and duplicate message; neither creates another attempt.
 6. Compare `/progress`, the web view and MCP history for the same user.
+7. Record a real application with
+   `/applied Company | Role | URL`, then confirm it appears once in
+   `/applications`.
 
 ## Stop and rollback
 

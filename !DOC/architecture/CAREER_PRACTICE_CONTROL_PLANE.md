@@ -223,6 +223,44 @@ Every batch passes `draft -> deterministic validation -> senior technical review
 - Progress reviews are append-only and cannot change scores.
 - Backfill and shadow comparison of the first 15 questions are idempotent.
 
+## Career ledger v0 (implemented slice)
+
+A small, separate execution ledger sits beside the interview-practice tables.
+It does not replace or extend Slice A-C; it owns three additive tables so the
+founder can record manual applications from Telegram and a senior model can
+read a bounded funnel snapshot through MCP.
+
+`career_vacancy_snapshots` (immutable, content-hashed), `career_applications`
+(current status only; history lives in events) and `career_application_events`
+(append-only, DB-trigger enforced). Migration `016_career_ledger.sql` is
+additive and was applied to the live development database on 2026-07-22 after
+a fresh backup and PostgreSQL-backed integration tests.
+
+`CareerLedgerService` (`app/services/career_ledger_service.py`) is the only
+write path: `record_manual_application` atomically creates/reuses a snapshot,
+creates the application and its first event, and is idempotent on a
+caller-provided key. `append_application_event` allows only owner-originated,
+explicitly mapped status transitions (`applied -> screening/technical/
+rejected/withdrawn`, `screening -> technical/rejected/withdrawn`,
+`technical -> offer/rejected/withdrawn`, `offer -> withdrawn`); everything
+else fails closed. Status transitions lock the application row before deriving
+the next event, so concurrent retries cannot branch from a stale status.
+
+Telegram (`/applied Company | Role | URL`, `/applications`) is the only
+write-capable channel, added to the existing private ML-technical bot and
+dispatcher - no second bot, no second in-memory state machine. `/applied`
+derives its idempotency key from the chat id and Telegram message id, so a
+replayed update creates no duplicate rows.
+
+MCP exposes two read-only tools on the existing `ml_technical` server:
+`get_career_pipeline_summary` and `get_career_pipeline_review_context`
+(bounded facts plus a stable SHA-256 context hash). There is no MCP write
+tool for application status, applications, vacancies or strategy; a model can
+read `get_career_brief` and the pipeline context but cannot write either.
+
+Not in this slice: vacancy fetching, Qwen triage, cover letter/CV generation,
+auto-apply, and no Qdrant/Neo4j/CDC involvement.
+
 ## Stop conditions
 
 - Do not modify egeMentor or its data.

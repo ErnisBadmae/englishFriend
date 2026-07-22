@@ -4,6 +4,7 @@ from app.models.enums_and_dimensions import *
 from app.models.core_tables import *
 from app.models.extended_tables import *
 from app.models.ml_technical import *
+from app.models.career import *
 
 try:
     from app.models.prompt_models import *
@@ -18,6 +19,7 @@ __all__ = [
     'UserInterest', 'Memory', 'LearningPlan', 'XPEvent',
     'MlTechnicalSession', 'MlTechnicalSessionItem', 'MlTechnicalAttempt', 'MlTechnicalExternalReview',
     'MlQuestionRevision', 'MlQuestionReview', 'MlProgressReview',
+    'CareerVacancySnapshot', 'CareerApplication', 'CareerApplicationEvent',
 ]
 
 if _HAS_PROMPT_MODELS:

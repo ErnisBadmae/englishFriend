@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any, Optional
+from uuid import uuid4
+
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.database import Base
+
+
+def _uuid() -> str:
+    return str(uuid4())
+
+
+class CareerVacancySnapshot(Base):
+    """Immutable, content-hashed vacancy snapshot for one owner action."""
+
+    __tablename__ = "career_vacancy_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "user_id", name="career_vacancy_snapshots_id_user_id_key"
+        ),
+        UniqueConstraint(
+            "user_id",
+            "source",
+            "content_hash",
+            name="career_vacancy_snapshots_idempotency_key",
+        ),
+        CheckConstraint(
+            "source in ('telegram_manual', 'web_manual')",
+            name="career_vacancy_snapshots_source_check",
+        ),
+        Index("career_vacancy_snapshots_user_created_idx", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    company: Mapped[str] = mapped_column(String(200), nullable=False)
+    role_title: Mapped[str] = mapped_column(String(200), nullable=False)
+    url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    raw_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class CareerApplication(Base):
+    """Current application status; history lives only in career_application_events."""
+
+    __tablename__ = "career_applications"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="career_applications_id_user_id_key"),
+        ForeignKeyConstraint(
+            ["vacancy_snapshot_id", "user_id"],
+            ["career_vacancy_snapshots.id", "career_vacancy_snapshots.user_id"],
+            ondelete="RESTRICT",
+            name="career_applications_snapshot_fkey",
+        ),
+        CheckConstraint(
+            "status in ('applied', 'screening', 'technical', 'rejected', "
+            "'offer', 'withdrawn')",
+            name="career_applications_status_check",
+        ),
+        Index(
+            "career_applications_one_active_key",
+            "user_id",
+            "vacancy_snapshot_id",
+            unique=True,
+            postgresql_where=text("status in ('applied', 'screening', 'technical')"),
+        ),
+        Index("career_applications_user_status_idx", "user_id", "status"),
+        Index("career_applications_user_updated_idx", "user_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    vacancy_snapshot_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="applied")
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    resume_ref: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    resume_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    cover_letter_ref: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cover_letter_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    next_action: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    next_action_due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class CareerApplicationEvent(Base):
+    """Append-only event history for one application."""
+
+    __tablename__ = "career_application_events"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["application_id", "user_id"],
+            ["career_applications.id", "career_applications.user_id"],
+            ondelete="CASCADE",
+            name="career_application_events_app_user_fkey",
+        ),
+        CheckConstraint(
+            "event_type in ('created', 'status_changed', 'note')",
+            name="career_application_events_type_check",
+        ),
+        CheckConstraint(
+            "actor_type in ('owner', 'system')",
+            name="career_application_events_actor_type_check",
+        ),
+        Index(
+            "career_application_events_idempotency_key",
+            "user_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key is not null"),
+        ),
+        Index(
+            "career_application_events_app_occurred_idx",
+            "application_id",
+            "occurred_at",
+        ),
+        Index(
+            "career_application_events_user_occurred_idx", "user_id", "occurred_at"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    application_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    to_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+__all__ = [
+    "CareerVacancySnapshot",
+    "CareerApplication",
+    "CareerApplicationEvent",
+]

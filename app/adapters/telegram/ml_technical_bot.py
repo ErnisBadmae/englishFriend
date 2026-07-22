@@ -26,6 +26,7 @@ from app.data.ml_technical_questions import (
     list_ml_technical_topics,
 )
 from app.models.core_tables import User
+from app.services.career_ledger_service import CareerLedgerError, CareerLedgerService
 from app.services.ml_technical_service import (
     ANSWER_KIND_DONT_KNOW,
     ANSWER_KIND_NORMAL,
@@ -34,6 +35,7 @@ from app.services.ml_technical_service import (
 )
 
 MAX_SESSION_QUESTIONS = 5
+RECENT_APPLICATIONS_DISPLAY_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,21 @@ class TelegramPracticeGateway(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    async def record_application(
+        self,
+        user_id: int,
+        *,
+        company: str,
+        role_title: str,
+        url: Optional[str],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def applications_overview(self, user_id: int) -> dict[str, Any]:
+        ...
+
 
 class DbTelegramPracticeGateway:
     """Thin adapter opening a fresh DB session for every operation."""
@@ -210,6 +227,36 @@ class DbTelegramPracticeGateway:
                 source_event_id=source_event_id,
             )
 
+    async def record_application(
+        self,
+        user_id: int,
+        *,
+        company: str,
+        role_title: str,
+        url: Optional[str],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerLedgerService(db).record_manual_application(
+                user_id,
+                company=company,
+                role_title=role_title,
+                url=url,
+                source="telegram_manual",
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def applications_overview(self, user_id: int) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            service = CareerLedgerService(db)
+            summary = await service.get_pipeline_summary(user_id)
+            recent = await service.list_applications(
+                user_id, limit=RECENT_APPLICATIONS_DISPLAY_LIMIT
+            )
+            return {"summary": summary, "recent": recent}
+
 
 class MlTechnicalTelegramController:
     def __init__(
@@ -238,6 +285,16 @@ class MlTechnicalTelegramController:
         if hasattr(event, "answer") and getattr(event, "message", None) is not None:
             await event.answer(text)
 
+    @staticmethod
+    def _telegram_id(event: Any) -> int:
+        message = MlTechnicalTelegramController._message(event)
+        actor = (
+            getattr(event, "from_user", None)
+            if getattr(event, "message", None) is not None
+            else getattr(message, "from_user", None)
+        )
+        return int(actor.id) if actor is not None else int(message.chat.id)
+
     async def _authorize(self, event: Any) -> Optional[int]:
         message = self._message(event)
         chat = message.chat
@@ -245,12 +302,7 @@ class MlTechnicalTelegramController:
             await message.answer("Бот работает только в личном чате.")
             await self._callback_ack(event)
             return None
-        actor = (
-            getattr(event, "from_user", None)
-            if getattr(event, "message", None) is not None
-            else getattr(message, "from_user", None)
-        )
-        telegram_id = int(actor.id) if actor is not None else int(chat.id)
+        telegram_id = self._telegram_id(event)
         if telegram_id not in self.allowed_ids:
             await message.answer(f"Доступ не настроен. Ваш Telegram ID: {telegram_id}.")
             await self._callback_ack(event)
@@ -572,12 +624,67 @@ class MlTechnicalTelegramController:
             source_event_id=source_event_id,
         )
 
+    _APPLIED_USAGE = (
+        "Формат: /applied Компания | Роль | Ссылка\n"
+        "Пример: /applied Acme | ML Engineer | https://acme.example/jobs/42"
+    )
+
+    async def on_applied(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        _command, _, rest = str(message.text or "").partition(" ")
+        parts = [part.strip() for part in rest.split("|")]
+        if len(parts) != 3 or not parts[0] or not parts[1]:
+            await message.answer(self._APPLIED_USAGE)
+            return
+        company, role_title, url = parts
+        idempotency_key = f"telegram:{message.chat.id}:{message.message_id}"
+        try:
+            result = await self.gateway.record_application(
+                user_id,
+                company=company,
+                role_title=role_title,
+                url=url or None,
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(message)),
+            )
+        except CareerLedgerError:
+            await message.answer(self._APPLIED_USAGE)
+            return
+        application = result["application"]
+        await message.answer(
+            "Записано.\n"
+            f"{application.get('company')} - {application.get('role_title')}\n"
+            f"Статус: {application['status']}"
+        )
+
+    async def on_applications(self, message: Any) -> None:
+        user_id = await self._authorize(message)
+        if user_id is None:
+            return
+        overview = await self.gateway.applications_overview(user_id)
+        summary = overview["summary"]
+        lines = [f"Всего заявок: {summary['total']}"]
+        for status, count in summary["by_status"].items():
+            lines.append(f"- {status}: {count}")
+        recent = overview["recent"]
+        if recent:
+            lines.append("")
+            lines.append("Последние:")
+            for item in recent:
+                lines.append(
+                    f"- {item.get('company')} - {item.get('role_title')} "
+                    f"({item['status']})"
+                )
+        await message.answer("\n".join(lines))
+
     async def on_unknown_command(self, message: Any) -> None:
         if await self._authorize(message) is None:
             return
         await message.answer(
             "Неизвестная команда. Используйте /start, /today, /slice, "
-            "/progress, /skip или /cancel."
+            "/progress, /skip, /cancel, /applied или /applications."
         )
 
     async def on_menu(self, callback: Any) -> None:
@@ -611,6 +718,8 @@ def build_dispatcher(controller: MlTechnicalTelegramController) -> Any:
     dispatcher.message.register(controller.on_progress, Command("progress"))
     dispatcher.message.register(controller.on_skip, Command("skip"))
     dispatcher.message.register(controller.on_cancel, Command("cancel"))
+    dispatcher.message.register(controller.on_applied, Command("applied"))
+    dispatcher.message.register(controller.on_applications, Command("applications"))
     dispatcher.message.register(controller.on_unknown_command, F.text.startswith("/"))
     dispatcher.callback_query.register(controller.on_menu, F.data.startswith("menu:"))
     dispatcher.callback_query.register(
@@ -652,6 +761,8 @@ async def _run() -> None:
             BotCommand(command="progress", description="Мой прогресс"),
             BotCommand(command="skip", description="Пропустить вопрос"),
             BotCommand(command="cancel", description="Отменить тренировку"),
+            BotCommand(command="applied", description="Записать отклик на вакансию"),
+            BotCommand(command="applications", description="Мои отклики"),
         ]
     )
     try:
