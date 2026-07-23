@@ -180,7 +180,9 @@ class CareerTelegramPendingInput(Base):
     """The owner's single active Telegram pending intent, if any.
 
     PostgreSQL is canonical here; this table replaces any in-memory FSM or
-    reliance on Telegram reply metadata for routing correctness.
+    reliance on Telegram reply metadata for routing correctness. ``payload``
+    holds an ephemeral LLM-suggested draft (manual lead / feedback) awaiting
+    owner confirm or cancel - it never becomes canonical state on its own.
     """
 
     __tablename__ = "career_telegram_pending_inputs"
@@ -192,12 +194,15 @@ class CareerTelegramPendingInput(Base):
             name="career_telegram_pending_inputs_application_fkey",
         ),
         CheckConstraint(
-            "intent in ('career_add', 'career_next_action')",
+            "intent in ('career_add', 'career_next_action', "
+            "'career_manual_lead', 'career_feedback')",
             name="career_telegram_pending_inputs_intent_check",
         ),
         CheckConstraint(
-            "(intent = 'career_next_action' and application_id is not null) "
-            "or (intent = 'career_add' and application_id is null)",
+            "(intent in ('career_next_action', 'career_feedback') "
+            "and application_id is not null) "
+            "or (intent in ('career_add', 'career_manual_lead') "
+            "and application_id is null)",
             name="career_telegram_pending_inputs_application_scope_check",
         ),
         Index("career_telegram_pending_inputs_expires_idx", "expires_at"),
@@ -210,10 +215,148 @@ class CareerTelegramPendingInput(Base):
     application_id: Mapped[Optional[str]] = mapped_column(
         UUID(as_uuid=False), nullable=True
     )
+    payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class CareerInboxItem(Base):
+    """Owner-curated lead: manual paste today, Slice B import later.
+
+    Not an application. A verdict of ``applied`` requires a separate
+    confirmation step that links a real ``CareerApplication`` row.
+    """
+
+    __tablename__ = "career_inbox_items"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="career_inbox_items_id_user_id_key"),
+        ForeignKeyConstraint(
+            ["linked_application_id", "user_id"],
+            ["career_applications.id", "career_applications.user_id"],
+            ondelete="SET NULL",
+            name="career_inbox_items_linked_application_fkey",
+        ),
+        CheckConstraint(
+            "source in ('telegram_digest', 'linkedin_inbound', "
+            "'headhunter_inbound', 'telegram_inbound', 'manual')",
+            name="career_inbox_items_source_check",
+        ),
+        CheckConstraint(
+            "owner_verdict is null or owner_verdict in "
+            "('ask', 'prepare', 'skip', 'false_positive', 'applied')",
+            name="career_inbox_items_verdict_check",
+        ),
+        CheckConstraint(
+            "route is null or route in ('apply_candidate', 'outreach')",
+            name="career_inbox_items_route_check",
+        ),
+        Index("career_inbox_items_user_created_idx", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    company: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    role_title: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    route: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    gates: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    questions_for_recruiter: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    owner_verdict: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    owner_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    linked_application_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class CareerFeedbackEvent(Base):
+    """Append-only owner-confirmed feedback, attached to an application or
+    an inbox item. LLM is an untrusted extractor; only owner confirmation
+    persists a category/evidence/next_action here."""
+
+    __tablename__ = "career_feedback_events"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["application_id", "user_id"],
+            ["career_applications.id", "career_applications.user_id"],
+            ondelete="CASCADE",
+            name="career_feedback_events_app_user_fkey",
+        ),
+        ForeignKeyConstraint(
+            ["inbox_item_id", "user_id"],
+            ["career_inbox_items.id", "career_inbox_items.user_id"],
+            ondelete="CASCADE",
+            name="career_feedback_events_inbox_user_fkey",
+        ),
+        CheckConstraint(
+            "application_id is not null or inbox_item_id is not null",
+            name="career_feedback_events_target_check",
+        ),
+        CheckConstraint(
+            "category in ('positive_next_step', 'role_scope_mismatch', "
+            "'legal_or_authorization', 'language', 'compensation', "
+            "'technical_gap', 'seniority_or_management', 'generic_rejection', "
+            "'process_delay', 'unknown')",
+            name="career_feedback_events_category_check",
+        ),
+        CheckConstraint(
+            "actor_type in ('owner', 'system')",
+            name="career_feedback_events_actor_type_check",
+        ),
+        Index(
+            "career_feedback_events_app_occurred_idx",
+            "application_id",
+            "occurred_at",
+        ),
+        Index("career_feedback_events_user_occurred_idx", "user_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    application_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )
+    inbox_item_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    raw_feedback: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_quote: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    next_action: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
 
@@ -223,4 +366,6 @@ __all__ = [
     "CareerApplication",
     "CareerApplicationEvent",
     "CareerTelegramPendingInput",
+    "CareerInboxItem",
+    "CareerFeedbackEvent",
 ]

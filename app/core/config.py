@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     ml_question_curator_enabled: bool = False
     ml_question_admin_enabled: bool = False
     ml_progress_review_append_enabled: bool = False
+    # Career Inbox v0 (CAREER_TELEGRAM_COCKPIT_SPEC.md Slice A). Off by default;
+    # owner opts in only after Slice A/B/C acceptance. Gates the "Входящие" /
+    # "Добавить контакт или ответ" menu items only - existing career ledger
+    # menu (Записать отправленный отклик / Мои отклики) is unaffected.
+    career_inbox_enabled: bool = False
 
     @property
     def ml_technical_telegram_allowed_id_set(self) -> frozenset[int]:

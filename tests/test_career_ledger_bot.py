@@ -275,7 +275,7 @@ async def test_career_menu_shows_three_items():
 
     buttons = _flat_buttons(callback.message.markups[-1])
     labels = [text for text, _data in buttons]
-    assert labels == ["Записать отправленный отклик", "Мои отклики", "Назад"]
+    assert labels == ["Записать отправленный отклик", "Отклики", "Назад"]
 
 
 # ---------------------------------------------------------------------------

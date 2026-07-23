@@ -27,9 +27,17 @@ from app.data.ml_technical_questions import (
     list_ml_technical_topics,
 )
 from app.models.core_tables import User
+from app.services.career_inbox_service import (
+    CareerInboxError,
+    CareerInboxService,
+    suggest_feedback as suggest_feedback_impl,
+    suggest_manual_lead as suggest_manual_lead_impl,
+)
 from app.services.career_ledger_service import (
     ALLOWED_TRANSITIONS,
     INTENT_CAREER_ADD,
+    INTENT_CAREER_FEEDBACK,
+    INTENT_CAREER_MANUAL_LEAD,
     INTENT_CAREER_NEXT_ACTION,
     STATUS_APPLIED,
     STATUS_OFFER,
@@ -142,6 +150,22 @@ def _career_status_callback(application_id: str, to_status: str) -> str:
     return f"career:status:{_compact_uuid(application_id)}:{to_status}"
 
 
+def _career_item_callback(inbox_item_id: str) -> str:
+    return f"career:item:{_compact_uuid(inbox_item_id)}"
+
+
+def _career_verdict_callback(inbox_item_id: str, verdict: str) -> str:
+    return f"career:iv:{_compact_uuid(inbox_item_id)}:{verdict}"
+
+
+def _career_applied_callback(inbox_item_id: str) -> str:
+    return f"career:ia:{_compact_uuid(inbox_item_id)}"
+
+
+def _career_feedback_start_callback(application_id: str) -> str:
+    return f"career:fb:{_compact_uuid(application_id)}"
+
+
 def _parse_career_callback(data: str) -> tuple[str, list[str]]:
     parts = data.split(":")
     if not parts or parts[0] != "career":
@@ -238,6 +262,7 @@ class TelegramPracticeGateway(Protocol):
         *,
         intent: str,
         application_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         ...
 
@@ -248,6 +273,69 @@ class TelegramPracticeGateway(Protocol):
         ...
 
     async def discard_expired_pending_intents(self, user_id: int) -> int:
+        ...
+
+    async def suggest_manual_lead(self, raw_text: str) -> dict[str, Any]:
+        ...
+
+    async def suggest_feedback(self, raw_text: str) -> dict[str, Any]:
+        ...
+
+    async def confirm_manual_lead(
+        self,
+        user_id: int,
+        *,
+        source: str,
+        raw_text: str,
+        company: Optional[str],
+        role_title: Optional[str],
+        questions_for_recruiter: list[str],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def list_inbox_items(self, user_id: int) -> list[dict[str, Any]]:
+        ...
+
+    async def get_inbox_item(
+        self, user_id: int, inbox_item_id: str
+    ) -> Optional[dict[str, Any]]:
+        ...
+
+    async def set_inbox_verdict(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        verdict: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def confirm_inbox_applied(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def confirm_feedback(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        category: str,
+        raw_feedback: str,
+        evidence_quote: Optional[str],
+        next_action: Optional[str],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
         ...
 
 
@@ -419,10 +507,11 @@ class DbTelegramPracticeGateway:
         *,
         intent: str,
         application_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         async with self.session_factory() as db:
             return await CareerLedgerService(db).set_pending_intent(
-                user_id, intent=intent, application_id=application_id
+                user_id, intent=intent, application_id=application_id, payload=payload
             )
 
     async def get_active_pending_intent(self, user_id: int) -> Optional[dict[str, Any]]:
@@ -439,6 +528,108 @@ class DbTelegramPracticeGateway:
                 user_id
             )
 
+    async def suggest_manual_lead(self, raw_text: str) -> dict[str, Any]:
+        from app.services.ai.llm_provider import get_llm_provider
+
+        return await suggest_manual_lead_impl(raw_text, get_llm_provider())
+
+    async def suggest_feedback(self, raw_text: str) -> dict[str, Any]:
+        from app.services.ai.llm_provider import get_llm_provider
+
+        return await suggest_feedback_impl(raw_text, get_llm_provider())
+
+    async def confirm_manual_lead(
+        self,
+        user_id: int,
+        *,
+        source: str,
+        raw_text: str,
+        company: Optional[str],
+        role_title: Optional[str],
+        questions_for_recruiter: list[str],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).confirm_manual_lead(
+                user_id,
+                source=source,
+                raw_text=raw_text,
+                company=company,
+                role_title=role_title,
+                questions_for_recruiter=questions_for_recruiter,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def list_inbox_items(self, user_id: int) -> list[dict[str, Any]]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).list_inbox_items(user_id)
+
+    async def get_inbox_item(
+        self, user_id: int, inbox_item_id: str
+    ) -> Optional[dict[str, Any]]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).get_inbox_item(user_id, inbox_item_id)
+
+    async def set_inbox_verdict(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        verdict: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).set_verdict(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                verdict=verdict,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def confirm_inbox_applied(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).confirm_applied(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def confirm_feedback(
+        self,
+        user_id: int,
+        *,
+        application_id: str,
+        category: str,
+        raw_feedback: str,
+        evidence_quote: Optional[str],
+        next_action: Optional[str],
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).confirm_feedback(
+                user_id,
+                application_id=application_id,
+                category=category,
+                raw_feedback=raw_feedback,
+                evidence_quote=evidence_quote,
+                next_action=next_action,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
 
 class MlTechnicalTelegramController:
     def __init__(
@@ -447,9 +638,11 @@ class MlTechnicalTelegramController:
         *,
         allowed_ids: frozenset[int],
         timezone_name: str = "Europe/Moscow",
+        career_inbox_enabled: bool = False,
     ) -> None:
         self.gateway = gateway
         self.allowed_ids = allowed_ids
+        self.career_inbox_enabled = career_inbox_enabled
         try:
             self.timezone = ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError:
@@ -510,15 +703,16 @@ class MlTechnicalTelegramController:
             ]
         )
 
-    @staticmethod
-    def _career_markup() -> Any:
-        return _markup(
-            [
-                [("Записать отправленный отклик", "career:add")],
-                [("Мои отклики", "career:list")],
-                [("Назад", "career:back")],
-            ]
-        )
+    def _career_markup(self) -> Any:
+        rows = [
+            [("Записать отправленный отклик", "career:add")],
+            [("Отклики", "career:list")],
+        ]
+        if self.career_inbox_enabled:
+            rows.append([("Входящие", "career:inbox")])
+            rows.append([("Добавить контакт или ответ", "career:lead")])
+        rows.append([("Назад", "career:back")])
+        return _markup(rows)
 
     @staticmethod
     def _topics_markup(progress: dict[str, Any]) -> Any:
@@ -823,6 +1017,14 @@ class MlTechnicalTelegramController:
                     message, user_id, pending["application_id"]
                 )
                 return
+            if pending["intent"] == INTENT_CAREER_MANUAL_LEAD:
+                await self._handle_manual_lead_paste(message, user_id)
+                return
+            if pending["intent"] == INTENT_CAREER_FEEDBACK:
+                await self._handle_feedback_paste(
+                    message, user_id, pending["application_id"]
+                )
+                return
 
         direct_payload = _parse_direct_career_payload(str(message.text or ""))
         if direct_payload is not None:
@@ -1017,6 +1219,10 @@ class MlTechnicalTelegramController:
                 )
             ]
         )
+        if self.career_inbox_enabled:
+            rows.append(
+                [("Добавить feedback", _career_feedback_start_callback(application_id))]
+            )
         rows.append([("Назад", "career:list")])
         await message.answer("\n".join(lines), reply_markup=_markup(rows))
 
@@ -1154,6 +1360,317 @@ class MlTechnicalTelegramController:
         await callback.answer()
         await self._prompt_career_next_action(callback.message)
 
+    # ── Career Inbox v0: manual lead (preview/confirm) ────────────────────
+
+    _MANUAL_LEAD_PROMPT_TEXT = (
+        "Добавление контакта или ответа\n"
+        "Вставьте или перешлите сообщение рекрутера одним текстом."
+    )
+
+    def _lead_preview_markup(self) -> Any:
+        return _markup([[("Подтвердить", "career:leadok")], [("Отмена", "career:cancel")]])
+
+    @staticmethod
+    def _lead_preview_text(payload: dict[str, Any]) -> str:
+        suggestion = payload.get("suggestion") or {}
+        questions = suggestion.get("questions_for_recruiter") or []
+        evidence = suggestion.get("evidence_quote")
+        lines = [
+            "Черновик лида (не сохранён, требует подтверждения):",
+            f"Компания: {suggestion.get('company') or 'не определена'}",
+            f"Роль: {suggestion.get('role_title') or 'не определена'}",
+            f"Тип: {suggestion.get('event_kind') or 'unknown'}",
+        ]
+        if questions:
+            lines.append("Вопросы:")
+            lines += [f"- {q}" for q in questions]
+        lines.append(f"Цитата: {evidence or 'не найдена'}")
+        return "\n".join(lines)
+
+    async def _on_career_callback_lead(self, callback: Any, user_id: int) -> None:
+        if not self.career_inbox_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await self.gateway.set_pending_intent(user_id, intent=INTENT_CAREER_MANUAL_LEAD)
+        await callback.answer()
+        await callback.message.answer(
+            self._MANUAL_LEAD_PROMPT_TEXT, reply_markup=self._cancel_markup()
+        )
+
+    async def _handle_manual_lead_paste(self, message: Any, user_id: int) -> None:
+        raw_text = str(message.text or "").strip()
+        if not raw_text:
+            await message.answer(
+                self._MANUAL_LEAD_PROMPT_TEXT, reply_markup=self._cancel_markup()
+            )
+            return
+        suggestion = await self.gateway.suggest_manual_lead(raw_text)
+        payload = {"raw_text": raw_text, "suggestion": suggestion}
+        await self.gateway.set_pending_intent(
+            user_id, intent=INTENT_CAREER_MANUAL_LEAD, payload=payload
+        )
+        await message.answer(
+            self._lead_preview_text(payload), reply_markup=self._lead_preview_markup()
+        )
+
+    async def _on_career_callback_leadok(self, callback: Any, user_id: int) -> None:
+        pending = await self.gateway.get_active_pending_intent(user_id)
+        if (
+            pending is None
+            or pending["intent"] != INTENT_CAREER_MANUAL_LEAD
+            or not pending.get("payload")
+        ):
+            await callback.answer("Черновик устарел")
+            return
+        payload = pending["payload"]
+        suggestion = payload.get("suggestion") or {}
+        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        try:
+            result = await self.gateway.confirm_manual_lead(
+                user_id,
+                source="manual",
+                raw_text=payload["raw_text"],
+                company=suggestion.get("company"),
+                role_title=suggestion.get("role_title"),
+                questions_for_recruiter=suggestion.get("questions_for_recruiter") or [],
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        await self.gateway.clear_pending_intent(user_id)
+        await callback.answer("Сохранено")
+        item = result["inbox_item"]
+        await callback.message.answer(
+            f"Добавлено во Входящие: {item.get('company') or 'без компании'} - "
+            f"{item.get('role_title') or 'без роли'}",
+            reply_markup=self._career_markup(),
+        )
+
+    # ── Career Inbox v0: bounded list, detail, verdicts ────────────────────
+
+    _VERDICT_LABELS_RU: dict[str, str] = {
+        "ask": "Спросить",
+        "prepare": "Готовить",
+        "skip": "Пропустить",
+        "false_positive": "Ошибка парсера",
+        "applied": "Отклик отправлен",
+    }
+
+    async def _show_career_inbox(self, message: Any, user_id: int) -> None:
+        items = await self.gateway.list_inbox_items(user_id)
+        if not items:
+            await message.answer("Входящих нет.", reply_markup=self._career_markup())
+            return
+        rows: list[list[tuple[str, str]]] = [
+            [
+                (
+                    f"{item.get('company') or 'без компании'} - "
+                    f"{item.get('role_title') or 'без роли'}",
+                    _career_item_callback(item["inbox_item_id"]),
+                )
+            ]
+            for item in items
+        ]
+        rows.append([("Назад", "career:back")])
+        await message.answer(
+            f"Входящие ({len(items)})", reply_markup=_markup(rows)
+        )
+
+    async def _show_inbox_item(
+        self, message: Any, user_id: int, inbox_item_id: str
+    ) -> None:
+        item = await self.gateway.get_inbox_item(user_id, inbox_item_id)
+        if item is None:
+            await message.answer("Карточка не найдена.")
+            return
+        lines = [
+            f"{item.get('company') or 'без компании'} - {item.get('role_title') or 'без роли'}",
+            f"Локация: {item.get('location') or 'не указана'}",
+            f"Ссылка: {item.get('url') or 'не указана'}",
+        ]
+        if item.get("route"):
+            lines.append(f"Route: {item['route']}")
+        gates = item.get("gates") or {}
+        for gate_name, gate in gates.items():
+            reason_code = (gate.get("authority") or {}).get("reason_code", "")
+            lines.append(f"- {gate_name}: {gate.get('status')} [{reason_code}]")
+        verdict = item.get("owner_verdict")
+        if verdict:
+            lines.append(f"Вердикт: {self._VERDICT_LABELS_RU.get(verdict, verdict)}")
+        rows: list[list[tuple[str, str]]] = [
+            [("Спросить", _career_verdict_callback(inbox_item_id, "ask"))],
+            [("Готовить", _career_verdict_callback(inbox_item_id, "prepare"))],
+            [("Пропустить", _career_verdict_callback(inbox_item_id, "skip"))],
+            [("Ошибка парсера", _career_verdict_callback(inbox_item_id, "false_positive"))],
+            [("Отклик отправлен", _career_applied_callback(inbox_item_id))],
+            [("Назад", "career:inbox")],
+        ]
+        await message.answer("\n".join(lines), reply_markup=_markup(rows))
+
+    async def _on_career_callback_inbox(self, callback: Any, user_id: int) -> None:
+        if not self.career_inbox_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await callback.answer()
+        await self._show_career_inbox(callback.message, user_id)
+
+    async def _on_career_callback_item(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        await callback.answer()
+        await self._show_inbox_item(callback.message, user_id, inbox_item_id)
+
+    async def _on_career_callback_verdict(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        verdict = rest[1]
+        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        try:
+            result = await self.gateway.set_inbox_verdict(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                verdict=verdict,
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        await callback.answer(self._VERDICT_LABELS_RU.get(verdict, "Сохранено"))
+        if verdict == "ask":
+            questions = result["inbox_item"].get("questions_for_recruiter") or []
+            text = (
+                "\n".join(f"- {q}" for q in questions)
+                if questions
+                else "Вопросов нет."
+            )
+            await callback.message.answer(text)
+        await self._show_inbox_item(callback.message, user_id, inbox_item_id)
+
+    async def _on_career_callback_applied(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        try:
+            await self.gateway.confirm_inbox_applied(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerInboxError:
+            await callback.answer("Сначала нажмите Готовить")
+            return
+        await callback.answer("Отклик отправлен")
+        await self._show_inbox_item(callback.message, user_id, inbox_item_id)
+
+    # ── Career Inbox v0: feedback (preview/confirm) ────────────────────────
+
+    _FEEDBACK_PROMPT_TEXT = "Вставьте текст фидбэка или ответа рекрутера одним сообщением."
+
+    def _feedback_preview_markup(self) -> Any:
+        return _markup([[("Подтвердить", "career:fbok")], [("Отмена", "career:cancel")]])
+
+    @staticmethod
+    def _feedback_preview_text(payload: dict[str, Any]) -> str:
+        suggestion = payload.get("suggestion") or {}
+        lines = [
+            "Черновик feedback (не сохранён, требует подтверждения):",
+            f"Категория: {suggestion.get('category') or 'unknown'}",
+            f"Цитата: {suggestion.get('evidence_quote') or 'не найдена'}",
+        ]
+        if suggestion.get("suggested_status_change"):
+            lines.append(f"Возможная смена статуса: {suggestion['suggested_status_change']}")
+        if suggestion.get("suggested_next_action"):
+            lines.append(f"Следующее действие: {suggestion['suggested_next_action']}")
+        return "\n".join(lines)
+
+    async def _on_career_callback_feedback_start(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        if not self.career_inbox_enabled:
+            await callback.answer("Функция выключена")
+            return
+        application_id = await self._career_resolve_application_id(callback, rest[0])
+        if application_id is None:
+            return
+        await self.gateway.set_pending_intent(
+            user_id, intent=INTENT_CAREER_FEEDBACK, application_id=application_id
+        )
+        await callback.answer()
+        await callback.message.answer(
+            self._FEEDBACK_PROMPT_TEXT, reply_markup=self._cancel_markup()
+        )
+
+    async def _handle_feedback_paste(
+        self, message: Any, user_id: int, application_id: str
+    ) -> None:
+        raw_text = str(message.text or "").strip()
+        if not raw_text:
+            await message.answer(
+                self._FEEDBACK_PROMPT_TEXT, reply_markup=self._cancel_markup()
+            )
+            return
+        suggestion = await self.gateway.suggest_feedback(raw_text)
+        payload = {"raw_text": raw_text, "suggestion": suggestion}
+        await self.gateway.set_pending_intent(
+            user_id,
+            intent=INTENT_CAREER_FEEDBACK,
+            application_id=application_id,
+            payload=payload,
+        )
+        await message.answer(
+            self._feedback_preview_text(payload),
+            reply_markup=self._feedback_preview_markup(),
+        )
+
+    async def _on_career_callback_feedback_confirm(
+        self, callback: Any, user_id: int
+    ) -> None:
+        pending = await self.gateway.get_active_pending_intent(user_id)
+        if (
+            pending is None
+            or pending["intent"] != INTENT_CAREER_FEEDBACK
+            or not pending.get("payload")
+        ):
+            await callback.answer("Черновик устарел")
+            return
+        payload = pending["payload"]
+        suggestion = payload.get("suggestion") or {}
+        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        try:
+            await self.gateway.confirm_feedback(
+                user_id,
+                application_id=pending["application_id"],
+                category=suggestion.get("category") or "unknown",
+                raw_feedback=payload["raw_text"],
+                evidence_quote=suggestion.get("evidence_quote"),
+                next_action=suggestion.get("suggested_next_action"),
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        application_id = pending["application_id"]
+        await self.gateway.clear_pending_intent(user_id)
+        await callback.answer("Feedback сохранён")
+        await self._show_career_application(callback.message, user_id, application_id)
+
     async def on_career_callback(self, callback: Any) -> None:
         user_id = await self._authorize(callback)
         if user_id is None:
@@ -1177,6 +1694,22 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_status(callback, user_id, rest)
         elif action == "next" and rest:
             await self._on_career_callback_next(callback, user_id, rest)
+        elif action == "inbox":
+            await self._on_career_callback_inbox(callback, user_id)
+        elif action == "item" and rest:
+            await self._on_career_callback_item(callback, user_id, rest)
+        elif action == "iv" and len(rest) >= 2:
+            await self._on_career_callback_verdict(callback, user_id, rest)
+        elif action == "ia" and rest:
+            await self._on_career_callback_applied(callback, user_id, rest)
+        elif action == "lead":
+            await self._on_career_callback_lead(callback, user_id)
+        elif action == "leadok":
+            await self._on_career_callback_leadok(callback, user_id)
+        elif action == "fb" and rest:
+            await self._on_career_callback_feedback_start(callback, user_id, rest)
+        elif action == "fbok":
+            await self._on_career_callback_feedback_confirm(callback, user_id)
         else:
             await callback.answer("Неизвестное действие")
 
@@ -1257,6 +1790,7 @@ async def _run() -> None:
         DbTelegramPracticeGateway(get_async_session()),
         allowed_ids=settings.ml_technical_telegram_allowed_id_set,
         timezone_name=settings.ml_technical_telegram_timezone,
+        career_inbox_enabled=settings.career_inbox_enabled,
     )
     dispatcher = build_dispatcher(controller)
     await bot.set_my_commands(

@@ -21,6 +21,8 @@ from app.models.core_tables import User
 from app.services.career_ledger_service import (
     ALLOWED_TRANSITIONS,
     INTENT_CAREER_ADD,
+    INTENT_CAREER_FEEDBACK,
+    INTENT_CAREER_MANUAL_LEAD,
     INTENT_CAREER_NEXT_ACTION,
     PENDING_INPUT_TTL_MINUTES,
     STATUS_APPLIED,
@@ -60,7 +62,12 @@ def test_transition_map_allows_only_the_conservative_funnel():
 
 
 def test_pending_intent_vocabulary_and_ttl():
-    assert VALID_PENDING_INTENTS == {INTENT_CAREER_ADD, INTENT_CAREER_NEXT_ACTION}
+    assert VALID_PENDING_INTENTS == {
+        INTENT_CAREER_ADD,
+        INTENT_CAREER_NEXT_ACTION,
+        INTENT_CAREER_MANUAL_LEAD,
+        INTENT_CAREER_FEEDBACK,
+    }
     assert PENDING_INPUT_TTL_MINUTES == 30
 
 

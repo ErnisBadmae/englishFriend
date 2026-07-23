@@ -65,7 +65,17 @@ VALID_ACTOR_TYPES = {ACTOR_TYPE_OWNER, ACTOR_TYPE_SYSTEM}
 
 INTENT_CAREER_ADD = "career_add"
 INTENT_CAREER_NEXT_ACTION = "career_next_action"
-VALID_PENDING_INTENTS = {INTENT_CAREER_ADD, INTENT_CAREER_NEXT_ACTION}
+INTENT_CAREER_MANUAL_LEAD = "career_manual_lead"
+INTENT_CAREER_FEEDBACK = "career_feedback"
+VALID_PENDING_INTENTS = {
+    INTENT_CAREER_ADD,
+    INTENT_CAREER_NEXT_ACTION,
+    INTENT_CAREER_MANUAL_LEAD,
+    INTENT_CAREER_FEEDBACK,
+}
+# Intents that carry an application_id (feedback/next-action are scoped to one
+# application); the rest (add/manual_lead) must not carry one.
+INTENTS_REQUIRING_APPLICATION_ID = {INTENT_CAREER_NEXT_ACTION, INTENT_CAREER_FEEDBACK}
 PENDING_INPUT_TTL_MINUTES = 30
 
 
@@ -173,6 +183,7 @@ def _pending_input_dict(row: CareerTelegramPendingInput) -> dict[str, Any]:
         "user_id": row.user_id,
         "intent": row.intent,
         "application_id": row.application_id,
+        "payload": dict(row.payload) if row.payload else None,
         "created_at": row.created_at.isoformat(),
         "expires_at": row.expires_at.isoformat(),
     }
@@ -688,20 +699,23 @@ class CareerLedgerService:
         *,
         intent: str,
         application_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Upsert the owner's single active Telegram pending intent.
 
         Replaces any previously active intent for this owner. Routing must
         not depend on this table alone surviving forever - callers still
-        check ``expires_at`` on read.
+        check ``expires_at`` on read. ``payload`` is an ephemeral draft (e.g.
+        an LLM suggestion awaiting owner confirm/cancel) - it never becomes
+        canonical state by itself.
         """
         if intent not in VALID_PENDING_INTENTS:
             raise CareerLedgerError(f"unsupported pending intent: {intent}")
-        if intent == INTENT_CAREER_NEXT_ACTION:
+        if intent in INTENTS_REQUIRING_APPLICATION_ID:
             if not application_id:
-                raise CareerLedgerError("career_next_action requires an application_id")
+                raise CareerLedgerError(f"{intent} requires an application_id")
         elif application_id is not None:
-            raise CareerLedgerError("career_add does not accept an application_id")
+            raise CareerLedgerError(f"{intent} does not accept an application_id")
 
         await self._ensure_user_exists(user_id)
 
@@ -726,6 +740,7 @@ class CareerLedgerService:
                 user_id=user_id,
                 intent=intent,
                 application_id=application_id,
+                payload=payload,
                 created_at=now,
                 expires_at=expires_at,
             )
@@ -734,6 +749,7 @@ class CareerLedgerService:
                 set_={
                     "intent": intent,
                     "application_id": application_id,
+                    "payload": payload,
                     "created_at": now,
                     "expires_at": expires_at,
                 },
@@ -806,7 +822,10 @@ __all__ = [
     "CareerLedgerService",
     "CareerLedgerTransitionError",
     "INTENT_CAREER_ADD",
+    "INTENT_CAREER_FEEDBACK",
+    "INTENT_CAREER_MANUAL_LEAD",
     "INTENT_CAREER_NEXT_ACTION",
+    "INTENTS_REQUIRING_APPLICATION_ID",
     "PENDING_INPUT_TTL_MINUTES",
     "STATUS_APPLIED",
     "STATUS_OFFER",
