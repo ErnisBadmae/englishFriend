@@ -65,6 +65,8 @@ class FakeInboxGateway:
         self.used_idempotency_keys: set[str] = set()
         self.suggestion_manual_lead: dict | None = None
         self.suggestion_feedback: dict | None = None
+        self.suggestions_by_text: dict[str, dict] = {}
+        self.suggest_manual_lead_calls: list[str] = []
 
     async def resolve_user(self, telegram_id: int):
         return self.links.get(telegram_id)
@@ -97,6 +99,9 @@ class FakeInboxGateway:
 
     # Suggestion (LLM, untrusted extractor)
     async def suggest_manual_lead(self, raw_text: str):
+        self.suggest_manual_lead_calls.append(raw_text)
+        if raw_text in self.suggestions_by_text:
+            return self.suggestions_by_text[raw_text]
         return self.suggestion_manual_lead or {
             "company": None,
             "role_title": None,
@@ -271,7 +276,7 @@ async def test_manual_lead_paste_shows_preview_and_writes_nothing():
 
     assert gateway.inbox_items == {}
     assert "TCS Group" in paste.replies[-1]
-    assert ("Подтвердить", "career:leadok") in _flat_buttons(paste.markups[-1])
+    assert ("Подтвердить", "career:leadok:0") in _flat_buttons(paste.markups[-1])
 
 
 @pytest.mark.asyncio
@@ -288,7 +293,7 @@ async def test_manual_lead_confirm_creates_exactly_one_item():
     await controller.on_career_callback(FakeCallback(111, "career:lead"))
     await controller.on_text(FakeMessage(111, "Andersen recruiter message", message_id=11))
 
-    confirm = FakeCallback(111, "career:leadok", callback_id="confirm-1")
+    confirm = FakeCallback(111, "career:leadok:0", callback_id="confirm-1")
     await controller.on_career_callback(confirm)
 
     assert len(gateway.inbox_items) == 1
@@ -316,11 +321,155 @@ async def test_stale_confirm_without_pending_draft_fails_closed():
     gateway = FakeInboxGateway()
     controller = _controller(gateway, enabled=True)
 
-    confirm = FakeCallback(111, "career:leadok")
+    confirm = FakeCallback(111, "career:leadok:0")
     await controller.on_career_callback(confirm)
 
     assert confirm.answers == ["Черновик устарел"]
     assert gateway.inbox_items == {}
+
+
+# ---------------------------------------------------------------------------
+# Manual lead: batch paste (Career Inbox batch paste v0)
+# ---------------------------------------------------------------------------
+
+_REAL_BATCH_BLOB = (
+    "1.Миролла\n"
+    "Rejection\n"
+    "Эрнис, здравствуйте!\n"
+    "2. Технологический стартап внутри крупного холдинга\n"
+    "\n"
+    "Manager 2636887\n"
+    "Rejection\n"
+    "Эрнис, здравствуйте!\n"
+    "\n"
+    "Большое спасибо за интерес к нашей компании! К сожалению, сейчас мы не готовы\n"
+    "3. Премьер Консалт\n"
+    "Online now\n"
+    "\n"
+    "Vacancy\n"
+    "Руководитель по искусственному интеллекту (Head of AI)\n"
+    "\n"
+    "Rejection\n"
+    "Эрнис, здравствуйте!"
+)
+
+
+@pytest.mark.asyncio
+async def test_batch_paste_of_three_yields_three_previews_and_three_items():
+    gateway = FakeInboxGateway()
+    gateway.suggestion_manual_lead = {
+        "company": "Some Co",
+        "role_title": None,
+        "event_kind": "rejection",
+        "questions_for_recruiter": [],
+        "evidence_quote": None,
+    }
+    controller = _controller(gateway, enabled=True)
+    await controller.on_career_callback(FakeCallback(111, "career:lead"))
+
+    paste = FakeMessage(111, _REAL_BATCH_BLOB, message_id=40)
+    await controller.on_text(paste)
+
+    assert len(gateway.suggest_manual_lead_calls) == 3
+    assert "Лид 1 из 3" in paste.replies[-1]
+    assert gateway.inbox_items == {}  # nothing written yet
+
+    confirm1 = FakeCallback(111, "career:leadok:0", callback_id="batch-1")
+    await controller.on_career_callback(confirm1)
+    assert "Лид 2 из 3" in confirm1.message.replies[-1]
+
+    confirm2 = FakeCallback(111, "career:leadok:1", callback_id="batch-2")
+    await controller.on_career_callback(confirm2)
+    assert "Лид 3 из 3" in confirm2.message.replies[-1]
+
+    confirm3 = FakeCallback(111, "career:leadok:2", callback_id="batch-3")
+    await controller.on_career_callback(confirm3)
+
+    assert len(gateway.inbox_items) == 3
+    assert gateway.pending_intents == {}
+    assert "Готово: обработано 3 из 3" in confirm3.message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_single_message_paste_still_yields_one_preview_and_one_item():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await controller.on_career_callback(FakeCallback(111, "career:lead"))
+
+    paste = FakeMessage(111, "Just one recruiter message.", message_id=41)
+    await controller.on_text(paste)
+
+    assert "Лид 1 из" not in paste.replies[-1]  # no position marker for a single lead
+    assert len(gateway.suggest_manual_lead_calls) == 1
+
+    confirm = FakeCallback(111, "career:leadok:0", callback_id="single-1")
+    await controller.on_career_callback(confirm)
+
+    assert len(gateway.inbox_items) == 1
+    assert gateway.pending_intents == {}
+
+
+@pytest.mark.asyncio
+async def test_confirm_replay_does_not_create_duplicate_item():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await controller.on_career_callback(FakeCallback(111, "career:lead"))
+    await controller.on_text(FakeMessage(111, "Single lead text", message_id=42))
+
+    first = FakeCallback(111, "career:leadok:0", callback_id="replay-1")
+    await controller.on_career_callback(first)
+    # Same segment_id-derived idempotency key would be replayed if Telegram
+    # resends the same update before the pending intent advances/clears.
+    replay = FakeCallback(111, "career:leadok:0", callback_id="replay-1")
+    await controller.on_career_callback(replay)
+
+    assert len(gateway.inbox_items) == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_this_lead_advances_without_creating_item():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await controller.on_career_callback(FakeCallback(111, "career:lead"))
+    await controller.on_text(FakeMessage(111, _REAL_BATCH_BLOB, message_id=43))
+
+    skip1 = FakeCallback(111, "career:leadskip:0", callback_id="skip-1")
+    await controller.on_career_callback(skip1)
+    assert "Лид 2 из 3" in skip1.message.replies[-1]
+    assert gateway.inbox_items == {}
+
+    confirm2 = FakeCallback(111, "career:leadok:1", callback_id="skip-2")
+    await controller.on_career_callback(confirm2)
+    confirm3 = FakeCallback(111, "career:leadok:2", callback_id="skip-3")
+    await controller.on_career_callback(confirm3)
+
+    assert len(gateway.inbox_items) == 2  # lead 1 was skipped, not saved
+    assert gateway.pending_intents == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_leadskip_without_pending_draft_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+
+    skip = FakeCallback(111, "career:leadskip:0")
+    await controller.on_career_callback(skip)
+
+    assert skip.answers == ["Черновик устарел"]
+    assert gateway.inbox_items == {}
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_clears_whole_queue():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await controller.on_career_callback(FakeCallback(111, "career:lead"))
+    await controller.on_text(FakeMessage(111, _REAL_BATCH_BLOB, message_id=44))
+
+    await controller.on_career_callback(FakeCallback(111, "career:cancel"))
+
+    assert gateway.inbox_items == {}
+    assert gateway.pending_intents == {}
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +480,7 @@ async def test_stale_confirm_without_pending_draft_fails_closed():
 async def _seeded_item(gateway: FakeInboxGateway, controller: MlTechnicalTelegramController) -> str:
     await controller.on_career_callback(FakeCallback(111, "career:lead"))
     await controller.on_text(FakeMessage(111, "Some recruiter text", message_id=20))
-    await controller.on_career_callback(FakeCallback(111, "career:leadok", callback_id="seed-1"))
+    await controller.on_career_callback(FakeCallback(111, "career:leadok:0", callback_id="seed-1"))
     return next(iter(gateway.inbox_items))
 
 

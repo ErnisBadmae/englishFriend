@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -30,6 +30,7 @@ from app.models.core_tables import User
 from app.services.career_inbox_service import (
     CareerInboxError,
     CareerInboxService,
+    split_pasted_leads,
     suggest_feedback as suggest_feedback_impl,
     suggest_manual_lead as suggest_manual_lead_impl,
 )
@@ -1367,16 +1368,25 @@ class MlTechnicalTelegramController:
         "Вставьте или перешлите сообщение рекрутера одним текстом."
     )
 
-    def _lead_preview_markup(self) -> Any:
-        return _markup([[("Подтвердить", "career:leadok")], [("Отмена", "career:cancel")]])
+    def _lead_preview_markup(self, index: int) -> Any:
+        return _markup(
+            [
+                [("Подтвердить", f"career:leadok:{index}")],
+                [("Пропустить этот лид", f"career:leadskip:{index}")],
+                [("Отмена", "career:cancel")],
+            ]
+        )
 
     @staticmethod
-    def _lead_preview_text(payload: dict[str, Any]) -> str:
-        suggestion = payload.get("suggestion") or {}
+    def _lead_preview_text(entry: dict[str, Any], position: int, total: int) -> str:
+        suggestion = entry.get("suggestion") or {}
         questions = suggestion.get("questions_for_recruiter") or []
         evidence = suggestion.get("evidence_quote")
+        header = "Черновик лида (не сохранён, требует подтверждения)"
+        if total > 1:
+            header += f" — Лид {position} из {total}"
         lines = [
-            "Черновик лида (не сохранён, требует подтверждения):",
+            header + ":",
             f"Компания: {suggestion.get('company') or 'не определена'}",
             f"Роль: {suggestion.get('role_title') or 'не определена'}",
             f"Тип: {suggestion.get('event_kind') or 'unknown'}",
@@ -1386,6 +1396,40 @@ class MlTechnicalTelegramController:
             lines += [f"- {q}" for q in questions]
         lines.append(f"Цитата: {evidence or 'не найдена'}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _active_lead_queue(
+        pending: Optional[dict[str, Any]],
+    ) -> tuple[Optional[list[dict[str, Any]]], Optional[int]]:
+        if pending is None or pending.get("intent") != INTENT_CAREER_MANUAL_LEAD:
+            return None, None
+        payload = pending.get("payload") or {}
+        queue = payload.get("queue")
+        index = payload.get("index")
+        if not queue or index is None or not (0 <= index < len(queue)):
+            return None, None
+        return queue, index
+
+    async def _advance_lead_queue(
+        self, callback: Any, user_id: int, queue: list[dict[str, Any]], index: int
+    ) -> None:
+        next_index = index + 1
+        if next_index >= len(queue):
+            await self.gateway.clear_pending_intent(user_id)
+            await callback.message.answer(
+                f"Готово: обработано {len(queue)} из {len(queue)}.",
+                reply_markup=self._career_markup(),
+            )
+            return
+        await self.gateway.set_pending_intent(
+            user_id,
+            intent=INTENT_CAREER_MANUAL_LEAD,
+            payload={"queue": queue, "index": next_index},
+        )
+        await callback.message.answer(
+            self._lead_preview_text(queue[next_index], next_index + 1, len(queue)),
+            reply_markup=self._lead_preview_markup(next_index),
+        )
 
     async def _on_career_callback_lead(self, callback: Any, user_id: int) -> None:
         if not self.career_inbox_enabled:
@@ -1404,32 +1448,41 @@ class MlTechnicalTelegramController:
                 self._MANUAL_LEAD_PROMPT_TEXT, reply_markup=self._cancel_markup()
             )
             return
-        suggestion = await self.gateway.suggest_manual_lead(raw_text)
-        payload = {"raw_text": raw_text, "suggestion": suggestion}
+        segments = split_pasted_leads(raw_text)
+        queue = []
+        for segment in segments:
+            suggestion = await self.gateway.suggest_manual_lead(segment)
+            queue.append(
+                {"segment_id": str(uuid4()), "raw_text": segment, "suggestion": suggestion}
+            )
         await self.gateway.set_pending_intent(
-            user_id, intent=INTENT_CAREER_MANUAL_LEAD, payload=payload
+            user_id,
+            intent=INTENT_CAREER_MANUAL_LEAD,
+            payload={"queue": queue, "index": 0},
         )
+        total = len(queue)
+        note = f"Распознано лидов: {total}.\n\n" if total > 1 else ""
         await message.answer(
-            self._lead_preview_text(payload), reply_markup=self._lead_preview_markup()
+            note + self._lead_preview_text(queue[0], 1, total),
+            reply_markup=self._lead_preview_markup(0),
         )
 
-    async def _on_career_callback_leadok(self, callback: Any, user_id: int) -> None:
+    async def _on_career_callback_leadok(
+        self, callback: Any, user_id: int, expected_index: str
+    ) -> None:
         pending = await self.gateway.get_active_pending_intent(user_id)
-        if (
-            pending is None
-            or pending["intent"] != INTENT_CAREER_MANUAL_LEAD
-            or not pending.get("payload")
-        ):
+        queue, index = self._active_lead_queue(pending)
+        if queue is None or str(index) != expected_index:
             await callback.answer("Черновик устарел")
             return
-        payload = pending["payload"]
-        suggestion = payload.get("suggestion") or {}
-        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        entry = queue[index]
+        suggestion = entry.get("suggestion") or {}
+        idempotency_key = f"telegram_lead:{entry['segment_id']}"
         try:
             result = await self.gateway.confirm_manual_lead(
                 user_id,
                 source="manual",
-                raw_text=payload["raw_text"],
+                raw_text=entry["raw_text"],
                 company=suggestion.get("company"),
                 role_title=suggestion.get("role_title"),
                 questions_for_recruiter=suggestion.get("questions_for_recruiter") or [],
@@ -1440,14 +1493,24 @@ class MlTechnicalTelegramController:
             await callback.answer("Ошибка")
             await callback.message.answer(str(exc))
             return
-        await self.gateway.clear_pending_intent(user_id)
         await callback.answer("Сохранено")
         item = result["inbox_item"]
         await callback.message.answer(
             f"Добавлено во Входящие: {item.get('company') or 'без компании'} - "
-            f"{item.get('role_title') or 'без роли'}",
-            reply_markup=self._career_markup(),
+            f"{item.get('role_title') or 'без роли'}"
         )
+        await self._advance_lead_queue(callback, user_id, queue, index)
+
+    async def _on_career_callback_leadskip(
+        self, callback: Any, user_id: int, expected_index: str
+    ) -> None:
+        pending = await self.gateway.get_active_pending_intent(user_id)
+        queue, index = self._active_lead_queue(pending)
+        if queue is None or str(index) != expected_index:
+            await callback.answer("Черновик устарел")
+            return
+        await callback.answer("Пропущено")
+        await self._advance_lead_queue(callback, user_id, queue, index)
 
     # ── Career Inbox v0: bounded list, detail, verdicts ────────────────────
 
@@ -1704,8 +1767,10 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_applied(callback, user_id, rest)
         elif action == "lead":
             await self._on_career_callback_lead(callback, user_id)
-        elif action == "leadok":
-            await self._on_career_callback_leadok(callback, user_id)
+        elif action == "leadok" and rest:
+            await self._on_career_callback_leadok(callback, user_id, rest[0])
+        elif action == "leadskip" and rest:
+            await self._on_career_callback_leadskip(callback, user_id, rest[0])
         elif action == "fb" and rest:
             await self._on_career_callback_feedback_start(callback, user_id, rest)
         elif action == "fbok":

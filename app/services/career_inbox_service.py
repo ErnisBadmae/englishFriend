@@ -12,15 +12,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import String, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.career import CareerFeedbackEvent, CareerInboxItem
 from app.models.core_tables import User
@@ -50,6 +52,17 @@ MANUAL_LEAD_SOURCES = {
     SOURCE_TELEGRAM_INBOUND,
 }
 VALID_INBOX_SOURCES = MANUAL_LEAD_SOURCES | {SOURCE_TELEGRAM_DIGEST}
+
+MAX_PASTED_LEADS = 10
+_NUMBERED_MARKER_RE = re.compile(r"^\s*\d+[.)]\s*", re.MULTILINE)
+_BLANK_LINE_RE = re.compile(r"\n\s*\n")
+
+# Slice B: telegram-digest import envelope (career/CAREER_TELEGRAM_COCKPIT_SPEC.md
+# section 5). Only these two routes are ever exported/imported.
+IMPORT_ROUTES = {"apply_candidate", "outreach"}
+IMPORT_GATE_NAMES = ("legal_hire_from_rf", "language_path", "comp_threshold", "role_scope")
+IMPORT_SCHEMA_VERSION = 1
+_CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 VERDICT_ASK = "ask"
 VERDICT_PREPARE = "prepare"
@@ -122,6 +135,66 @@ def is_grounded(quote: Optional[str], raw_text: str) -> bool:
     if not quote:
         return False
     return _normalize_for_grounding(quote) in _normalize_for_grounding(raw_text)
+
+
+def split_pasted_leads(raw_text: str, *, max_leads: int = MAX_PASTED_LEADS) -> list[str]:
+    """Deterministic, pure segmenter for a batch-pasted blob of recruiter
+    messages (Career Inbox batch paste v0). No LLM, no I/O.
+
+    Primary split: lines beginning with a numbered marker (`1.`, `2)`, ...).
+    Requires at least two markers to count as a real numbered list, so a
+    single incidental "1." inside one message does not misfire. Fallback:
+    blank-line separated blocks. Identity case: no pattern matches, the whole
+    text is one segment - a single-message paste is unchanged (zero
+    regression). Result is capped at ``max_leads``; overflow is dropped."""
+    text = raw_text.strip()
+    if not text:
+        return []
+
+    markers = list(_NUMBERED_MARKER_RE.finditer(text))
+    if len(markers) >= 2:
+        segments = []
+        for i, marker in enumerate(markers):
+            start = marker.end()
+            end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+            segment = text[start:end].strip()
+            if segment:
+                segments.append(segment)
+        if segments:
+            return segments[:max_leads]
+
+    blocks = [b.strip() for b in _BLANK_LINE_RE.split(text) if b.strip()]
+    if len(blocks) >= 2:
+        return blocks[:max_leads]
+
+    return [text][:max_leads]
+
+
+def validate_import_envelope(envelope: dict[str, Any]) -> Optional[str]:
+    """Strict schema check for a Slice B telegram-digest import envelope
+    (SPEC section 5/13: "import envelope проходит strict validation"). Returns
+    an error string, or None if the envelope is safe to import."""
+    if envelope.get("schema_version") != IMPORT_SCHEMA_VERSION:
+        return f"unsupported schema_version: {envelope.get('schema_version')!r}"
+    if not envelope.get("external_id"):
+        return "external_id is required"
+    if not _CONTENT_HASH_RE.match(str(envelope.get("content_hash") or "")):
+        return "content_hash must be a 64-char lowercase hex sha256"
+    if envelope.get("route") not in IMPORT_ROUTES:
+        return f"route must be one of {sorted(IMPORT_ROUTES)}"
+    if "raw_text" in envelope:
+        return "raw_text must not be present in an import envelope"
+    if len(envelope.get("questions_for_recruiter") or []) > 2:
+        return "questions_for_recruiter exceeds 2"
+    gates = envelope.get("gates")
+    if not isinstance(gates, dict) or set(gates.keys()) != set(IMPORT_GATE_NAMES):
+        return f"gates must contain exactly {IMPORT_GATE_NAMES}"
+    for name, gate in gates.items():
+        if not isinstance(gate, dict):
+            return f"gates.{name} must be an object"
+        if "model_status" in gate:
+            return f"gates.{name}.model_status must not be imported (untrusted, non-final)"
+    return None
 
 
 def _content_hash(payload: dict[str, Any]) -> str:
@@ -280,18 +353,125 @@ class CareerInboxService:
         row = await self.db.get(CareerInboxItem, item_id)
         return {"created": True, "inbox_item": _inbox_item_dict(row)}
 
+    async def import_snapshot(
+        self,
+        user_id: int,
+        *,
+        external_id: str,
+        content_hash: str,
+        company: Optional[str],
+        role_title: Optional[str],
+        location: Optional[str] = None,
+        url: Optional[str] = None,
+        route: str,
+        gates: dict[str, Any],
+        questions_for_recruiter: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Slice B: idempotent import of one telegram-digest envelope. Stable
+        key is (user_id, telegram_digest, external_id, content_hash) - a
+        repeated import of the exact same envelope creates no duplicate. A
+        DIFFERENT content_hash for the same external_id inserts a NEW
+        immutable row rather than overwriting the old one (SPEC section 6);
+        :meth:`list_inbox_items` surfaces only the latest version. No fetch
+        or Qwen call happens here - the caller already has the JSONL file."""
+        if route not in IMPORT_ROUTES:
+            raise CareerInboxError(f"unsupported import route: {route}")
+        external_id = _bounded_text("external_id", external_id, 200, required=True)
+        content_hash = _bounded_text("content_hash", content_hash, 64, required=True)
+        if not _CONTENT_HASH_RE.match(content_hash):
+            raise CareerInboxError("content_hash must be a 64-char lowercase hex sha256")
+        company = _bounded_optional_text("company", company, COMPANY_MAX_LEN)
+        role_title = _bounded_optional_text("role_title", role_title, ROLE_TITLE_MAX_LEN)
+        location = _bounded_optional_text("location", location, LOCATION_MAX_LEN)
+        url = _bounded_optional_text("url", url, URL_MAX_LEN)
+        questions = [q.strip() for q in (questions_for_recruiter or []) if q.strip()][:2]
+        if set((gates or {}).keys()) != set(IMPORT_GATE_NAMES):
+            raise CareerInboxError(f"gates must contain exactly {IMPORT_GATE_NAMES}")
+
+        await self._ensure_user_exists(user_id)
+
+        idempotency_key = f"{SOURCE_TELEGRAM_DIGEST}:{external_id}:{content_hash}"
+        existing = await self._inbox_item_by_idempotency_key(user_id, idempotency_key)
+        if existing is not None:
+            return {"created": False, "inbox_item": _inbox_item_dict(existing)}
+
+        now = _utcnow()
+        item_id = str(uuid4())
+        try:
+            result_id = await self.db.scalar(
+                pg_insert(CareerInboxItem)
+                .values(
+                    id=item_id,
+                    user_id=user_id,
+                    source=SOURCE_TELEGRAM_DIGEST,
+                    external_id=external_id,
+                    content_hash=content_hash,
+                    source_snapshot={},
+                    company=company,
+                    role_title=role_title,
+                    location=location,
+                    url=url,
+                    route=route,
+                    gates=gates,
+                    questions_for_recruiter=questions,
+                    owner_verdict=None,
+                    idempotency_key=idempotency_key,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing()
+                .returning(CareerInboxItem.id)
+            )
+            if result_id is None:
+                await self.db.rollback()
+                winner = await self._inbox_item_by_idempotency_key(
+                    user_id, idempotency_key
+                )
+                if winner is None:
+                    raise CareerInboxConflictError("duplicate career inbox import")
+                return {"created": False, "inbox_item": _inbox_item_dict(winner)}
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise CareerInboxConflictError(
+                "duplicate or conflicting inbox import"
+            ) from exc
+
+        row = await self.db.get(CareerInboxItem, item_id)
+        return {"created": True, "inbox_item": _inbox_item_dict(row)}
+
     async def list_inbox_items(
         self, user_id: int, *, limit: int = INBOX_DISPLAY_LIMIT
     ) -> list[dict[str, Any]]:
+        """Bounded, latest-version-only view: for imported rows that share a
+        stable key (source, external_id), only the newest content_hash
+        version is shown - older immutable snapshots stay in the table for
+        audit but are not surfaced (SPEC section 6). Manual leads have no
+        external_id, so each one is its own group."""
         await self._ensure_user_exists(user_id)
         bounded_limit = max(1, min(limit, INBOX_DISPLAY_LIMIT))
+        group_key = func.coalesce(
+            CareerInboxItem.external_id, func.cast(CareerInboxItem.id, String)
+        )
+        rank = (
+            func.row_number()
+            .over(
+                partition_by=(CareerInboxItem.source, group_key),
+                order_by=CareerInboxItem.created_at.desc(),
+            )
+            .label("rn")
+        )
+        ranked = (
+            select(CareerInboxItem, rank)
+            .where(CareerInboxItem.user_id == user_id)
+            .subquery()
+        )
+        latest = aliased(CareerInboxItem, ranked)
         rows = (
             await self.db.execute(
-                select(CareerInboxItem)
-                .where(CareerInboxItem.user_id == user_id)
-                .order_by(
-                    CareerInboxItem.created_at.desc(), CareerInboxItem.id.desc()
-                )
+                select(latest)
+                .where(ranked.c.rn == 1)
+                .order_by(ranked.c.created_at.desc(), ranked.c.id.desc())
                 .limit(bounded_limit)
             )
         ).scalars().all()
@@ -637,8 +817,12 @@ __all__ = [
     "CareerInboxService",
     "FEEDBACK_CATEGORIES",
     "FEEDBACK_CATEGORY_UNKNOWN",
+    "IMPORT_GATE_NAMES",
+    "IMPORT_ROUTES",
+    "IMPORT_SCHEMA_VERSION",
     "INBOX_DISPLAY_LIMIT",
     "MANUAL_LEAD_SOURCES",
+    "MAX_PASTED_LEADS",
     "SOURCE_HEADHUNTER_INBOUND",
     "SOURCE_LINKEDIN_INBOUND",
     "SOURCE_MANUAL",
@@ -652,6 +836,8 @@ __all__ = [
     "VERDICT_PREPARE",
     "VERDICT_SKIP",
     "is_grounded",
+    "split_pasted_leads",
     "suggest_feedback",
     "suggest_manual_lead",
+    "validate_import_envelope",
 ]

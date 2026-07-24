@@ -1,6 +1,6 @@
 # Current Product State
 
-Last updated: 2026-07-23
+Last updated: 2026-07-24
 Status: Active source of truth for product progress and agent continuity
 
 Canonical long-form vision and architecture:
@@ -73,7 +73,9 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Qdrant и Neo4j остаются future derived indexes для этого среза - не участвуют в bootstrap или canonical storage миграций `012`-`016`.
 - Career ledger v0 (`career_vacancy_snapshots`, `career_applications`, `career_application_events`, миграция `016_career_ledger.sql`) работает рядом с `ml_technical`: `/applied` и `/applications` в том же private Telegram-боте пишут через `CareerLedgerService`, MCP читает через `get_career_pipeline_summary` / `get_career_pipeline_review_context` (read-only, bounded, hash-stamped). Миграция `016` применена к live dev-базе 2026-07-22.
 - Telegram career menu v0.2.1 хранит 30-минутный pending intent в `career_telegram_pending_inputs`: корректность больше не зависит от `ForceReply`, `reply_to_message` и скрытых маркеров. Порядок маршрутизации: command -> pending career input -> корректные три поля -> vacancy-link guard -> ML. Успех, `Отмена` и `/start` очищают intent; 47 focused pytest зелены на отдельной PostgreSQL-базе.
-- Career Inbox v0 Slice A (`career/CAREER_TELEGRAM_COCKPIT_SPEC.md`) реализован за `career_inbox_enabled` (default `False`): миграция `018_career_inbox.sql` добавляет `career_inbox_items`, `career_feedback_events` и расширяет `career_telegram_pending_inputs` двумя intent (`career_manual_lead`, `career_feedback`) с ephemeral draft `payload`. Новый `app/services/career_inbox_service.py` — owner-only, идемпотентный, LLM только как недоверенный extractor (grounded-quote gate для feedback category). Telegram: manual lead и feedback идут через preview -> Подтвердить/Отмена, ничего не пишется до confirm; `Отклик отправлен` требует предварительного `Готовить`. 60 focused pytest зелены без DB/LLM, 30 PostgreSQL-интеграционных тестов написаны и skip-ятся без тестовой БД (`ML_TECHNICAL_PG_TEST_URL` не настроен в этой среде). Import из `telegram-digest` (Slice B) не начат.
+- Career Inbox v0 Slice A+B+C (`career/CAREER_TELEGRAM_COCKPIT_SPEC.md`) в проде: миграция `018_career_inbox.sql` (`career_inbox_items`, `career_feedback_events`, pending intents `career_manual_lead`/`career_feedback` с ephemeral `payload`) применена к **dev**-базе после backup (`C:\tmp\englishfriend_dev_pre_018_prod_*.dump`); `CAREER_INBOX_ENABLED=true` в `.env`; бот перезапущен, read-only smoke зелёный. `app/services/career_inbox_service.py` — owner-only, идемпотентный (manual lead, verdict, applied-after-prepare, append-only feedback с grounded-quote gate) плюс `import_snapshot`/`validate_import_envelope` (Slice B, idempotent import, versioned content_hash, latest-only `list_inbox_items`, bound 7).
+- Career Inbox batch paste v0: `split_pasted_leads` (pure, numbered/blank-line сегментация, MAX_PASTED_LEADS=10) чинит баг "вставил список — сохранился только последний". Paste теперь строит очередь черновиков в одном pending intent (`{"queue": [...], "index": N}`), каждый лид подтверждается/пропускается отдельно (`Лид X из N`), callback data несёт индекс лида — replay старого tap не может подтвердить не тот сегмент. 120 focused career pytest зелены на тестовой Postgres.
+- Slice B exporter: `telegram-digest/export_career_inbox.py` — детерминированный JSONL top-7 `apply_candidate`/`outreach`, только final gates (без `model_status`/`fit`/`hard_fail_reasons`), без `raw_text`, `evidence_excerpt` только из grounded цитат. Import: `englishFriend/scripts/import_career_inbox.py` — explicit CLI-файл, без sibling-repo reads, без общей БД/HTTP. Реальный round-trip (7 карточек из настоящего `data/vacancies.jsonl`) прогнан на тестовой БД дважды: `imported=7` затем `imported=0 skipped_duplicate=7` — доказано отсутствие дублей; заявок (`career_applications`) import не создаёт. 106 focused pytest зелены на тестовой Postgres (Slice A: 90, Slice B: +16). Feature flag остаётся `False` — включение и личный Telegram-смоук ждут отдельного owner-действия (Slice C).
 
 ## Routing Invariants
 - `primary_context` остается источником истины для first useful mission.
@@ -89,7 +91,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - В репозитории остаются transitional voice paths; их не расширять до прохождения text gates.
 - Старые документы про voice-first и три bucket'а читать только через призму текущего text-first interview sprint.
 - `scripts/run_managed_product_eval.py` и STT benchmark не входят в offline night queue: это кандидаты только после подъёма API/DB/voice stack.
-- Career Inbox Slice A не проверен на реальной PostgreSQL (миграция `018` не применена ни к dev, ни к тестовой БД в этой сессии) и не прогонялся в реальном Telegram; feature flag выключен, Slice B (deterministic import из `telegram-digest`) не начат.
+- Career Inbox Slice A+B+C живы в проде (флаг включен, миграция на dev применена), но личный Telegram-смоук владельцем ещё не пройден полностью (batch paste баг найден и исправлен в процессе); root acceptance и cutover note в root SESSION_LOG ещё не зафиксированы.
 
 ## Next Step
 - Записать через `/applied` два уже отправленных отклика и сверить `/applications` с фактической воронкой.
@@ -98,7 +100,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Если replay показывает weak mission relevance или generic feedback, чинить бизнесовую логику до voice work.
 - Первый founder dogfood `ml_technical` через сайт пройден: основной цикл работает, но банк из 15 вопросов все еще мал. Telegram polling теперь live; для банка - exact-match private-corpus check + owner approval для draft-ревизий `mltech_016`..`mltech_030`.
 - Провести ручную приемку Telegram career menu v0.2.1 по пунктам 8-11 `ML_TECHNICAL_TELEGRAM_RUNBOOK.md`: ввод без reply-метаданных, невалидный формат, голая ссылка, переход статуса и следующее действие. Автоподачу откликов не включать.
-- Career Inbox Slice A ждёт root acceptance по `career/CAREER_TELEGRAM_COCKPIT_SPEC.md`, затем применения `018` к dev PostgreSQL с backup. Slice B (deterministic exporter в `telegram-digest` + idempotent import) не начинать до этой приёмки.
+- Career Inbox Slice A+B готовы к Slice C: backup dev PostgreSQL, применить `018` к dev, включить `career_inbox_enabled` только владельцем, один личный Telegram-смоук (TCS/Andersen/Elinext как inbound leads, ТЕХНОНИКОЛЬ как `role_scope_mismatch`, ГСП-Центр/ЕСТП с next action, 7 parser-карточек с owner verdict), затем root acceptance и cutover note.
 
 ## Last Update
 - Delivery-layer cleanup завершен: один движок (`graph_v2`), `onboarding` разрезан на focused-модули, честная `AgentState` schema + drift-guard test, `conversation_runtime` (text-first, `text_only` явный), границы routing задокументированы.

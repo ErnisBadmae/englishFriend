@@ -14,11 +14,13 @@ from app.models.core_tables import User
 from app.services.career_inbox_service import (
     FEEDBACK_CATEGORY_UNKNOWN,
     INBOX_DISPLAY_LIMIT,
+    MAX_PASTED_LEADS,
     VERDICT_APPLIED,
     VERDICT_PREPARE,
     CareerInboxError,
     CareerInboxService,
     is_grounded,
+    split_pasted_leads,
     suggest_feedback,
     suggest_manual_lead,
 )
@@ -45,6 +47,79 @@ def test_is_grounded_rejects_fabricated_quote():
 def test_is_grounded_rejects_empty_quote():
     assert is_grounded(None, "любой текст") is False
     assert is_grounded("", "любой текст") is False
+
+
+# ---------------------------------------------------------------------------
+# split_pasted_leads: Career Inbox batch paste v0 (pure, no DB, no network).
+# ---------------------------------------------------------------------------
+
+
+def test_split_pasted_leads_numbered_blob_of_three():
+    raw = "1. Company A\ntext one\n2. Company B\ntext two\n3. Company C\ntext three"
+    segments = split_pasted_leads(raw)
+    assert len(segments) == 3
+    assert segments[0].startswith("Company A")
+    assert segments[1].startswith("Company B")
+    assert segments[2].startswith("Company C")
+
+
+def test_split_pasted_leads_real_owner_example_yields_three_segments():
+    raw = (
+        "1.Миролла\n"
+        "Rejection\n"
+        "Эрнис, здравствуйте!\n"
+        "2. Технологический стартап внутри крупного холдинга\n"
+        "\n"
+        "Manager 2636887\n"
+        "Rejection\n"
+        "Эрнис, здравствуйте!\n"
+        "\n"
+        "Большое спасибо за интерес к нашей компании! К сожалению, сейчас мы не готовы\n"
+        "3. Премьер Консалт\n"
+        "Online now\n"
+        "\n"
+        "Vacancy\n"
+        "Руководитель по искусственному интеллекту (Head of AI)\n"
+        "\n"
+        "Rejection\n"
+        "Эрнис, здравствуйте!"
+    )
+    segments = split_pasted_leads(raw)
+    assert len(segments) == 3
+    assert segments[0].startswith("Миролла")
+    assert segments[1].startswith("Технологический стартап")
+    assert segments[2].startswith("Премьер Консалт")
+
+
+def test_split_pasted_leads_blank_line_blob_of_three():
+    raw = "Company A message\n\nCompany B message\n\nCompany C message"
+    segments = split_pasted_leads(raw)
+    assert segments == ["Company A message", "Company B message", "Company C message"]
+
+
+def test_split_pasted_leads_single_message_is_identity():
+    raw = "Just one recruiter message with no markers."
+    assert split_pasted_leads(raw) == [raw]
+
+
+def test_split_pasted_leads_single_incidental_number_is_not_a_list():
+    raw = "We pay from 1. 5000 USD per month, no other numbering here."
+    assert split_pasted_leads(raw) == [raw]
+
+
+def test_split_pasted_leads_caps_at_max():
+    raw = "\n".join(f"{i}. lead number {i}" for i in range(1, 15))
+    segments = split_pasted_leads(raw)
+    assert len(segments) == MAX_PASTED_LEADS
+
+
+def test_split_pasted_leads_empty_text_is_empty_list():
+    assert split_pasted_leads("   ") == []
+
+
+def test_split_pasted_leads_is_deterministic():
+    raw = "1. A\ntext\n2. B\ntext"
+    assert split_pasted_leads(raw) == split_pasted_leads(raw)
 
 
 async def test_confirm_manual_lead_rejects_unsupported_source():
