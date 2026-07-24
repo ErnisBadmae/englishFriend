@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from app.data.ml_technical_questions import (
 )
 from app.models.core_tables import User
 from app.services.career_inbox_service import (
+    VERDICT_APPLIED,
+    VERDICT_PREPARE,
     CareerInboxError,
     CareerInboxService,
     split_pasted_leads,
@@ -165,6 +168,26 @@ def _career_applied_callback(inbox_item_id: str) -> str:
 
 def _career_feedback_start_callback(application_id: str) -> str:
     return f"career:fb:{_compact_uuid(application_id)}"
+
+
+def _career_draft_callback(inbox_item_id: str) -> str:
+    return f"career:draft:{_compact_uuid(inbox_item_id)}"
+
+
+def _career_draft_approve_callback(draft_id: str) -> str:
+    return f"career:draftok:{_compact_uuid(draft_id)}"
+
+
+def _career_draft_reject_callback(draft_id: str) -> str:
+    return f"career:draftno:{_compact_uuid(draft_id)}"
+
+
+def _career_draft_copy_callback(draft_id: str) -> str:
+    return f"career:draftcopy:{_compact_uuid(draft_id)}"
+
+
+def _career_draft_facts_callback(inbox_item_id: str) -> str:
+    return f"career:draftfacts:{_compact_uuid(inbox_item_id)}"
 
 
 def _parse_career_callback(data: str) -> tuple[str, list[str]]:
@@ -337,6 +360,31 @@ class TelegramPracticeGateway(Protocol):
         idempotency_key: str,
         actor_id: str,
     ) -> dict[str, Any]:
+        ...
+
+    async def generate_cover_letter_draft(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    async def approve_cover_letter_draft(
+        self, user_id: int, *, draft_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        ...
+
+    async def reject_cover_letter_draft(
+        self, user_id: int, *, draft_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        ...
+
+    async def get_cover_letter_draft(
+        self, user_id: int, draft_id: str
+    ) -> Optional[dict[str, Any]]:
         ...
 
 
@@ -631,6 +679,49 @@ class DbTelegramPracticeGateway:
                 actor_id=actor_id,
             )
 
+    async def generate_cover_letter_draft(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        from app.services.ai.llm_provider import get_llm_provider
+
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).generate_cover_letter_draft(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                provider=get_llm_provider(),
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+
+    async def approve_cover_letter_draft(
+        self, user_id: int, *, draft_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).approve_cover_letter_draft(
+                user_id, draft_id=draft_id, actor_id=actor_id
+            )
+
+    async def reject_cover_letter_draft(
+        self, user_id: int, *, draft_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).reject_cover_letter_draft(
+                user_id, draft_id=draft_id, actor_id=actor_id
+            )
+
+    async def get_cover_letter_draft(
+        self, user_id: int, draft_id: str
+    ) -> Optional[dict[str, Any]]:
+        async with self.session_factory() as db:
+            return await CareerInboxService(db).get_cover_letter_draft(
+                user_id, draft_id
+            )
+
 
 class MlTechnicalTelegramController:
     def __init__(
@@ -640,10 +731,12 @@ class MlTechnicalTelegramController:
         allowed_ids: frozenset[int],
         timezone_name: str = "Europe/Moscow",
         career_inbox_enabled: bool = False,
+        career_cover_letter_draft_enabled: bool = False,
     ) -> None:
         self.gateway = gateway
         self.allowed_ids = allowed_ids
         self.career_inbox_enabled = career_inbox_enabled
+        self.career_cover_letter_draft_enabled = career_cover_letter_draft_enabled
         try:
             self.timezone = ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError:
@@ -1522,10 +1615,27 @@ class MlTechnicalTelegramController:
         "applied": "Отклик отправлен",
     }
 
+    @staticmethod
+    async def _render_card(message: Any, text: str, markup: Any) -> None:
+        """Edit the existing bot message in place when possible.
+
+        Falls back to sending a new message when the transport has no
+        edit_text (test doubles) or the edit itself fails (e.g. Telegram
+        rejects a no-op edit), so the user always sees a response either way.
+        """
+        edit = getattr(message, "edit_text", None)
+        if edit is not None:
+            try:
+                await edit(text, reply_markup=markup)
+                return
+            except Exception:
+                pass
+        await message.answer(text, reply_markup=markup)
+
     async def _show_career_inbox(self, message: Any, user_id: int) -> None:
         items = await self.gateway.list_inbox_items(user_id)
         if not items:
-            await message.answer("Входящих нет.", reply_markup=self._career_markup())
+            await self._render_card(message, "Входящих нет.", self._career_markup())
             return
         rows: list[list[tuple[str, str]]] = [
             [
@@ -1538,8 +1648,8 @@ class MlTechnicalTelegramController:
             for item in items
         ]
         rows.append([("Назад", "career:back")])
-        await message.answer(
-            f"Входящие ({len(items)})", reply_markup=_markup(rows)
+        await self._render_card(
+            message, f"Входящие ({len(items)})", _markup(rows)
         )
 
     async def _show_inbox_item(
@@ -1563,15 +1673,42 @@ class MlTechnicalTelegramController:
         verdict = item.get("owner_verdict")
         if verdict:
             lines.append(f"Вердикт: {self._VERDICT_LABELS_RU.get(verdict, verdict)}")
-        rows: list[list[tuple[str, str]]] = [
-            [("Спросить", _career_verdict_callback(inbox_item_id, "ask"))],
-            [("Готовить", _career_verdict_callback(inbox_item_id, "prepare"))],
-            [("Пропустить", _career_verdict_callback(inbox_item_id, "skip"))],
-            [("Ошибка парсера", _career_verdict_callback(inbox_item_id, "false_positive"))],
-            [("Отклик отправлен", _career_applied_callback(inbox_item_id))],
-            [("Назад", "career:inbox")],
+        else:
+            lines.append(
+                "Готовить - взять в работу, дальше можно сделать черновик сопровода. "
+                "Спросить - уточнить у рекрутёра. Пропустить - не рассматривать. "
+                "Ошибка парсера - карточка попала сюда по ошибке."
+            )
+        verdict_buttons = [
+            ("ask", "Спросить"),
+            ("prepare", "Готовить"),
+            ("skip", "Пропустить"),
+            ("false_positive", "Ошибка парсера"),
         ]
-        await message.answer("\n".join(lines), reply_markup=_markup(rows))
+        rows: list[list[tuple[str, str]]] = [
+            [
+                (
+                    f"✅ {label}" if verdict == key else label,
+                    _career_verdict_callback(inbox_item_id, key),
+                )
+            ]
+            for key, label in verdict_buttons
+        ]
+        applied_label = "Отклик отправлен"
+        rows.append(
+            [
+                (
+                    f"✅ {applied_label}" if verdict == VERDICT_APPLIED else applied_label,
+                    _career_applied_callback(inbox_item_id),
+                )
+            ]
+        )
+        if verdict == VERDICT_PREPARE and self.career_cover_letter_draft_enabled:
+            rows.append(
+                [("Черновик сопровода", _career_draft_callback(inbox_item_id))]
+            )
+        rows.append([("Назад", "career:inbox")])
+        await self._render_card(message, "\n".join(lines), _markup(rows))
 
     async def _on_career_callback_inbox(self, callback: Any, user_id: int) -> None:
         if not self.career_inbox_enabled:
@@ -1734,6 +1871,137 @@ class MlTechnicalTelegramController:
         await callback.answer("Feedback сохранён")
         await self._show_career_application(callback.message, user_id, application_id)
 
+    # ── Cover Letter Draft v0 (career/CAREER_COVER_LETTER_DRAFT_SPEC.md) ──────
+
+    @staticmethod
+    def _draft_card_text(draft: dict[str, Any]) -> str:
+        report = draft.get("grounding_report") or {}
+        used = report.get("used_facts") or []
+        flagged = report.get("flagged_sentences") or []
+        lines = [
+            f"Черновик сопровода (версия {draft['version']}):",
+            "",
+            draft["body"],
+            "",
+            f"Использованные факты: {', '.join(used) if used else 'нет'}",
+        ]
+        if flagged:
+            lines.append("⚠ Непроверяемые утверждения (проверьте вручную перед отправкой):")
+            lines += [f"- {f['sentence']}" for f in flagged]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _draft_markup(draft_id: str) -> Any:
+        return _markup(
+            [
+                [("Одобрить черновик", _career_draft_approve_callback(draft_id))],
+                [("Отклонить", _career_draft_reject_callback(draft_id))],
+                [("Скопировать", _career_draft_copy_callback(draft_id))],
+            ]
+        )
+
+    async def _on_career_callback_draft(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        if not self.career_cover_letter_draft_enabled:
+            await callback.answer("Функция выключена")
+            return
+        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        try:
+            result = await self.gateway.generate_cover_letter_draft(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        await callback.answer()
+        if result.get("manual_path"):
+            await callback.message.answer(
+                "Черновик недоступен (нет провайдера, фактов или сбой генерации). "
+                "Напишите вручную по career/COVER_LETTER_SKELETON.md — бот не "
+                "меняет facts_bank и не отправляет ничего сам.",
+                reply_markup=_markup(
+                    [[("Обновить факты вручную", _career_draft_facts_callback(inbox_item_id))]]
+                ),
+            )
+            return
+        draft = result["draft"]
+        await callback.message.answer(
+            self._draft_card_text(draft), reply_markup=self._draft_markup(draft["draft_id"])
+        )
+
+    async def _on_career_callback_draft_approve(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        draft_id = await self._career_resolve_application_id(callback, rest[0])
+        if draft_id is None:
+            return
+        try:
+            result = await self.gateway.approve_cover_letter_draft(
+                user_id, draft_id=draft_id, actor_id=str(self._telegram_id(callback))
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        await callback.answer("Одобрено")
+        await callback.message.answer(
+            f"Черновик (версия {result['draft']['version']}) одобрен. "
+            "Отправка отклика и письма - только вручную, бот ничего не отправляет."
+        )
+
+    async def _on_career_callback_draft_reject(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        draft_id = await self._career_resolve_application_id(callback, rest[0])
+        if draft_id is None:
+            return
+        try:
+            result = await self.gateway.reject_cover_letter_draft(
+                user_id, draft_id=draft_id, actor_id=str(self._telegram_id(callback))
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        await callback.answer("Отклонено")
+        await callback.message.answer(
+            f"Черновик (версия {result['draft']['version']}) отклонён."
+        )
+
+    async def _on_career_callback_draft_copy(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        draft_id = await self._career_resolve_application_id(callback, rest[0])
+        if draft_id is None:
+            return
+        draft = await self.gateway.get_cover_letter_draft(user_id, draft_id)
+        if draft is None:
+            await callback.answer("Не найдено")
+            return
+        await callback.answer()
+        await callback.message.answer(draft["body"])
+
+    async def _on_career_callback_draft_facts(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        await callback.answer()
+        await callback.message.answer(
+            "Обновите career/facts_bank.yaml вручную (владелец фактов), затем "
+            "снова нажмите «Черновик сопровода» для новой версии. Бот не "
+            "редактирует факты сам."
+        )
+
     async def on_career_callback(self, callback: Any) -> None:
         user_id = await self._authorize(callback)
         if user_id is None:
@@ -1775,6 +2043,16 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_feedback_start(callback, user_id, rest)
         elif action == "fbok":
             await self._on_career_callback_feedback_confirm(callback, user_id)
+        elif action == "draft" and rest:
+            await self._on_career_callback_draft(callback, user_id, rest)
+        elif action == "draftok" and rest:
+            await self._on_career_callback_draft_approve(callback, user_id, rest)
+        elif action == "draftno" and rest:
+            await self._on_career_callback_draft_reject(callback, user_id, rest)
+        elif action == "draftcopy" and rest:
+            await self._on_career_callback_draft_copy(callback, user_id, rest)
+        elif action == "draftfacts" and rest:
+            await self._on_career_callback_draft_facts(callback, user_id, rest)
         else:
             await callback.answer("Неизвестное действие")
 
@@ -1856,6 +2134,7 @@ async def _run() -> None:
         allowed_ids=settings.ml_technical_telegram_allowed_id_set,
         timezone_name=settings.ml_technical_telegram_timezone,
         career_inbox_enabled=settings.career_inbox_enabled,
+        career_cover_letter_draft_enabled=settings.career_cover_letter_draft_enabled,
     )
     dispatcher = build_dispatcher(controller)
     await bot.set_my_commands(
@@ -1877,6 +2156,10 @@ async def _run() -> None:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     asyncio.run(_run())
 
 

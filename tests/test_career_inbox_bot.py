@@ -8,6 +8,11 @@ import pytest
 from app.adapters.telegram.ml_technical_bot import (
     MlTechnicalTelegramController,
     _career_applied_callback,
+    _career_draft_approve_callback,
+    _career_draft_callback,
+    _career_draft_copy_callback,
+    _career_draft_facts_callback,
+    _career_draft_reject_callback,
     _career_feedback_start_callback,
     _career_item_callback,
     _career_verdict_callback,
@@ -67,6 +72,10 @@ class FakeInboxGateway:
         self.suggestion_feedback: dict | None = None
         self.suggestions_by_text: dict[str, dict] = {}
         self.suggest_manual_lead_calls: list[str] = []
+        self.cover_letter_drafts: dict[str, dict] = {}
+        self.generate_draft_calls: list[str] = []
+        self.manual_path_result: dict | None = None
+        self.draft_body_by_call: str = "Черновик текста."
 
     async def resolve_user(self, telegram_id: int):
         return self.links.get(telegram_id)
@@ -192,10 +201,70 @@ class FakeInboxGateway:
         self.used_idempotency_keys.add(idempotency_key)
         return {"created": True, "feedback_event": event}
 
+    # Cover Letter Draft v0
+    async def generate_cover_letter_draft(self, user_id, *, inbox_item_id, idempotency_key, actor_id):
+        self.generate_draft_calls.append(inbox_item_id)
+        if self.manual_path_result is not None:
+            return self.manual_path_result
+        if idempotency_key in self.used_idempotency_keys:
+            existing = next(
+                d for d in self.cover_letter_drafts.values() if d["_idempotency_key"] == idempotency_key
+            )
+            return {"created": False, "manual_path": False, "draft": existing}
+        item = self.inbox_items.get(inbox_item_id)
+        if item is None or item.get("owner_verdict") != "prepare":
+            raise CareerInboxError("cover letter draft requires a prior 'prepare' verdict")
+        version = (
+            sum(1 for d in self.cover_letter_drafts.values() if d["inbox_item_id"] == inbox_item_id) + 1
+        )
+        draft_id = str(uuid4())
+        draft = {
+            "draft_id": draft_id,
+            "inbox_item_id": inbox_item_id,
+            "version": version,
+            "body": self.draft_body_by_call,
+            "grounding_report": {"used_facts": [], "flagged_sentences": []},
+            "status": "draft",
+            "_idempotency_key": idempotency_key,
+        }
+        self.cover_letter_drafts[draft_id] = draft
+        self.used_idempotency_keys.add(idempotency_key)
+        return {"created": True, "manual_path": False, "draft": draft}
 
-def _controller(gateway: FakeInboxGateway, *, enabled: bool) -> MlTechnicalTelegramController:
+    async def approve_cover_letter_draft(self, user_id, *, draft_id, actor_id):
+        draft = self.cover_letter_drafts.get(draft_id)
+        if draft is None:
+            raise CareerInboxError(f"unknown cover letter draft_id: {draft_id}")
+        if draft["status"] == "owner_approved":
+            return {"created": False, "draft": draft}
+        if draft["status"] != "draft":
+            raise CareerInboxError(f"draft already {draft['status']}; cannot transition again")
+        draft["status"] = "owner_approved"
+        return {"created": True, "draft": draft}
+
+    async def reject_cover_letter_draft(self, user_id, *, draft_id, actor_id):
+        draft = self.cover_letter_drafts.get(draft_id)
+        if draft is None:
+            raise CareerInboxError(f"unknown cover letter draft_id: {draft_id}")
+        if draft["status"] == "rejected":
+            return {"created": False, "draft": draft}
+        if draft["status"] != "draft":
+            raise CareerInboxError(f"draft already {draft['status']}; cannot transition again")
+        draft["status"] = "rejected"
+        return {"created": True, "draft": draft}
+
+    async def get_cover_letter_draft(self, user_id, draft_id):
+        return self.cover_letter_drafts.get(draft_id)
+
+
+def _controller(
+    gateway: FakeInboxGateway, *, enabled: bool, draft_enabled: bool = False
+) -> MlTechnicalTelegramController:
     return MlTechnicalTelegramController(
-        gateway, allowed_ids=frozenset({111}), career_inbox_enabled=enabled
+        gateway,
+        allowed_ids=frozenset({111}),
+        career_inbox_enabled=enabled,
+        career_cover_letter_draft_enabled=draft_enabled,
     )
 
 
@@ -630,3 +699,193 @@ async def test_feedback_cancel_writes_nothing():
 
     assert gateway.feedback_events == []
     assert gateway.pending_intents == {}
+
+
+# ---------------------------------------------------------------------------
+# Cover Letter Draft v0 (career/CAREER_COVER_LETTER_DRAFT_SPEC.md, Slice 2)
+# ---------------------------------------------------------------------------
+
+
+async def _prepared_item(
+    gateway: FakeInboxGateway, controller: MlTechnicalTelegramController
+) -> str:
+    inbox_item_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(
+        FakeCallback(111, _career_verdict_callback(inbox_item_id, "prepare"), callback_id="prep-1")
+    )
+    return inbox_item_id
+
+
+@pytest.mark.asyncio
+async def test_draft_button_appears_only_after_prepare():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _seeded_item(gateway, controller)
+
+    detail = FakeCallback(111, _career_item_callback(inbox_item_id))
+    await controller.on_career_callback(detail)
+    labels_before = [t for t, _d in _flat_buttons(detail.message.markups[-1])]
+    assert "Черновик сопровода" not in labels_before
+
+    await controller.on_career_callback(
+        FakeCallback(111, _career_verdict_callback(inbox_item_id, "prepare"), callback_id="prep-1")
+    )
+    detail2 = FakeCallback(111, _career_item_callback(inbox_item_id))
+    await controller.on_career_callback(detail2)
+    labels_after = [t for t, _d in _flat_buttons(detail2.message.markups[-1])]
+    assert "Черновик сопровода" in labels_after
+
+
+@pytest.mark.asyncio
+async def test_draft_flag_off_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=False)
+    inbox_item_id = await _prepared_item(gateway, controller)
+
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+
+    assert draft_cb.answers == ["Функция выключена"]
+    assert gateway.cover_letter_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_generate_draft_shows_body_and_grounding_report():
+    gateway = FakeInboxGateway()
+    gateway.draft_body_by_call = "Здравствуйте! Откликаюсь на роль ML Engineer."
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+
+    assert len(gateway.cover_letter_drafts) == 1
+    reply = draft_cb.message.replies[-1]
+    assert "Откликаюсь на роль ML Engineer" in reply
+    buttons = [t for t, _d in _flat_buttons(draft_cb.message.markups[-1])]
+    assert buttons == ["Одобрить черновик", "Отклонить", "Скопировать"]
+
+
+@pytest.mark.asyncio
+async def test_manual_path_signal_when_generation_unavailable():
+    gateway = FakeInboxGateway()
+    gateway.manual_path_result = {"created": False, "manual_path": True, "draft": None}
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+
+    assert gateway.cover_letter_drafts == {}
+    assert "COVER_LETTER_SKELETON" in draft_cb.message.replies[-1]
+    buttons = [t for t, _d in _flat_buttons(draft_cb.message.markups[-1])]
+    assert buttons == ["Обновить факты вручную"]
+
+
+@pytest.mark.asyncio
+async def test_approve_creates_no_application_and_sends_nothing():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+    draft_id = next(iter(gateway.cover_letter_drafts))
+
+    approve = FakeCallback(111, _career_draft_approve_callback(draft_id), callback_id="app-1")
+    await controller.on_career_callback(approve)
+
+    assert gateway.cover_letter_drafts[draft_id]["status"] == "owner_approved"
+    assert gateway.applications == {}
+    assert approve.answers == ["Одобрено"]
+
+
+@pytest.mark.asyncio
+async def test_approve_replay_creates_no_duplicate_version_or_state_change():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+    draft_id = next(iter(gateway.cover_letter_drafts))
+
+    first = FakeCallback(111, _career_draft_approve_callback(draft_id), callback_id="replay-1")
+    await controller.on_career_callback(first)
+    replay = FakeCallback(111, _career_draft_approve_callback(draft_id), callback_id="replay-1")
+    await controller.on_career_callback(replay)
+
+    assert len(gateway.cover_letter_drafts) == 1
+    assert gateway.cover_letter_drafts[draft_id]["status"] == "owner_approved"
+
+
+@pytest.mark.asyncio
+async def test_reject_records_state_without_side_effects():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+    draft_id = next(iter(gateway.cover_letter_drafts))
+
+    reject = FakeCallback(111, _career_draft_reject_callback(draft_id))
+    await controller.on_career_callback(reject)
+
+    assert gateway.cover_letter_drafts[draft_id]["status"] == "rejected"
+    assert gateway.applications == {}
+
+
+@pytest.mark.asyncio
+async def test_copy_only_displays_text_and_changes_nothing():
+    gateway = FakeInboxGateway()
+    gateway.draft_body_by_call = "Текст письма для копирования."
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_cb = FakeCallback(111, _career_draft_callback(inbox_item_id))
+    await controller.on_career_callback(draft_cb)
+    draft_id = next(iter(gateway.cover_letter_drafts))
+
+    copy_cb = FakeCallback(111, _career_draft_copy_callback(draft_id))
+    await controller.on_career_callback(copy_cb)
+
+    assert copy_cb.message.replies[-1] == "Текст письма для копирования."
+    assert gateway.cover_letter_drafts[draft_id]["status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_draft_facts_button_never_writes_anything():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+
+    facts_cb = FakeCallback(111, _career_draft_facts_callback(inbox_item_id))
+    await controller.on_career_callback(facts_cb)
+
+    assert "facts_bank.yaml" in facts_cb.message.replies[-1]
+    assert gateway.cover_letter_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_draft_callback_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+
+    stale = FakeCallback(111, "career:draft:not-a-valid-id")
+    await controller.on_career_callback(stale)
+
+    assert stale.answers == ["Кнопка устарела"]
+
+
+@pytest.mark.asyncio
+async def test_stale_draft_action_ids_fail_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True)
+
+    for cb_fn in (
+        _career_draft_approve_callback,
+        _career_draft_reject_callback,
+        _career_draft_copy_callback,
+    ):
+        callback = FakeCallback(111, cb_fn(str(uuid4())))
+        await controller.on_career_callback(callback)
+        # Either fails closed with an explicit error answer, or "Не найдено"
+        # (copy) - never silently succeeds on an unknown draft id.
+        assert callback.answers

@@ -361,6 +361,68 @@ class CareerFeedbackEvent(Base):
     )
 
 
+class CareerCoverLetterDraft(Base):
+    """Owner-reviewed cover letter draft (career/CAREER_COVER_LETTER_DRAFT_SPEC.md).
+
+    The LLM is an untrusted drafter: ``body`` and ``grounding_report`` are
+    written once at generation and never edited afterwards - a "regenerate"
+    inserts a new ``version`` row instead. Only ``status`` transitions in
+    place, one-way, from ``draft`` to ``owner_approved`` or ``rejected``.
+    ``owner_approved`` never creates an application or sends anything.
+    """
+
+    __tablename__ = "career_cover_letter_drafts"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "user_id", name="career_cover_letter_drafts_id_user_id_key"
+        ),
+        UniqueConstraint(
+            "inbox_item_id", "version", name="career_cover_letter_drafts_version_unique"
+        ),
+        ForeignKeyConstraint(
+            ["inbox_item_id", "user_id"],
+            ["career_inbox_items.id", "career_inbox_items.user_id"],
+            ondelete="CASCADE",
+            name="career_cover_letter_drafts_inbox_user_fkey",
+        ),
+        CheckConstraint(
+            "status in ('draft', 'owner_approved', 'rejected')",
+            name="career_cover_letter_drafts_status_check",
+        ),
+        CheckConstraint(
+            "actor_type in ('owner', 'system')",
+            name="career_cover_letter_drafts_actor_type_check",
+        ),
+        Index(
+            "career_cover_letter_drafts_inbox_item_idx", "inbox_item_id", "version"
+        ),
+        Index("career_cover_letter_drafts_user_created_idx", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    inbox_item_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    grounding_report: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 __all__ = [
     "CareerVacancySnapshot",
     "CareerApplication",
@@ -368,4 +430,5 @@ __all__ = [
     "CareerTelegramPendingInput",
     "CareerInboxItem",
     "CareerFeedbackEvent",
+    "CareerCoverLetterDraft",
 ]

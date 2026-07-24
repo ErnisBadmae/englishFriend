@@ -15,16 +15,22 @@ import json
 import re
 import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional, Protocol
 from uuid import uuid4
 
+import yaml
 from sqlalchemy import String, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.models.career import CareerFeedbackEvent, CareerInboxItem
+from app.models.career import (
+    CareerCoverLetterDraft,
+    CareerFeedbackEvent,
+    CareerInboxItem,
+)
 from app.models.core_tables import User
 from app.services.career_ledger_service import (
     CareerLedgerError,
@@ -86,6 +92,19 @@ FEEDBACK_CATEGORIES = {
 FEEDBACK_CATEGORY_UNKNOWN = "unknown"
 
 ACTOR_TYPE_OWNER = "owner"
+
+# Cover Letter Draft v0 (career/CAREER_COVER_LETTER_DRAFT_SPEC.md). Grounding
+# source is career/facts_bank.yaml - a sibling directory owned by career/, not
+# a code repository; reading it directly is the design (spec section 3), not a
+# "sibling-repo reads" violation like the telegram-digest Slice B rule.
+FACTS_BANK_PATH = Path(__file__).resolve().parents[3] / "career" / "facts_bank.yaml"
+COVER_LETTER_BODY_MAX_LEN = 8000
+DRAFT_STATUS_DRAFT = "draft"
+DRAFT_STATUS_APPROVED = "owner_approved"
+DRAFT_STATUS_REJECTED = "rejected"
+VALID_DRAFT_STATUSES = {DRAFT_STATUS_DRAFT, DRAFT_STATUS_APPROVED, DRAFT_STATUS_REJECTED}
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_NUMERIC_TOKEN_RE = re.compile(r"\d[\d.,]*%?\+?")
 
 
 class CareerInboxError(ValueError):
@@ -239,6 +258,121 @@ def _feedback_event_dict(row: CareerFeedbackEvent) -> dict[str, Any]:
         "actor_id": row.actor_id,
         "occurred_at": row.occurred_at.isoformat(),
     }
+
+
+def _cover_letter_draft_dict(row: CareerCoverLetterDraft) -> dict[str, Any]:
+    return {
+        "draft_id": str(row.id),
+        "inbox_item_id": row.inbox_item_id,
+        "version": row.version,
+        "body": row.body,
+        "grounding_report": dict(row.grounding_report or {}),
+        "status": row.status,
+        "actor_type": row.actor_type,
+        "actor_id": row.actor_id,
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+# ─── facts_bank grounding (read-only; never writes career/facts_bank.yaml) ───
+
+
+def load_facts_bank(path: Path = FACTS_BANK_PATH) -> Optional[dict[str, Any]]:
+    """Read-only load. Returns ``None`` on a missing, empty, or unparseable
+    file - the caller must treat that as a manual-path signal, not an
+    exception (SPEC section 5, rule 3). Never writes to the file."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict) or not data.get("facts"):
+        return None
+    return data
+
+
+def _tier_a_facts(facts_bank: dict[str, Any]) -> list[dict[str, Any]]:
+    return [f for f in facts_bank.get("facts", []) if f.get("tier") == "A"]
+
+
+def _tier_a_corpus(facts_bank: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for fact in _tier_a_facts(facts_bank):
+        if fact.get("text"):
+            parts.append(str(fact["text"]))
+        for variant in (fact.get("text_variants") or {}).values():
+            parts.append(str(variant))
+    return "\n".join(parts)
+
+
+def build_grounding_report(draft_body: str, facts_bank: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic grounding check (spec section 2): a sentence carrying a
+    concrete numeric claim (a number, percentage, or count) not found
+    anywhere in tier-A facts is flagged, never silently kept. ``used_facts``
+    is a best-effort signal - a tier-A fact is listed if enough of its
+    distinctive vocabulary is reused in the draft."""
+    corpus = _tier_a_corpus(facts_bank)
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(draft_body) if s.strip()]
+
+    flagged: list[dict[str, Any]] = []
+    for sentence in sentences:
+        tokens = _NUMERIC_TOKEN_RE.findall(sentence)
+        unmatched = [t for t in tokens if t not in corpus]
+        if unmatched:
+            flagged.append({"sentence": sentence, "unmatched_tokens": unmatched})
+
+    used_facts: list[str] = []
+    normalized_draft = draft_body.lower()
+    for fact in _tier_a_facts(facts_bank):
+        text = str(fact.get("text") or "")
+        words = {w for w in re.findall(r"[a-zA-Zа-яА-ЯёЁ]{5,}", text.lower())}
+        overlap = sum(1 for w in words if w in normalized_draft)
+        if overlap >= 2:
+            used_facts.append(fact["id"])
+
+    return {"used_facts": used_facts, "flagged_sentences": flagged}
+
+
+_COVER_LETTER_SYSTEM_PROMPT = (
+    "You draft a short Russian cover letter (6-9 sentences) using ONLY the facts "
+    "provided in the user message. Never invent a number, company name, "
+    "technology, date, or metric that is not present in those facts. If unsure, "
+    "omit it rather than guess. Reply with plain text only - no JSON, no "
+    "markdown fence."
+)
+
+
+async def draft_cover_letter_body(
+    vacancy_context: str,
+    facts_bank: dict[str, Any],
+    provider: Optional["SuggestionLLM"],
+) -> Optional[str]:
+    """Untrusted drafter call. Any missing provider, empty tier-A corpus, or
+    generation failure/timeout returns ``None`` - the caller must treat that
+    as a manual-path signal, never a partial/guessed draft."""
+    if provider is None:
+        return None
+    facts_text = _tier_a_corpus(facts_bank)
+    if not facts_text.strip():
+        return None
+    user_message = (
+        f"{vacancy_context}\n\nФакты (тир A, использовать только их, ничего не "
+        f"добавлять):\n{facts_text}"
+    )
+    try:
+        body = await provider.generate(
+            user_message, _COVER_LETTER_SYSTEM_PROMPT, max_tokens=600
+        )
+    except Exception:
+        return None
+    body = (body or "").strip()
+    return body or None
 
 
 class CareerInboxService:
@@ -698,6 +832,209 @@ class CareerInboxService:
         row = await self.db.get(CareerFeedbackEvent, event_id)
         return {"created": True, "feedback_event": _feedback_event_dict(row)}
 
+    # ── Cover Letter Draft v0 (career/CAREER_COVER_LETTER_DRAFT_SPEC.md) ──────
+
+    async def _draft_by_idempotency_key(
+        self, user_id: int, idempotency_key: str
+    ) -> Optional[CareerCoverLetterDraft]:
+        return await self.db.scalar(
+            select(CareerCoverLetterDraft).where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.idempotency_key == idempotency_key,
+            )
+        )
+
+    async def _next_draft_version(self, user_id: int, inbox_item_id: str) -> int:
+        current_max = await self.db.scalar(
+            select(func.max(CareerCoverLetterDraft.version)).where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.inbox_item_id == inbox_item_id,
+            )
+        )
+        return (current_max or 0) + 1
+
+    async def generate_cover_letter_draft(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        provider: Optional["SuggestionLLM"],
+        idempotency_key: str,
+        actor_id: str,
+        facts_bank_path: Path = FACTS_BANK_PATH,
+    ) -> dict[str, Any]:
+        """Owner-triggered draft generation, attached only to a ``prepare``
+        inbox item. On empty/broken facts bank or any drafter failure,
+        returns ``manual_path=True`` and writes NO row - the owner can still
+        write by hand from the skeleton (SPEC section 5, rule 3). facts_bank
+        is only ever read here, never written. ``facts_bank_path`` defaults to
+        the real ``career/facts_bank.yaml`` and is overridable for tests."""
+        idempotency_key = _bounded_text(
+            "idempotency_key", idempotency_key, 200, required=True
+        )
+        actor_id = _bounded_text("actor_id", actor_id, 160, required=True)
+
+        await self._ensure_user_exists(user_id)
+
+        item = await self.get_inbox_item(user_id, inbox_item_id)
+        if item is None:
+            raise CareerInboxError(f"unknown career inbox_item_id: {inbox_item_id}")
+        if item.get("owner_verdict") != VERDICT_PREPARE:
+            raise CareerInboxError(
+                "cover letter draft requires a prior 'prepare' verdict"
+            )
+
+        existing = await self._draft_by_idempotency_key(user_id, idempotency_key)
+        if existing is not None:
+            return {
+                "created": False,
+                "manual_path": False,
+                "draft": _cover_letter_draft_dict(existing),
+            }
+
+        facts_bank = load_facts_bank(facts_bank_path)
+        if facts_bank is None:
+            return {
+                "created": False,
+                "manual_path": True,
+                "reason": "facts_bank unavailable",
+                "draft": None,
+            }
+
+        vacancy_context = (
+            f"Компания: {item.get('company') or 'unknown'}\n"
+            f"Роль: {item.get('role_title') or 'unknown'}\n"
+            f"Локация: {item.get('location') or 'unknown'}"
+        )
+        body = await draft_cover_letter_body(vacancy_context, facts_bank, provider)
+        if not body:
+            return {
+                "created": False,
+                "manual_path": True,
+                "reason": "draft generation unavailable",
+                "draft": None,
+            }
+
+        grounding_report = build_grounding_report(body, facts_bank)
+        version = await self._next_draft_version(user_id, inbox_item_id)
+        now = _utcnow()
+        draft_id = str(uuid4())
+        try:
+            result_id = await self.db.scalar(
+                pg_insert(CareerCoverLetterDraft)
+                .values(
+                    id=draft_id,
+                    user_id=user_id,
+                    inbox_item_id=inbox_item_id,
+                    version=version,
+                    body=body[:COVER_LETTER_BODY_MAX_LEN],
+                    grounding_report=grounding_report,
+                    status=DRAFT_STATUS_DRAFT,
+                    actor_type=ACTOR_TYPE_OWNER,
+                    actor_id=actor_id,
+                    idempotency_key=idempotency_key,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing()
+                .returning(CareerCoverLetterDraft.id)
+            )
+            if result_id is None:
+                await self.db.rollback()
+                winner = await self._draft_by_idempotency_key(user_id, idempotency_key)
+                if winner is None:
+                    raise CareerInboxConflictError("duplicate cover letter draft")
+                return {
+                    "created": False,
+                    "manual_path": False,
+                    "draft": _cover_letter_draft_dict(winner),
+                }
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise CareerInboxConflictError(
+                "duplicate or conflicting cover letter draft"
+            ) from exc
+
+        row = await self.db.get(CareerCoverLetterDraft, draft_id)
+        return {"created": True, "manual_path": False, "draft": _cover_letter_draft_dict(row)}
+
+    async def _transition_draft_status(
+        self, user_id: int, *, draft_id: str, to_status: str, actor_id: str
+    ) -> dict[str, Any]:
+        actor_id = _bounded_text("actor_id", actor_id, 160, required=True)
+        await self._ensure_user_exists(user_id)
+
+        row = await self.db.scalar(
+            select(CareerCoverLetterDraft)
+            .where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.id == draft_id,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            raise CareerInboxError(f"unknown cover letter draft_id: {draft_id}")
+        if row.status == to_status:
+            # Same action replayed (e.g. Telegram update retry) - no-op.
+            return {"created": False, "draft": _cover_letter_draft_dict(row)}
+        if row.status != DRAFT_STATUS_DRAFT:
+            raise CareerInboxError(
+                f"draft already {row.status}; cannot transition again"
+            )
+
+        row.status = to_status
+        row.updated_at = _utcnow()
+        await self.db.commit()
+        await self.db.refresh(row)
+        return {"created": True, "draft": _cover_letter_draft_dict(row)}
+
+    async def approve_cover_letter_draft(
+        self, user_id: int, *, draft_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        """Owner-only. Sets ``owner_approved``; creates no application and
+        sends nothing - sending remains the owner's own action."""
+        return await self._transition_draft_status(
+            user_id, draft_id=draft_id, to_status=DRAFT_STATUS_APPROVED, actor_id=actor_id
+        )
+
+    async def reject_cover_letter_draft(
+        self, user_id: int, *, draft_id: str, actor_id: str
+    ) -> dict[str, Any]:
+        """Owner-only. Sets ``rejected``; the owner may request a new
+        version via :meth:`generate_cover_letter_draft`."""
+        return await self._transition_draft_status(
+            user_id, draft_id=draft_id, to_status=DRAFT_STATUS_REJECTED, actor_id=actor_id
+        )
+
+    async def list_cover_letter_drafts(
+        self, user_id: int, *, inbox_item_id: str
+    ) -> list[dict[str, Any]]:
+        await self._ensure_user_exists(user_id)
+        rows = (
+            await self.db.execute(
+                select(CareerCoverLetterDraft)
+                .where(
+                    CareerCoverLetterDraft.user_id == user_id,
+                    CareerCoverLetterDraft.inbox_item_id == inbox_item_id,
+                )
+                .order_by(CareerCoverLetterDraft.version.asc())
+            )
+        ).scalars().all()
+        return [_cover_letter_draft_dict(row) for row in rows]
+
+    async def get_cover_letter_draft(
+        self, user_id: int, draft_id: str
+    ) -> Optional[dict[str, Any]]:
+        await self._ensure_user_exists(user_id)
+        row = await self.db.scalar(
+            select(CareerCoverLetterDraft).where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.id == draft_id,
+            )
+        )
+        return _cover_letter_draft_dict(row) if row is not None else None
+
 
 # ─── LLM suggestion (untrusted extractor; never writes canonical state) ──────
 
@@ -815,6 +1152,11 @@ __all__ = [
     "CareerInboxConflictError",
     "CareerInboxError",
     "CareerInboxService",
+    "COVER_LETTER_BODY_MAX_LEN",
+    "DRAFT_STATUS_APPROVED",
+    "DRAFT_STATUS_DRAFT",
+    "DRAFT_STATUS_REJECTED",
+    "FACTS_BANK_PATH",
     "FEEDBACK_CATEGORIES",
     "FEEDBACK_CATEGORY_UNKNOWN",
     "IMPORT_GATE_NAMES",
@@ -828,6 +1170,7 @@ __all__ = [
     "SOURCE_MANUAL",
     "SOURCE_TELEGRAM_DIGEST",
     "SOURCE_TELEGRAM_INBOUND",
+    "VALID_DRAFT_STATUSES",
     "VALID_INBOX_SOURCES",
     "VALID_MANUAL_VERDICTS",
     "VERDICT_APPLIED",
@@ -835,7 +1178,10 @@ __all__ = [
     "VERDICT_FALSE_POSITIVE",
     "VERDICT_PREPARE",
     "VERDICT_SKIP",
+    "build_grounding_report",
+    "draft_cover_letter_body",
     "is_grounded",
+    "load_facts_bank",
     "split_pasted_leads",
     "suggest_feedback",
     "suggest_manual_lead",

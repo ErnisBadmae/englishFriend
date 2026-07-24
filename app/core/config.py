@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # "Добавить контакт или ответ" menu items only - existing career ledger
     # menu (Записать отправленный отклик / Мои отклики) is unaffected.
     career_inbox_enabled: bool = False
+    # Career Cover Letter Draft v0 (career/CAREER_COVER_LETTER_DRAFT_SPEC.md).
+    # Separate flag from career_inbox_enabled per spec: off by default, gates
+    # only the "Черновик сопровода" button on a prepare card. LLM is an
+    # untrusted drafter; approve never sends anything or creates an application.
+    career_cover_letter_draft_enabled: bool = False
 
     @property
     def ml_technical_telegram_allowed_id_set(self) -> frozenset[int]:

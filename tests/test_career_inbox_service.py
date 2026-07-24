@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -9,9 +10,12 @@ from sqlalchemy import func, insert, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.career import CareerFeedbackEvent, CareerInboxItem
+from app.models.career import CareerCoverLetterDraft, CareerFeedbackEvent, CareerInboxItem
 from app.models.core_tables import User
 from app.services.career_inbox_service import (
+    DRAFT_STATUS_APPROVED,
+    DRAFT_STATUS_DRAFT,
+    DRAFT_STATUS_REJECTED,
     FEEDBACK_CATEGORY_UNKNOWN,
     INBOX_DISPLAY_LIMIT,
     MAX_PASTED_LEADS,
@@ -19,7 +23,10 @@ from app.services.career_inbox_service import (
     VERDICT_PREPARE,
     CareerInboxError,
     CareerInboxService,
+    build_grounding_report,
+    draft_cover_letter_body,
     is_grounded,
+    load_facts_bank,
     split_pasted_leads,
     suggest_feedback,
     suggest_manual_lead,
@@ -27,6 +34,9 @@ from app.services.career_inbox_service import (
 from app.services.career_ledger_service import CareerLedgerService
 
 TEST_DATABASE_URL = os.getenv("ML_TECHNICAL_PG_TEST_URL")
+REAL_FACTS_BANK_PATH = (
+    Path(__file__).resolve().parents[2] / "career" / "facts_bank.yaml"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +295,126 @@ async def test_suggest_feedback_rejects_invalid_json():
 
 
 # ---------------------------------------------------------------------------
+# Cover Letter Draft v0: facts_bank grounding (pure, synthetic facts only).
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_facts_bank() -> dict:
+    return {
+        "facts": [
+            {
+                "id": "profile_core",
+                "tier": "A",
+                "text": "Applied AI инженер: Python backend, прикладной ML, LLM RAG системы.",
+            },
+            {
+                "id": "advanta_metrics",
+                "tier": "A",
+                "text": "Модель CatBoost снизила отток на 15 процентов за квартал, precision 85.",
+            },
+            {
+                "id": "frozen_metric",
+                "tier": "B",
+                "text": "MAU 10000 пользователей, retention 35 процентов.",
+            },
+        ]
+    }
+
+
+def test_load_facts_bank_returns_none_for_missing_file(tmp_path):
+    assert load_facts_bank(tmp_path / "nope.yaml") is None
+
+
+def test_load_facts_bank_returns_none_for_empty_file(tmp_path):
+    path = tmp_path / "empty.yaml"
+    path.write_text("   \n", encoding="utf-8")
+    assert load_facts_bank(path) is None
+
+
+def test_load_facts_bank_returns_none_for_broken_yaml(tmp_path):
+    path = tmp_path / "broken.yaml"
+    path.write_text("facts: [unterminated", encoding="utf-8")
+    assert load_facts_bank(path) is None
+
+
+def test_load_facts_bank_returns_none_without_facts_key(tmp_path):
+    path = tmp_path / "no_facts.yaml"
+    path.write_text("meta:\n  owner: test\n", encoding="utf-8")
+    assert load_facts_bank(path) is None
+
+
+def test_load_facts_bank_reads_valid_synthetic_file(tmp_path):
+    path = tmp_path / "facts.yaml"
+    path.write_text("facts:\n  - id: x\n    tier: A\n    text: hello\n", encoding="utf-8")
+    facts_bank = load_facts_bank(path)
+    assert facts_bank is not None
+    assert facts_bank["facts"][0]["id"] == "x"
+
+
+def test_load_facts_bank_resolves_the_real_career_facts_bank_path():
+    # Smoke check only - does not assert on private content, just that the
+    # cross-directory path resolution actually finds a real, parseable file.
+    facts_bank = load_facts_bank(REAL_FACTS_BANK_PATH)
+    assert facts_bank is not None
+    assert len(facts_bank.get("facts", [])) > 0
+
+
+def test_build_grounding_report_flags_a_number_absent_from_facts_bank():
+    facts_bank = _synthetic_facts_bank()
+    draft = "Применяю CatBoost. Отток снизился на 999 процентов, абсолютный рекорд."
+    report = build_grounding_report(draft, facts_bank)
+    flagged_sentences = [f["sentence"] for f in report["flagged_sentences"]]
+    assert any("999" in s for s in flagged_sentences)
+
+
+def test_build_grounding_report_does_not_flag_a_number_present_in_facts_bank():
+    facts_bank = _synthetic_facts_bank()
+    draft = "Отток снизился на 15 процентов за квартал."
+    report = build_grounding_report(draft, facts_bank)
+    assert report["flagged_sentences"] == []
+
+
+def test_build_grounding_report_ignores_tier_b_numbers_as_ungrounded():
+    facts_bank = _synthetic_facts_bank()
+    draft = "MAU составляет 10000 пользователей."
+    report = build_grounding_report(draft, facts_bank)
+    flagged_sentences = [f["sentence"] for f in report["flagged_sentences"]]
+    assert any("MAU" in s for s in flagged_sentences)
+
+
+def test_build_grounding_report_lists_used_tier_a_facts():
+    facts_bank = _synthetic_facts_bank()
+    draft = "Модель CatBoost снизила отток на 15 процентов за квартал."
+    report = build_grounding_report(draft, facts_bank)
+    assert "advanta_metrics" in report["used_facts"]
+
+
+async def test_draft_cover_letter_body_without_provider_is_none():
+    body = await draft_cover_letter_body("vacancy context", _synthetic_facts_bank(), None)
+    assert body is None
+
+
+async def test_draft_cover_letter_body_returns_none_on_provider_error():
+    provider = _FakeProvider(raises=True)
+    body = await draft_cover_letter_body("vacancy context", _synthetic_facts_bank(), provider)
+    assert body is None
+
+
+async def test_draft_cover_letter_body_returns_none_for_empty_tier_a_corpus():
+    provider = _FakeProvider(content="Здравствуйте!")
+    body = await draft_cover_letter_body("vacancy context", {"facts": []}, provider)
+    assert body is None
+
+
+async def test_draft_cover_letter_body_returns_stripped_text_on_success():
+    provider = _FakeProvider(content="  Здравствуйте! Откликаюсь на роль.  \n")
+    body = await draft_cover_letter_body(
+        "vacancy context", _synthetic_facts_bank(), provider
+    )
+    assert body == "Здравствуйте! Откликаюсь на роль."
+
+
+# ---------------------------------------------------------------------------
 # PostgreSQL-backed integration tests. Skipped without a migrated test DB.
 # ---------------------------------------------------------------------------
 
@@ -297,9 +427,10 @@ async def pg_session_maker():
     try:
         async with engine.connect() as conn:
             await conn.execute(text("select 1 from career_inbox_items limit 0"))
+            await conn.execute(text("select 1 from career_cover_letter_drafts limit 0"))
     except (OperationalError, ProgrammingError) as exc:
         await engine.dispose()
-        pytest.skip(f"PostgreSQL migration 018 unavailable: {exc.__class__.__name__}")
+        pytest.skip(f"PostgreSQL migration 018/019 unavailable: {exc.__class__.__name__}")
     yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     await engine.dispose()
 
@@ -638,3 +769,314 @@ async def test_user_isolation_across_two_owners(pg_session_maker):
 
         assert len(items_a) == 1
         assert len(items_b) == 0
+
+
+# ---------------------------------------------------------------------------
+# Cover Letter Draft v0: PostgreSQL-backed. Skipped without migration 019.
+# ---------------------------------------------------------------------------
+
+
+async def _prepared_inbox_item(service: CareerInboxService, user_id: int) -> str:
+    """A confirmed manual lead moved to owner_verdict='prepare' - the only
+    state a cover letter draft may attach to."""
+    result = await service.confirm_manual_lead(
+        user_id,
+        source="manual",
+        raw_text="Acme reached out about an ML Engineer role.",
+        company="Acme",
+        role_title="ML Engineer",
+        idempotency_key=f"telegram:{uuid4().hex}",
+        actor_id="123456",
+    )
+    inbox_item_id = result["inbox_item"]["inbox_item_id"]
+    await service.set_verdict(
+        user_id,
+        inbox_item_id=inbox_item_id,
+        verdict=VERDICT_PREPARE,
+        idempotency_key=f"telegram_callback:{uuid4().hex}",
+        actor_id="123456",
+    )
+    return inbox_item_id
+
+
+def _synthetic_facts_bank_file(tmp_path: Path) -> Path:
+    path = tmp_path / "facts_bank.yaml"
+    path.write_text(
+        "facts:\n"
+        "  - id: profile_core\n"
+        "    tier: A\n"
+        "    text: >-\n"
+        "      Applied AI инженер: Python backend, прикладной ML, LLM RAG системы.\n"
+        "  - id: advanta_metrics\n"
+        "    tier: A\n"
+        "    text: >-\n"
+        "      CatBoost снизил отток на 15 процентов за квартал.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+class _DraftProvider:
+    def __init__(self, content: str):
+        self.content = content
+        self.calls: list[str] = []
+
+    async def generate(self, user_message, system_prompt, conversation_history=None, max_tokens=600):
+        self.calls.append(user_message)
+        return self.content
+
+
+@pytest.mark.integration
+async def test_generate_draft_requires_prior_prepare_verdict(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        result = await service.confirm_manual_lead(
+            user_id,
+            source="manual",
+            raw_text="Acme reached out.",
+            company="Acme",
+            role_title="ML Engineer",
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+        )
+        inbox_item_id = result["inbox_item"]["inbox_item_id"]  # verdict still None
+
+        with pytest.raises(CareerInboxError):
+            await service.generate_cover_letter_draft(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                provider=_DraftProvider("Здравствуйте!"),
+                idempotency_key=f"telegram:{uuid4().hex}",
+                actor_id="123456",
+                facts_bank_path=_synthetic_facts_bank_file(tmp_path),
+            )
+
+
+@pytest.mark.integration
+async def test_generate_draft_missing_facts_bank_yields_manual_path_and_no_row(
+    pg_session_maker, tmp_path
+):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+
+        result = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Здравствуйте!"),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=tmp_path / "does_not_exist.yaml",
+        )
+
+        assert result["manual_path"] is True
+        assert result["draft"] is None
+        count = await db.scalar(
+            select(func.count(CareerCoverLetterDraft.id)).where(
+                CareerCoverLetterDraft.user_id == user_id
+            )
+        )
+        assert count == 0
+
+
+@pytest.mark.integration
+async def test_generate_draft_flags_a_fabricated_number(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        provider = _DraftProvider(
+            "Здравствуйте! Применяю CatBoost. Отток снизился на 999 процентов, "
+            "абсолютный рекорд рынка."
+        )
+
+        result = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=provider,
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=_synthetic_facts_bank_file(tmp_path),
+        )
+
+        assert result["manual_path"] is False
+        report = result["draft"]["grounding_report"]
+        flagged = [f["sentence"] for f in report["flagged_sentences"]]
+        assert any("999" in s for s in flagged)
+
+
+@pytest.mark.integration
+async def test_regenerate_creates_a_new_immutable_version(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        facts_path = _synthetic_facts_bank_file(tmp_path)
+
+        first = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Версия один. Применяю CatBoost."),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+        second = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Версия два, переписана. Применяю CatBoost."),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+
+        assert first["draft"]["version"] == 1
+        assert second["draft"]["version"] == 2
+        assert first["draft"]["body"] != second["draft"]["body"]
+
+        versions = await service.list_cover_letter_drafts(
+            user_id, inbox_item_id=inbox_item_id
+        )
+        assert [v["version"] for v in versions] == [1, 2]
+        # The first version's body is untouched by the second generation.
+        assert versions[0]["body"] == first["draft"]["body"]
+
+
+@pytest.mark.integration
+async def test_generate_draft_replay_is_idempotent(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        facts_path = _synthetic_facts_bank_file(tmp_path)
+        idempotency_key = f"telegram:{uuid4().hex}"
+
+        first = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Черновик один."),
+            idempotency_key=idempotency_key,
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+        second = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Другой текст, если бы вызвался снова."),
+            idempotency_key=idempotency_key,
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+
+        assert first["draft"]["draft_id"] == second["draft"]["draft_id"]
+        count = await db.scalar(
+            select(func.count(CareerCoverLetterDraft.id)).where(
+                CareerCoverLetterDraft.user_id == user_id
+            )
+        )
+        assert count == 1
+
+
+@pytest.mark.integration
+async def test_approve_draft_creates_no_application(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        generated = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Здравствуйте! Применяю CatBoost."),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=_synthetic_facts_bank_file(tmp_path),
+        )
+        draft_id = generated["draft"]["draft_id"]
+
+        result = await service.approve_cover_letter_draft(
+            user_id, draft_id=draft_id, actor_id="123456"
+        )
+
+        assert result["draft"]["status"] == DRAFT_STATUS_APPROVED
+        ledger = CareerLedgerService(db)
+        summary = await ledger.get_pipeline_summary(user_id)
+        assert summary["total"] == 0
+
+
+@pytest.mark.integration
+async def test_approve_replay_is_idempotent_noop(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        generated = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Здравствуйте!"),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=_synthetic_facts_bank_file(tmp_path),
+        )
+        draft_id = generated["draft"]["draft_id"]
+
+        first = await service.approve_cover_letter_draft(
+            user_id, draft_id=draft_id, actor_id="123456"
+        )
+        replay = await service.approve_cover_letter_draft(
+            user_id, draft_id=draft_id, actor_id="123456"
+        )
+
+        assert first["created"] is True
+        assert replay["created"] is False
+        assert replay["draft"]["status"] == DRAFT_STATUS_APPROVED
+
+
+@pytest.mark.integration
+async def test_reject_after_approve_fails_closed(pg_session_maker, tmp_path):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        generated = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Здравствуйте!"),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=_synthetic_facts_bank_file(tmp_path),
+        )
+        draft_id = generated["draft"]["draft_id"]
+        await service.approve_cover_letter_draft(
+            user_id, draft_id=draft_id, actor_id="123456"
+        )
+
+        with pytest.raises(CareerInboxError):
+            await service.reject_cover_letter_draft(
+                user_id, draft_id=draft_id, actor_id="123456"
+            )
+
+
+@pytest.mark.integration
+async def test_facts_bank_file_is_byte_identical_after_generation(
+    pg_session_maker, tmp_path
+):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        inbox_item_id = await _prepared_inbox_item(service, user_id)
+        facts_path = _synthetic_facts_bank_file(tmp_path)
+        before = facts_path.read_bytes()
+
+        await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Здравствуйте! Применяю CatBoost."),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+
+        after = facts_path.read_bytes()
+        assert before == after
