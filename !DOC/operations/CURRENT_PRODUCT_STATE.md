@@ -100,7 +100,7 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Если replay показывает weak mission relevance или generic feedback, чинить бизнесовую логику до voice work.
 - Первый founder dogfood `ml_technical` через сайт пройден: основной цикл работает, но банк из 15 вопросов все еще мал. Telegram polling теперь live; для банка - exact-match private-corpus check + owner approval для draft-ревизий `mltech_016`..`mltech_030`.
 - Провести ручную приемку Telegram career menu v0.2.1 по пунктам 8-11 `ML_TECHNICAL_TELEGRAM_RUNBOOK.md`: ввод без reply-метаданных, невалидный формат, голая ссылка, переход статуса и следующее действие. Автоподачу откликов не включать.
-- Career Inbox Slice A+B готовы к Slice C: backup dev PostgreSQL, применить `018` к dev, включить `career_inbox_enabled` только владельцем, один личный Telegram-смоук (TCS/Andersen/Elinext как inbound leads, ТЕХНОНИКОЛЬ как `role_scope_mismatch`, ГСП-Центр/ЕСТП с next action, 7 parser-карточек с owner verdict), затем root acceptance и cutover note.
+- Продолжить личный Telegram-смоук Career Inbox (TCS/Andersen/Elinext как inbound leads, ТЕХНОНИКОЛЬ как `role_scope_mismatch`, ГСП-Центр/ЕСТП с next action, вакансии из telegram-digest после import), затем root acceptance и cutover note в root SESSION_LOG.
 
 ## Last Update
 - Delivery-layer cleanup завершен: один движок (`graph_v2`), `onboarding` разрезан на focused-модули, честная `AgentState` schema + drift-guard test, `conversation_runtime` (text-first, `text_only` явный), границы routing задокументированы.
