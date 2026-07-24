@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # only the "Черновик сопровода" button on a prepare card. LLM is an
     # untrusted drafter; approve never sends anything or creates an application.
     career_cover_letter_draft_enabled: bool = False
+    # Owner-triggered "check for new vacancies" button (Telegram parser refresh).
+    # Off by default; requires vacancy_refresh_repo_path to point at the
+    # telegram-digest checkout. Never runs on a schedule - button trigger only,
+    # per telegram-digest/CLAUDE.md ("no schedulers without a separate decision").
+    career_vacancy_refresh_enabled: bool = False
+    vacancy_refresh_repo_path: str = ""
 
     @property
     def ml_technical_telegram_allowed_id_set(self) -> frozenset[int]:

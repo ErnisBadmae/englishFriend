@@ -59,6 +59,7 @@ from app.services.ml_technical_service import (
     MlTechnicalConflictError,
     MlTechnicalService,
 )
+from app.services.vacancy_refresh_service import refresh_vacancies
 
 MAX_SESSION_QUESTIONS = 5
 RECENT_APPLICATIONS_DISPLAY_LIMIT = 10
@@ -732,11 +733,16 @@ class MlTechnicalTelegramController:
         timezone_name: str = "Europe/Moscow",
         career_inbox_enabled: bool = False,
         career_cover_letter_draft_enabled: bool = False,
+        career_vacancy_refresh_enabled: bool = False,
+        vacancy_refresh_repo_path: str = "",
     ) -> None:
         self.gateway = gateway
         self.allowed_ids = allowed_ids
         self.career_inbox_enabled = career_inbox_enabled
         self.career_cover_letter_draft_enabled = career_cover_letter_draft_enabled
+        self.career_vacancy_refresh_enabled = career_vacancy_refresh_enabled
+        self.vacancy_refresh_repo_path = vacancy_refresh_repo_path
+        self._vacancy_refresh_in_progress = False
         try:
             self.timezone = ZoneInfo(timezone_name)
         except ZoneInfoNotFoundError:
@@ -805,6 +811,8 @@ class MlTechnicalTelegramController:
         if self.career_inbox_enabled:
             rows.append([("Входящие", "career:inbox")])
             rows.append([("Добавить контакт или ответ", "career:lead")])
+        if self.career_vacancy_refresh_enabled:
+            rows.append([("Проверить новые вакансии", "career:refresh")])
         rows.append([("Назад", "career:back")])
         return _markup(rows)
 
@@ -1726,6 +1734,35 @@ class MlTechnicalTelegramController:
         await callback.answer()
         await self._show_inbox_item(callback.message, user_id, inbox_item_id)
 
+    async def _on_career_callback_refresh(self, callback: Any, user_id: int) -> None:
+        if not self.career_vacancy_refresh_enabled:
+            await callback.answer("Функция выключена")
+            return
+        if self._vacancy_refresh_in_progress:
+            await callback.answer("Уже проверяю, подождите")
+            return
+        await callback.answer("Запускаю проверку")
+        self._vacancy_refresh_in_progress = True
+        await callback.message.answer(
+            "Проверяю новые вакансии в Telegram-каналах. "
+            "Это может занять несколько минут."
+        )
+        try:
+            result = await refresh_vacancies(
+                digest_repo_path=self.vacancy_refresh_repo_path,
+                telegram_id=self._telegram_id(callback),
+            )
+        finally:
+            self._vacancy_refresh_in_progress = False
+        if not result.ok:
+            await callback.message.answer(
+                f"Не получилось обновить вакансии.\n{result.message}"
+            )
+            return
+        await callback.message.answer(
+            f"Готово: {result.message}", reply_markup=self._career_markup()
+        )
+
     async def _on_career_callback_verdict(
         self, callback: Any, user_id: int, rest: list[str]
     ) -> None:
@@ -2053,6 +2090,8 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_draft_copy(callback, user_id, rest)
         elif action == "draftfacts" and rest:
             await self._on_career_callback_draft_facts(callback, user_id, rest)
+        elif action == "refresh":
+            await self._on_career_callback_refresh(callback, user_id)
         else:
             await callback.answer("Неизвестное действие")
 
@@ -2135,6 +2174,8 @@ async def _run() -> None:
         timezone_name=settings.ml_technical_telegram_timezone,
         career_inbox_enabled=settings.career_inbox_enabled,
         career_cover_letter_draft_enabled=settings.career_cover_letter_draft_enabled,
+        career_vacancy_refresh_enabled=settings.career_vacancy_refresh_enabled,
+        vacancy_refresh_repo_path=settings.vacancy_refresh_repo_path,
     )
     dispatcher = build_dispatcher(controller)
     await bot.set_my_commands(

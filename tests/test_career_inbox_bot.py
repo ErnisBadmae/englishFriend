@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
+import app.adapters.telegram.ml_technical_bot as ml_technical_bot
 from app.adapters.telegram.ml_technical_bot import (
     MlTechnicalTelegramController,
     _career_applied_callback,
@@ -22,6 +24,7 @@ from app.services.career_ledger_service import (
     INTENT_CAREER_FEEDBACK,
     INTENT_CAREER_MANUAL_LEAD,
 )
+from app.services.vacancy_refresh_service import RefreshResult
 
 
 class FakeChat:
@@ -258,13 +261,19 @@ class FakeInboxGateway:
 
 
 def _controller(
-    gateway: FakeInboxGateway, *, enabled: bool, draft_enabled: bool = False
+    gateway: FakeInboxGateway,
+    *,
+    enabled: bool,
+    draft_enabled: bool = False,
+    refresh_enabled: bool = False,
 ) -> MlTechnicalTelegramController:
     return MlTechnicalTelegramController(
         gateway,
         allowed_ids=frozenset({111}),
         career_inbox_enabled=enabled,
         career_cover_letter_draft_enabled=draft_enabled,
+        career_vacancy_refresh_enabled=refresh_enabled,
+        vacancy_refresh_repo_path="C:/fake/telegram-digest",
     )
 
 
@@ -889,3 +898,115 @@ async def test_stale_draft_action_ids_fail_closed():
         # Either fails closed with an explicit error answer, or "Не найдено"
         # (copy) - never silently succeeds on an unknown draft id.
         assert callback.answers
+
+
+# ---------------------------------------------------------------------------
+# Vacancy refresh (owner-triggered Telegram parser button)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_button_hidden_when_flag_off():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=False)
+    callback = FakeCallback(111, "menu:career")
+
+    await controller.on_menu(callback)
+
+    labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
+    assert "Проверить новые вакансии" not in labels
+
+
+@pytest.mark.asyncio
+async def test_refresh_button_shown_when_flag_on():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    callback = FakeCallback(111, "menu:career")
+
+    await controller.on_menu(callback)
+
+    labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
+    assert "Проверить новые вакансии" in labels
+
+
+@pytest.mark.asyncio
+async def test_refresh_flag_off_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=False)
+    callback = FakeCallback(111, "career:refresh")
+
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Функция выключена"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_success_shows_summary(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+
+    async def fake_refresh_vacancies(*, digest_repo_path, telegram_id):
+        assert digest_repo_path == "C:/fake/telegram-digest"
+        assert telegram_id == 111
+        return RefreshResult(
+            True, "DONE. imported=3 skipped_duplicate=0 rejected=0 total_read=3"
+        )
+
+    monkeypatch.setattr(
+        ml_technical_bot, "refresh_vacancies", fake_refresh_vacancies
+    )
+
+    callback = FakeCallback(111, "career:refresh")
+    await controller.on_career_callback(callback)
+
+    assert callback.answers[0] == "Запускаю проверку"
+    assert any("imported=3" in reply for reply in callback.message.replies)
+    assert controller._vacancy_refresh_in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_shows_error(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+
+    async def fake_refresh_vacancies(*, digest_repo_path, telegram_id):
+        return RefreshResult(False, "Парсер вакансий упал:\nboom")
+
+    monkeypatch.setattr(
+        ml_technical_bot, "refresh_vacancies", fake_refresh_vacancies
+    )
+
+    callback = FakeCallback(111, "career:refresh")
+    await controller.on_career_callback(callback)
+
+    assert any("Не получилось обновить вакансии" in reply for reply in callback.message.replies)
+    assert any("boom" in reply for reply in callback.message.replies)
+    assert controller._vacancy_refresh_in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_busy_guard_blocks_concurrent_runs(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    release = asyncio.Event()
+
+    async def slow_refresh_vacancies(*, digest_repo_path, telegram_id):
+        await release.wait()
+        return RefreshResult(True, "DONE. imported=0")
+
+    monkeypatch.setattr(
+        ml_technical_bot, "refresh_vacancies", slow_refresh_vacancies
+    )
+
+    first = FakeCallback(111, "career:refresh", callback_id="first")
+    second = FakeCallback(111, "career:refresh", callback_id="second")
+
+    first_task = asyncio.create_task(controller.on_career_callback(first))
+    await asyncio.sleep(0)  # let the first handler grab the busy-guard
+    await controller.on_career_callback(second)
+
+    assert second.answers == ["Уже проверяю, подождите"]
+
+    release.set()
+    await first_task
+    assert first.answers[0] == "Запускаю проверку"
