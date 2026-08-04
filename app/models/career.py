@@ -423,6 +423,113 @@ class CareerCoverLetterDraft(Base):
     )
 
 
+class CareerApplicationPackage(Base):
+    """Immutable, content-hashed snapshot of one prepared application package
+    (career/CAREER_OPERATING_SYSTEM_V1_SPEC.md, Slice D1a).
+
+    Captures the exact inbox item version, final gates, owner-approved cover
+    draft, chosen CV variant and facts_bank state at prepare time. ``status``
+    transitions once, one-way: ``ready`` -> ``submitted`` or ``expired``.
+    ``submitted`` only ever links to an application/event created via the
+    existing :class:`~app.services.career_ledger_service.CareerLedgerService`
+    write path - this table never creates one itself and never sends anything
+    externally.
+    """
+
+    __tablename__ = "career_application_packages"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "user_id", name="career_application_packages_id_user_id_key"
+        ),
+        ForeignKeyConstraint(
+            ["inbox_item_id", "user_id"],
+            ["career_inbox_items.id", "career_inbox_items.user_id"],
+            ondelete="CASCADE",
+            name="career_application_packages_inbox_user_fkey",
+        ),
+        ForeignKeyConstraint(
+            ["cover_draft_id", "user_id"],
+            ["career_cover_letter_drafts.id", "career_cover_letter_drafts.user_id"],
+            ondelete="CASCADE",
+            name="career_application_packages_draft_user_fkey",
+        ),
+        ForeignKeyConstraint(
+            ["linked_application_id", "user_id"],
+            ["career_applications.id", "career_applications.user_id"],
+            ondelete="SET NULL",
+            name="career_application_packages_application_user_fkey",
+        ),
+        CheckConstraint(
+            "package_kind in ('application')",
+            name="career_application_packages_kind_check",
+        ),
+        CheckConstraint(
+            "status in ('ready', 'submitted', 'expired')",
+            name="career_application_packages_status_check",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "inbox_item_id",
+            "package_content_hash",
+            name="career_application_packages_content_hash_unique",
+        ),
+        Index(
+            "career_application_packages_user_created_idx", "user_id", "created_at"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    inbox_item_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    inbox_item_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    company: Mapped[str] = mapped_column(String(200), nullable=False)
+    role_title: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    gates_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    gates_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    questions_for_recruiter: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    policy_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    cover_draft_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    cover_version: Mapped[int] = mapped_column(nullable=False)
+    cover_text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    used_fact_ids: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    facts_bank_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    cv_variant_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    cv_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    package_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="application"
+    )
+    package_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ready")
+    actor_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ready_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    linked_application_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )
+    linked_event_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )
+
+
 __all__ = [
     "CareerVacancySnapshot",
     "CareerApplication",
@@ -431,4 +538,5 @@ __all__ = [
     "CareerInboxItem",
     "CareerFeedbackEvent",
     "CareerCoverLetterDraft",
+    "CareerApplicationPackage",
 ]

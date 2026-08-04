@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # per telegram-digest/CLAUDE.md ("no schedulers without a separate decision").
     career_vacancy_refresh_enabled: bool = False
     vacancy_refresh_repo_path: str = ""
+    # Career OS D1b (CAREER_OPERATING_SYSTEM_V1_SPEC.md). Gates package creation
+    # ("Собрать пакет" after an owner_approved cover draft) and the "Готовые"
+    # ready-queue menu. Off by default; package authority stays in the D1a
+    # service (career_inbox_service.py) unchanged.
+    career_ready_queue_enabled: bool = False
 
     @property
     def ml_technical_telegram_allowed_id_set(self) -> frozenset[int]:
