@@ -236,6 +236,7 @@ class CareerLedgerService:
         actor_type: str = ACTOR_TYPE_OWNER,
         actor_id: str,
         applied_at: Optional[datetime] = None,
+        event_metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Atomically create/reuse a snapshot, create the application and its
         first event. A repeated call with the same ``idempotency_key`` for
@@ -339,7 +340,7 @@ class CareerLedgerService:
                     to_status=STATUS_APPLIED,
                     actor_type=actor_type,
                     actor_id=actor_id,
-                    event_metadata={},
+                    event_metadata=event_metadata or {},
                     idempotency_key=idempotency_key,
                     occurred_at=now,
                 )

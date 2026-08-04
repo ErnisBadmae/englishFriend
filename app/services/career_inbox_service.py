@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models.career import (
+    CareerApplicationPackage,
     CareerCoverLetterDraft,
     CareerFeedbackEvent,
     CareerInboxItem,
@@ -105,6 +106,15 @@ DRAFT_STATUS_REJECTED = "rejected"
 VALID_DRAFT_STATUSES = {DRAFT_STATUS_DRAFT, DRAFT_STATUS_APPROVED, DRAFT_STATUS_REJECTED}
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _NUMERIC_TOKEN_RE = re.compile(r"\d[\d.,]*%?\+?")
+
+# Application Package v0 (career/CAREER_OPERATING_SYSTEM_V1_SPEC.md, Slice D1a).
+# CV variant selection reuses the existing facts_bank.yaml `role_types` mapping
+# (trigger keywords -> CV file) - no new matcher is built here; the owner or
+# caller picks `cv_variant_id` explicitly from that mapping's keys.
+PACKAGE_STATUS_READY = "ready"
+PACKAGE_STATUS_SUBMITTED = "submitted"
+PACKAGE_STATUS_EXPIRED = "expired"
+PACKAGE_KIND_APPLICATION = "application"
 
 
 class CareerInboxError(ValueError):
@@ -272,6 +282,37 @@ def _cover_letter_draft_dict(row: CareerCoverLetterDraft) -> dict[str, Any]:
         "actor_id": row.actor_id,
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _package_dict(row: CareerApplicationPackage) -> dict[str, Any]:
+    return {
+        "package_id": str(row.id),
+        "inbox_item_id": row.inbox_item_id,
+        "inbox_item_content_hash": row.inbox_item_content_hash,
+        "company": row.company,
+        "role_title": row.role_title,
+        "source_url": row.source_url,
+        "gates_snapshot": dict(row.gates_snapshot or {}),
+        "gates_hash": row.gates_hash,
+        "questions_for_recruiter": list(row.questions_for_recruiter or []),
+        "policy_ref": row.policy_ref,
+        "cover_draft_id": row.cover_draft_id,
+        "cover_version": row.cover_version,
+        "cover_text_hash": row.cover_text_hash,
+        "used_fact_ids": list(row.used_fact_ids or []),
+        "facts_bank_hash": row.facts_bank_hash,
+        "cv_variant_id": row.cv_variant_id,
+        "cv_content_hash": row.cv_content_hash,
+        "package_kind": row.package_kind,
+        "package_content_hash": row.package_content_hash,
+        "status": row.status,
+        "actor_id": row.actor_id,
+        "created_at": row.created_at.isoformat(),
+        "ready_at": row.ready_at.isoformat(),
+        "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+        "linked_application_id": row.linked_application_id,
+        "linked_event_id": row.linked_event_id,
     }
 
 
@@ -1035,6 +1076,362 @@ class CareerInboxService:
         )
         return _cover_letter_draft_dict(row) if row is not None else None
 
+    # ── Application Package v0 (Slice D1a) ─────────────────────────────────
+
+    async def _is_latest_inbox_version(
+        self, user_id: int, item_row: CareerInboxItem
+    ) -> bool:
+        """True if no newer content_hash version exists for this item's
+        (source, external_id) group - the same grouping :meth:`list_inbox_items`
+        uses to decide which version is current."""
+        group_key = item_row.external_id or str(item_row.id)
+        newer = await self.db.scalar(
+            select(func.count())
+            .select_from(CareerInboxItem)
+            .where(
+                CareerInboxItem.user_id == user_id,
+                CareerInboxItem.source == item_row.source,
+                func.coalesce(
+                    CareerInboxItem.external_id, func.cast(CareerInboxItem.id, String)
+                )
+                == group_key,
+                CareerInboxItem.created_at > item_row.created_at,
+            )
+        )
+        return not newer
+
+    @staticmethod
+    def _cv_variant_content_hash(
+        cv_variant_id: str, facts_bank: dict[str, Any], facts_bank_path: Path
+    ) -> str:
+        role_types = facts_bank.get("role_types") or {}
+        variant = role_types.get(cv_variant_id)
+        if not isinstance(variant, dict) or not variant.get("cv"):
+            raise CareerInboxError(f"unknown cv_variant_id: {cv_variant_id}")
+        cv_path = facts_bank_path.parent / str(variant["cv"])
+        try:
+            cv_text = cv_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CareerInboxError(f"cv file unavailable: {cv_path.name}") from exc
+        return hashlib.sha256(cv_text.encode("utf-8")).hexdigest()
+
+    async def prepare_application_package(
+        self,
+        user_id: int,
+        *,
+        inbox_item_id: str,
+        cover_draft_id: str,
+        cv_variant_id: str,
+        actor_id: str,
+        facts_bank_path: Path = FACTS_BANK_PATH,
+    ) -> dict[str, Any]:
+        """Owner-triggered: builds an immutable ``ready`` package snapshot from
+        a ``prepare``-verdict inbox item, its owner-approved cover draft and a
+        chosen CV variant (from the existing facts_bank `role_types` mapping -
+        no new CV matcher). Idempotent on package content: identical inputs
+        return the existing package instead of a new row (invariant 5)."""
+        actor_id = _bounded_text("actor_id", actor_id, 160, required=True)
+        await self._ensure_user_exists(user_id)
+
+        item_row = await self.db.scalar(
+            select(CareerInboxItem).where(
+                CareerInboxItem.user_id == user_id,
+                CareerInboxItem.id == inbox_item_id,
+            )
+        )
+        if item_row is None:
+            raise CareerInboxError(f"unknown career inbox_item_id: {inbox_item_id}")
+        if item_row.owner_verdict != VERDICT_PREPARE:
+            raise CareerInboxError(
+                "application package requires a prior 'prepare' verdict"
+            )
+        if not await self._is_latest_inbox_version(user_id, item_row):
+            raise CareerInboxError(
+                "inbox item has a newer version; refresh before packaging"
+            )
+
+        draft_row = await self.db.scalar(
+            select(CareerCoverLetterDraft).where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.id == cover_draft_id,
+            )
+        )
+        if draft_row is None:
+            raise CareerInboxError(f"unknown cover letter draft_id: {cover_draft_id}")
+        if draft_row.inbox_item_id != inbox_item_id:
+            raise CareerInboxError("cover draft does not belong to this inbox item")
+        if draft_row.status != DRAFT_STATUS_APPROVED:
+            raise CareerInboxError("cover draft must be owner_approved before packaging")
+
+        facts_bank = load_facts_bank(facts_bank_path)
+        if facts_bank is None:
+            raise CareerInboxError("facts_bank unavailable; cannot package")
+        cv_content_hash = self._cv_variant_content_hash(
+            cv_variant_id, facts_bank, facts_bank_path
+        )
+        facts_bank_hash = hashlib.sha256(
+            facts_bank_path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
+
+        gates_snapshot = dict(item_row.gates or {})
+        package_fields = {
+            "inbox_item_id": inbox_item_id,
+            "inbox_item_content_hash": item_row.content_hash,
+            "company": item_row.company or "Unknown",
+            "role_title": item_row.role_title or "Unknown",
+            "source_url": item_row.url,
+            "gates_snapshot": gates_snapshot,
+            "gates_hash": _content_hash(gates_snapshot),
+            "questions_for_recruiter": list(item_row.questions_for_recruiter or []),
+            # References the final-gates decision already made by telegram-digest's
+            # policy layer at import time (SPEC section 6) - no runtime read of
+            # PERSONAL_STRATEGY.md or any other sibling policy doc.
+            "policy_ref": f"telegram_digest_final_gates:{item_row.content_hash}",
+            "cover_draft_id": cover_draft_id,
+            "cover_version": draft_row.version,
+            "cover_text_hash": hashlib.sha256(
+                draft_row.body.encode("utf-8")
+            ).hexdigest(),
+            "used_fact_ids": list(
+                (draft_row.grounding_report or {}).get("used_facts") or []
+            ),
+            "facts_bank_hash": facts_bank_hash,
+            "cv_variant_id": cv_variant_id,
+            "cv_content_hash": cv_content_hash,
+            "package_kind": PACKAGE_KIND_APPLICATION,
+        }
+        package_content_hash = _content_hash(package_fields)
+
+        existing = await self.db.scalar(
+            select(CareerApplicationPackage).where(
+                CareerApplicationPackage.user_id == user_id,
+                CareerApplicationPackage.inbox_item_id == inbox_item_id,
+                CareerApplicationPackage.package_content_hash == package_content_hash,
+            )
+        )
+        if existing is not None:
+            return {"created": False, "package": _package_dict(existing)}
+
+        now = _utcnow()
+        package_id = str(uuid4())
+        try:
+            result_id = await self.db.scalar(
+                pg_insert(CareerApplicationPackage)
+                .values(
+                    id=package_id,
+                    user_id=user_id,
+                    package_content_hash=package_content_hash,
+                    status=PACKAGE_STATUS_READY,
+                    actor_id=actor_id,
+                    created_at=now,
+                    ready_at=now,
+                    **package_fields,
+                )
+                .on_conflict_do_nothing()
+                .returning(CareerApplicationPackage.id)
+            )
+            if result_id is None:
+                await self.db.rollback()
+                winner = await self.db.scalar(
+                    select(CareerApplicationPackage).where(
+                        CareerApplicationPackage.user_id == user_id,
+                        CareerApplicationPackage.inbox_item_id == inbox_item_id,
+                        CareerApplicationPackage.package_content_hash
+                        == package_content_hash,
+                    )
+                )
+                if winner is None:
+                    raise CareerInboxConflictError("duplicate application package")
+                return {"created": False, "package": _package_dict(winner)}
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise CareerInboxConflictError(
+                "duplicate or conflicting application package"
+            ) from exc
+
+        row = await self.db.get(CareerApplicationPackage, package_id)
+        return {"created": True, "package": _package_dict(row)}
+
+    async def _package_staleness_reason(
+        self,
+        user_id: int,
+        package_row: CareerApplicationPackage,
+        facts_bank_path: Path,
+    ) -> Optional[str]:
+        """Read-only re-check of every input the package snapshot pinned.
+        Blocks submit as stale (invariant 6) rather than running a background
+        expiry sweep - no scheduler is introduced for D1a."""
+        item_row = await self.db.scalar(
+            select(CareerInboxItem).where(
+                CareerInboxItem.user_id == user_id,
+                CareerInboxItem.id == package_row.inbox_item_id,
+            )
+        )
+        if item_row is None or item_row.content_hash != package_row.inbox_item_content_hash:
+            return "inbox item vacancy content changed"
+        if not await self._is_latest_inbox_version(user_id, item_row):
+            return "inbox item has a newer version"
+        if _content_hash(dict(item_row.gates or {})) != package_row.gates_hash:
+            return "gates changed"
+
+        draft_row = await self.db.scalar(
+            select(CareerCoverLetterDraft).where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.id == package_row.cover_draft_id,
+            )
+        )
+        if draft_row is None or draft_row.status != DRAFT_STATUS_APPROVED:
+            return "cover draft no longer approved"
+        latest_approved_version = await self.db.scalar(
+            select(func.max(CareerCoverLetterDraft.version)).where(
+                CareerCoverLetterDraft.user_id == user_id,
+                CareerCoverLetterDraft.inbox_item_id == package_row.inbox_item_id,
+                CareerCoverLetterDraft.status == DRAFT_STATUS_APPROVED,
+            )
+        )
+        if (
+            latest_approved_version is not None
+            and latest_approved_version != package_row.cover_version
+        ):
+            return "a newer approved cover draft version exists"
+
+        facts_bank = load_facts_bank(facts_bank_path)
+        if facts_bank is None:
+            return "facts_bank unavailable"
+        current_facts_bank_hash = hashlib.sha256(
+            facts_bank_path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
+        if current_facts_bank_hash != package_row.facts_bank_hash:
+            return "facts_bank changed"
+        try:
+            current_cv_hash = self._cv_variant_content_hash(
+                package_row.cv_variant_id, facts_bank, facts_bank_path
+            )
+        except CareerInboxError:
+            return "cv variant no longer available"
+        if current_cv_hash != package_row.cv_content_hash:
+            return "cv content changed"
+        return None
+
+    async def submit_application_package(
+        self,
+        user_id: int,
+        *,
+        package_id: str,
+        expected_package_hash: str,
+        idempotency_key: str,
+        actor_id: str,
+        facts_bank_path: Path = FACTS_BANK_PATH,
+    ) -> dict[str, Any]:
+        """Owner-confirmed second step after ``prepare_application_package``.
+        Links a real application/event created via the existing ledger
+        idempotent path - no new send/apply logic is introduced here, and no
+        external message or submission happens on this write path."""
+        idempotency_key = _bounded_text(
+            "idempotency_key", idempotency_key, 200, required=True
+        )
+        actor_id = _bounded_text("actor_id", actor_id, 160, required=True)
+        await self._ensure_user_exists(user_id)
+
+        replay = await self.db.scalar(
+            select(CareerApplicationPackage).where(
+                CareerApplicationPackage.user_id == user_id,
+                CareerApplicationPackage.idempotency_key == idempotency_key,
+            )
+        )
+        if replay is not None:
+            application = (
+                await self.ledger.get_application(
+                    user_id, replay.linked_application_id
+                )
+                if replay.linked_application_id
+                else None
+            )
+            return {
+                "created": False,
+                "package": _package_dict(replay),
+                "application": application,
+            }
+
+        row = await self.db.scalar(
+            select(CareerApplicationPackage)
+            .where(
+                CareerApplicationPackage.user_id == user_id,
+                CareerApplicationPackage.id == package_id,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            raise CareerInboxError(f"unknown application package_id: {package_id}")
+        if row.package_content_hash != expected_package_hash:
+            raise CareerInboxError("stale package: expected hash mismatch")
+        if row.status != PACKAGE_STATUS_READY:
+            raise CareerInboxError(f"package already {row.status}; cannot submit")
+
+        staleness = await self._package_staleness_reason(user_id, row, facts_bank_path)
+        if staleness:
+            raise CareerInboxError(f"stale package: {staleness}")
+
+        try:
+            ledger_result = await self.ledger.record_manual_application(
+                user_id,
+                company=row.company,
+                role_title=row.role_title,
+                url=row.source_url,
+                source="telegram_manual",
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+                event_metadata={"application_package_id": str(row.id)},
+            )
+        except CareerLedgerError as exc:
+            raise CareerInboxError(str(exc)) from exc
+
+        row.status = PACKAGE_STATUS_SUBMITTED
+        row.idempotency_key = idempotency_key
+        row.submitted_at = _utcnow()
+        row.linked_application_id = ledger_result["application"]["application_id"]
+        row.linked_event_id = ledger_result["event"]["event_id"]
+        await self.db.commit()
+        await self.db.refresh(row)
+        return {
+            "created": True,
+            "package": _package_dict(row),
+            "application": ledger_result["application"],
+        }
+
+    async def get_application_package(
+        self, user_id: int, package_id: str
+    ) -> Optional[dict[str, Any]]:
+        await self._ensure_user_exists(user_id)
+        row = await self.db.scalar(
+            select(CareerApplicationPackage).where(
+                CareerApplicationPackage.user_id == user_id,
+                CareerApplicationPackage.id == package_id,
+            )
+        )
+        return _package_dict(row) if row is not None else None
+
+    async def list_ready_application_packages(
+        self, user_id: int, *, limit: int = 7
+    ) -> list[dict[str, Any]]:
+        """Bounded, owner-only view of ready-to-send packages, newest first.
+        Does not compute any score/matcher and makes no provider/network call."""
+        await self._ensure_user_exists(user_id)
+        bounded_limit = max(1, min(limit, 7))
+        rows = (
+            await self.db.execute(
+                select(CareerApplicationPackage)
+                .where(
+                    CareerApplicationPackage.user_id == user_id,
+                    CareerApplicationPackage.status == PACKAGE_STATUS_READY,
+                )
+                .order_by(CareerApplicationPackage.created_at.desc())
+                .limit(bounded_limit)
+            )
+        ).scalars().all()
+        return [_package_dict(row) for row in rows]
+
 
 # ─── LLM suggestion (untrusted extractor; never writes canonical state) ──────
 
@@ -1165,6 +1562,10 @@ __all__ = [
     "INBOX_DISPLAY_LIMIT",
     "MANUAL_LEAD_SOURCES",
     "MAX_PASTED_LEADS",
+    "PACKAGE_KIND_APPLICATION",
+    "PACKAGE_STATUS_EXPIRED",
+    "PACKAGE_STATUS_READY",
+    "PACKAGE_STATUS_SUBMITTED",
     "SOURCE_HEADHUNTER_INBOUND",
     "SOURCE_LINKEDIN_INBOUND",
     "SOURCE_MANUAL",
