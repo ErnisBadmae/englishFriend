@@ -20,7 +20,10 @@ from app.services.career_inbox_service import (
     INBOX_DISPLAY_LIMIT,
     MAX_PASTED_LEADS,
     VERDICT_APPLIED,
+    VERDICT_ASK,
+    VERDICT_FALSE_POSITIVE,
     VERDICT_PREPARE,
+    VERDICT_SKIP,
     CareerInboxError,
     CareerInboxService,
     build_grounding_report,
@@ -512,11 +515,11 @@ async def test_replaying_manual_lead_idempotency_key_creates_no_duplicate(
 
 
 @pytest.mark.integration
-async def test_list_inbox_items_is_bounded_to_seven(pg_session_maker):
+async def test_list_inbox_items_is_bounded(pg_session_maker):
     async with pg_session_maker() as db:
         user_id = await _create_user(db)
         service = CareerInboxService(db)
-        for i in range(10):
+        for i in range(INBOX_DISPLAY_LIMIT + 5):
             await service.confirm_manual_lead(
                 user_id,
                 source="manual",
@@ -530,6 +533,60 @@ async def test_list_inbox_items_is_bounded_to_seven(pg_session_maker):
         items = await service.list_inbox_items(user_id)
 
         assert len(items) == INBOX_DISPLAY_LIMIT
+
+
+@pytest.mark.integration
+async def test_list_inbox_items_excludes_settled_verdicts(pg_session_maker):
+    """skip/false_positive/applied no longer need an owner look, so they must
+    not crowd out cards still awaiting one (None/ask/prepare stay visible)."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        async def _lead(label: str) -> str:
+            result = await service.confirm_manual_lead(
+                user_id,
+                source="manual",
+                raw_text=f"lead {label}",
+                company=f"Company {label}",
+                role_title="Engineer",
+                idempotency_key=f"telegram:{uuid4().hex}",
+                actor_id="123456",
+            )
+            return result["inbox_item"]["inbox_item_id"]
+
+        visible_none = await _lead("none")
+        visible_ask = await _lead("ask")
+        visible_prepare = await _lead("prepare")
+        hidden_skip = await _lead("skip")
+        hidden_false_positive = await _lead("false_positive")
+        hidden_applied = await _lead("applied")
+
+        for item_id, verdict in (
+            (visible_ask, VERDICT_ASK),
+            (visible_prepare, VERDICT_PREPARE),
+            (hidden_skip, VERDICT_SKIP),
+            (hidden_false_positive, VERDICT_FALSE_POSITIVE),
+            (hidden_applied, VERDICT_PREPARE),
+        ):
+            await service.set_verdict(
+                user_id,
+                inbox_item_id=item_id,
+                verdict=verdict,
+                idempotency_key=f"telegram_callback:{uuid4().hex}",
+                actor_id="123456",
+            )
+        await service.confirm_applied(
+            user_id,
+            inbox_item_id=hidden_applied,
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        items = await service.list_inbox_items(user_id)
+
+        visible_ids = {item["inbox_item_id"] for item in items}
+        assert visible_ids == {visible_none, visible_ask, visible_prepare}
 
 
 @pytest.mark.integration

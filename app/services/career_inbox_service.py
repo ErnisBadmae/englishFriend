@@ -20,7 +20,7 @@ from typing import Any, Optional, Protocol
 from uuid import uuid4
 
 import yaml
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +45,7 @@ URL_MAX_LEN = 500
 RAW_TEXT_MAX_LEN = 4000
 NEXT_ACTION_MAX_LEN = 200
 EVIDENCE_MAX_LEN = 1000
-INBOX_DISPLAY_LIMIT = 7
+INBOX_DISPLAY_LIMIT = 15
 
 SOURCE_MANUAL = "manual"
 SOURCE_LINKEDIN_INBOUND = "linkedin_inbound"
@@ -77,6 +77,9 @@ VERDICT_SKIP = "skip"
 VERDICT_FALSE_POSITIVE = "false_positive"
 VERDICT_APPLIED = "applied"
 VALID_MANUAL_VERDICTS = {VERDICT_ASK, VERDICT_PREPARE, VERDICT_SKIP, VERDICT_FALSE_POSITIVE}
+# Settled = no further owner action expected on this card; kept out of the
+# default inbox view so they stop crowding out cards still needing a look.
+SETTLED_INBOX_VERDICTS = {VERDICT_SKIP, VERDICT_FALSE_POSITIVE, VERDICT_APPLIED}
 
 FEEDBACK_CATEGORIES = {
     "positive_next_step",
@@ -622,7 +625,10 @@ class CareerInboxService:
         stable key (source, external_id), only the newest content_hash
         version is shown - older immutable snapshots stay in the table for
         audit but are not surfaced (SPEC section 6). Manual leads have no
-        external_id, so each one is its own group."""
+        external_id, so each one is its own group. Settled cards
+        (SETTLED_INBOX_VERDICTS) are excluded so they stop crowding out
+        cards still needing an owner look; they remain in the table and are
+        still reachable individually via get_inbox_item / Отклики."""
         await self._ensure_user_exists(user_id)
         bounded_limit = max(1, min(limit, INBOX_DISPLAY_LIMIT))
         group_key = func.coalesce(
@@ -645,7 +651,13 @@ class CareerInboxService:
         rows = (
             await self.db.execute(
                 select(latest)
-                .where(ranked.c.rn == 1)
+                .where(
+                    ranked.c.rn == 1,
+                    or_(
+                        latest.owner_verdict.is_(None),
+                        latest.owner_verdict.notin_(SETTLED_INBOX_VERDICTS),
+                    ),
+                )
                 .order_by(ranked.c.created_at.desc(), ranked.c.id.desc())
                 .limit(bounded_limit)
             )

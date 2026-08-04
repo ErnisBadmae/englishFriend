@@ -297,17 +297,17 @@ async def test_changed_content_hash_creates_new_row_but_list_shows_only_latest(
 
 
 @pytest.mark.integration
-async def test_list_inbox_items_stays_bounded_to_seven_after_import(
+async def test_list_inbox_items_stays_bounded_after_import(
     pg_session_maker,
 ):
     async with pg_session_maker() as db:
         user_id = await _create_user(db)
         service = CareerInboxService(db)
-        for i in range(10):
+        for i in range(INBOX_DISPLAY_LIMIT + 5):
             await service.import_snapshot(
                 user_id,
                 external_id=f"@chan:{i}",
-                content_hash=f"{i}" * 64,
+                content_hash=f"{i:064x}",
                 company=f"Company {i}",
                 role_title="ML Engineer",
                 route="outreach",
