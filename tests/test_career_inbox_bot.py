@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -17,6 +18,12 @@ from app.adapters.telegram.ml_technical_bot import (
     _career_draft_reject_callback,
     _career_feedback_start_callback,
     _career_item_callback,
+    _career_package_cancel_callback,
+    _career_package_confirm_callback,
+    _career_package_cv_callback,
+    _career_package_item_callback,
+    _career_package_send_callback,
+    _career_package_start_callback,
     _career_verdict_callback,
 )
 from app.services.career_inbox_service import CareerInboxError
@@ -79,6 +86,11 @@ class FakeInboxGateway:
         self.generate_draft_calls: list[str] = []
         self.manual_path_result: dict | None = None
         self.draft_body_by_call: str = "Черновик текста."
+        self.application_packages: dict[str, dict] = {}
+        self.prepare_package_calls: list[dict] = []
+        self.prepare_package_error: Exception | None = None
+        self._pkg_seq = 0
+        self.submit_idempotency_keys: dict[str, str] = {}
 
     async def resolve_user(self, telegram_id: int):
         return self.links.get(telegram_id)
@@ -259,6 +271,79 @@ class FakeInboxGateway:
     async def get_cover_letter_draft(self, user_id, draft_id):
         return self.cover_letter_drafts.get(draft_id)
 
+    # Application Package v0 (Slice D1a/D1b.1/D1b.2a)
+    async def prepare_application_package(
+        self, user_id, *, inbox_item_id, cover_draft_id, cv_variant_id, actor_id
+    ):
+        self.prepare_package_calls.append(
+            {
+                "inbox_item_id": inbox_item_id,
+                "cover_draft_id": cover_draft_id,
+                "cv_variant_id": cv_variant_id,
+            }
+        )
+        if self.prepare_package_error is not None:
+            raise self.prepare_package_error
+        for existing in self.application_packages.values():
+            if (
+                existing["inbox_item_id"] == inbox_item_id
+                and existing["cover_draft_id"] == cover_draft_id
+                and existing["cv_variant_id"] == cv_variant_id
+            ):
+                return {"created": False, "package": existing}
+        self._pkg_seq += 1
+        package_id = str(uuid4())
+        package = {
+            "package_id": package_id,
+            "inbox_item_id": inbox_item_id,
+            "cover_draft_id": cover_draft_id,
+            "cv_variant_id": cv_variant_id,
+            "company": self.inbox_items.get(inbox_item_id, {}).get("company"),
+            "role_title": self.inbox_items.get(inbox_item_id, {}).get("role_title"),
+            "source_url": self.inbox_items.get(inbox_item_id, {}).get("url"),
+            "gates_snapshot": self.inbox_items.get(inbox_item_id, {}).get("gates") or {},
+            "questions_for_recruiter": [],
+            "package_content_hash": "f" * 64,
+            "status": "ready",
+            "_seq": self._pkg_seq,
+        }
+        self.application_packages[package_id] = package
+        return {"created": True, "package": package}
+
+    async def list_ready_application_packages(self, user_id, *, limit=7):
+        ready = [p for p in self.application_packages.values() if p["status"] == "ready"]
+        ready.sort(key=lambda p: p["_seq"], reverse=True)
+        return ready[: max(1, min(limit, 7))]
+
+    async def get_application_package(self, user_id, package_id):
+        return self.application_packages.get(package_id)
+
+    async def submit_application_package(
+        self, user_id, *, package_id, expected_package_hash, idempotency_key, actor_id
+    ):
+        if idempotency_key in self.submit_idempotency_keys:
+            application_id = self.submit_idempotency_keys[idempotency_key]
+            return {"created": False, "application": self.applications[application_id]}
+        pkg = self.application_packages.get(package_id)
+        if pkg is None:
+            raise CareerInboxError(f"unknown application package_id: {package_id}")
+        if pkg["package_content_hash"] != expected_package_hash:
+            raise CareerInboxError("stale package: expected hash mismatch")
+        if pkg["status"] != "ready":
+            raise CareerInboxError(f"package already {pkg['status']}; cannot submit")
+        application_id = str(uuid4())
+        application = {
+            "application_id": application_id,
+            "company": pkg["company"],
+            "role_title": pkg["role_title"],
+            "status": "applied",
+        }
+        self.applications[application_id] = application
+        pkg["status"] = "submitted"
+        pkg["linked_application_id"] = application_id
+        self.submit_idempotency_keys[idempotency_key] = application_id
+        return {"created": True, "application": application}
+
 
 def _controller(
     gateway: FakeInboxGateway,
@@ -266,7 +351,12 @@ def _controller(
     enabled: bool,
     draft_enabled: bool = False,
     refresh_enabled: bool = False,
+    ready_queue_enabled: bool = False,
+    facts_bank_path: Path | None = None,
 ) -> MlTechnicalTelegramController:
+    kwargs = {}
+    if facts_bank_path is not None:
+        kwargs["facts_bank_path"] = facts_bank_path
     return MlTechnicalTelegramController(
         gateway,
         allowed_ids=frozenset({111}),
@@ -274,6 +364,8 @@ def _controller(
         career_cover_letter_draft_enabled=draft_enabled,
         career_vacancy_refresh_enabled=refresh_enabled,
         vacancy_refresh_repo_path="C:/fake/telegram-digest",
+        career_ready_queue_enabled=ready_queue_enabled,
+        **kwargs,
     )
 
 
@@ -772,7 +864,7 @@ async def test_generate_draft_shows_body_and_grounding_report():
     reply = draft_cb.message.replies[-1]
     assert "Откликаюсь на роль ML Engineer" in reply
     buttons = [t for t, _d in _flat_buttons(draft_cb.message.markups[-1])]
-    assert buttons == ["Одобрить черновик", "Отклонить", "Скопировать"]
+    assert buttons == ["Одобрить черновик", "Отклонить черновик", "Скопировать текст"]
 
 
 @pytest.mark.asyncio
@@ -1010,3 +1102,468 @@ async def test_refresh_busy_guard_blocks_concurrent_runs(monkeypatch):
     release.set()
     await first_task
     assert first.answers[0] == "Запускаю проверку"
+
+
+# ---------------------------------------------------------------------------
+# Application package creation (Career OS Slice D1b.1)
+# ---------------------------------------------------------------------------
+
+
+def _facts_bank_with_variants(tmp_path: Path, keys: list[str]) -> Path:
+    path = tmp_path / "facts_bank.yaml"
+    role_types = "\n".join(f"  {k}:\n    cv: CV_{k}.md" for k in keys)
+    path.write_text(
+        f"role_types:\n{role_types}\n"
+        "facts:\n  - id: profile_core\n    tier: A\n    text: Applied AI инженер.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+async def _approved_draft(
+    gateway: FakeInboxGateway, controller: MlTechnicalTelegramController, inbox_item_id: str
+) -> str:
+    before = set(gateway.cover_letter_drafts)
+    generate = FakeCallback(
+        111, _career_draft_callback(inbox_item_id), callback_id=f"gen-{uuid4().hex}"
+    )
+    await controller.on_career_callback(generate)
+    draft_id = next(iter(set(gateway.cover_letter_drafts) - before))
+    approve = FakeCallback(
+        111, _career_draft_approve_callback(draft_id), callback_id=f"app-{uuid4().hex}"
+    )
+    await controller.on_career_callback(approve)
+    return draft_id
+
+
+@pytest.mark.asyncio
+async def test_package_button_hidden_when_flag_off():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=False)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+
+    detail = FakeCallback(111, _career_draft_approve_callback(draft_id), callback_id="app-2")
+    await controller.on_career_callback(detail)
+
+    markup = detail.message.markups[-1]
+    buttons = _flat_buttons(markup) if markup is not None else []
+    assert not any("Собрать пакет" in text for text, _data in buttons)
+
+
+@pytest.mark.asyncio
+async def test_package_button_shown_when_flag_on():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+
+    detail = FakeCallback(111, _career_draft_approve_callback(draft_id), callback_id="app-2")
+    await controller.on_career_callback(detail)
+
+    buttons = _flat_buttons(detail.message.markups[-1])
+    assert any("Собрать пакет" in text for text, _data in buttons)
+
+
+@pytest.mark.asyncio
+async def test_package_start_blocked_when_draft_not_approved():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    await controller.on_career_callback(
+        FakeCallback(111, _career_draft_callback(inbox_item_id), callback_id="gen-1")
+    )
+    draft_id = next(iter(gateway.cover_letter_drafts))  # still status='draft'
+
+    callback = FakeCallback(111, _career_package_start_callback(draft_id))
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Сначала одобрите черновик"]
+    assert gateway.prepare_package_calls == []
+
+
+@pytest.mark.asyncio
+async def test_package_start_bounds_cv_variants_to_three(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["a", "b", "c", "d"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+
+    callback = FakeCallback(111, _career_package_start_callback(draft_id))
+    await controller.on_career_callback(callback)
+
+    buttons = _flat_buttons(callback.message.markups[-1])
+    assert len(buttons) == 3
+
+
+@pytest.mark.asyncio
+async def test_package_cv_selection_calls_prepare_with_exact_ids(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+
+    callback = FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    await controller.on_career_callback(callback)
+
+    assert gateway.prepare_package_calls == [
+        {
+            "inbox_item_id": inbox_item_id,
+            "cover_draft_id": draft_id,
+            "cv_variant_id": "agents_llm",
+        }
+    ]
+    assert any("Пакет готов" in reply for reply in callback.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_package_cv_repeat_click_creates_no_duplicate(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+
+    await controller.on_career_callback(
+        FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"), callback_id="cv-1")
+    )
+    await controller.on_career_callback(
+        FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"), callback_id="cv-2")
+    )
+
+    assert len(gateway.application_packages) == 1
+
+
+@pytest.mark.asyncio
+async def test_package_flag_off_blocks_start_and_cv_actions():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=False)
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+
+    start = FakeCallback(111, _career_package_start_callback(draft_id))
+    await controller.on_career_callback(start)
+    cv = FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    await controller.on_career_callback(cv)
+
+    assert start.answers == ["Функция выключена"]
+    assert cv.answers == ["Функция выключена"]
+    assert gateway.prepare_package_calls == []
+
+
+@pytest.mark.asyncio
+async def test_package_prepare_error_surfaces_message(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+    gateway.prepare_package_error = CareerInboxError("cover draft does not belong to this inbox item")
+
+    callback = FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Ошибка"]
+    assert any("cover draft does not belong" in reply for reply in callback.message.replies)
+
+
+# ---------------------------------------------------------------------------
+# Ready queue + bounded preview (Career OS Slice D1b.2a, read-only)
+# ---------------------------------------------------------------------------
+
+
+async def _ready_package(
+    gateway: FakeInboxGateway,
+    controller: MlTechnicalTelegramController,
+    facts_path: Path,
+    *,
+    cv_variant_id: str = "agents_llm",
+) -> str:
+    inbox_item_id = await _prepared_item(gateway, controller)
+    draft_id = await _approved_draft(gateway, controller, inbox_item_id)
+    await controller.on_career_callback(
+        FakeCallback(111, _career_package_cv_callback(draft_id, cv_variant_id))
+    )
+    return next(
+        p["package_id"]
+        for p in gateway.application_packages.values()
+        if p["cover_draft_id"] == draft_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_ready_queue_hidden_and_blocked_when_flag_off():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=False)
+    menu = FakeCallback(111, "menu:career")
+    await controller.on_menu(menu)
+    labels = [text for text, _data in _flat_buttons(menu.message.markups[-1])]
+    assert "Готовые" not in labels
+
+    ready = FakeCallback(111, "career:ready")
+    await controller.on_career_callback(ready)
+    item = FakeCallback(111, _career_package_item_callback(str(uuid4())))
+    await controller.on_career_callback(item)
+
+    assert ready.answers == ["Функция выключена"]
+    assert item.answers == ["Функция выключена"]
+
+
+@pytest.mark.asyncio
+async def test_ready_queue_empty_state_is_safe():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=True)
+
+    callback = FakeCallback(111, "career:ready")
+    await controller.on_career_callback(callback)
+
+    assert any("Готовых пакетов нет." in reply for reply in callback.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_ready_queue_bounded_newest_first_and_excludes_non_ready(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_ids = []
+    for _ in range(9):
+        package_ids.append(await _ready_package(gateway, controller, facts_path))
+    # One package moves out of 'ready' (e.g. already submitted) - must not be listed.
+    gateway.application_packages[package_ids[0]]["status"] = "submitted"
+
+    callback = FakeCallback(111, "career:ready")
+    await controller.on_career_callback(callback)
+
+    buttons = _flat_buttons(callback.message.markups[-1])
+    assert len(buttons) == 7 + 1  # 7 packages + Назад
+    listed_callbacks = [data for _text, data in buttons if data != "career:back"]
+    assert _career_package_item_callback(package_ids[0]) not in listed_callbacks
+    # newest first: the most recently prepared package is first in the list.
+    assert listed_callbacks[0] == _career_package_item_callback(package_ids[-1])
+
+
+@pytest.mark.asyncio
+async def test_package_preview_shows_bounded_fields_and_cv_label(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    gateway.application_packages[package_id]["gates_snapshot"] = {
+        "legal_hire_from_rf": {"status": "pass"}
+    }
+    gateway.application_packages[package_id]["questions_for_recruiter"] = [
+        "Доступен ли contractor?",
+        "Формат интервью?",
+        "Третий вопрос - не должен показаться",
+    ]
+
+    callback = FakeCallback(111, _career_package_item_callback(package_id))
+    await controller.on_career_callback(callback)
+
+    text = callback.message.replies[-1]
+    assert "CV: CV_agents_llm.md" in text
+    assert "legal_hire_from_rf: pass" in text
+    assert text.count("Вопрос:") == 2
+    assert "Третий вопрос" not in text
+    buttons = _flat_buttons(callback.message.markups[-1])
+    draft_id = gateway.application_packages[package_id]["cover_draft_id"]
+    assert (
+        "Скопировать сопровод",
+        _career_draft_copy_callback(draft_id),
+    ) in buttons
+
+
+@pytest.mark.asyncio
+async def test_package_item_fails_closed_for_unknown_or_non_ready_package():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=True)
+
+    unknown = FakeCallback(111, _career_package_item_callback(str(uuid4())))
+    await controller.on_career_callback(unknown)
+
+    assert unknown.answers == ["Пакет недоступен"]
+
+
+@pytest.mark.asyncio
+async def test_package_item_malformed_callback_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=True)
+
+    malformed = FakeCallback(111, "career:pkgitem:not!!valid!!base64")
+    await controller.on_career_callback(malformed)
+
+    assert malformed.answers == ["Кнопка устарела"]
+
+
+# ---------------------------------------------------------------------------
+# Sent-confirmation: Отправлено -> Подтвердить/Отмена -> submit (Slice D1b.2b)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_and_confirm_hidden_and_blocked_when_flag_off(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    controller.career_ready_queue_enabled = False
+
+    send = FakeCallback(111, _career_package_send_callback(package_id))
+    await controller.on_career_callback(send)
+    confirm = FakeCallback(111, _career_package_confirm_callback(package_id, "abcdef123456"))
+    await controller.on_career_callback(confirm)
+
+    assert send.answers == ["Функция выключена"]
+    assert confirm.answers == ["Функция выключена"]
+    assert gateway.application_packages[package_id]["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_first_click_shows_preview_and_writes_nothing(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    pkg = gateway.application_packages[package_id]
+    pkg["company"], pkg["role_title"] = "Acme", "ML Engineer"
+
+    callback = FakeCallback(111, _career_package_send_callback(package_id))
+    await controller.on_career_callback(callback)
+
+    text = callback.message.replies[-1]
+    assert "Acme" in text and "ML Engineer" in text
+    assert pkg["package_content_hash"][:12] in text
+    assert pkg["status"] == "ready"
+    assert gateway.applications == {}
+    buttons = [t for t, _d in _flat_buttons(callback.message.markups[-1])]
+    assert buttons == ["Подтвердить, отклик уже отправлен", "Отмена"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_writes_nothing(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+
+    callback = FakeCallback(111, _career_package_cancel_callback())
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Отменено"]
+    assert gateway.application_packages[package_id]["status"] == "ready"
+    assert gateway.applications == {}
+
+
+@pytest.mark.asyncio
+async def test_confirm_changed_hash_blocks_submit(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    send = FakeCallback(111, _career_package_send_callback(package_id))
+    await controller.on_career_callback(send)
+    # The package content changed after the preview was shown (e.g. re-prepared).
+    gateway.application_packages[package_id]["package_content_hash"] = "0" * 64
+
+    confirm = FakeCallback(111, _career_package_confirm_callback(package_id, "f" * 12))
+    await controller.on_career_callback(confirm)
+
+    assert confirm.answers == ["Пакет изменился, откройте карточку заново"]
+    assert gateway.applications == {}
+    assert gateway.application_packages[package_id]["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_confirm_success_creates_one_application_and_removes_from_ready_list(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    pkg = gateway.application_packages[package_id]
+    hash_prefix = pkg["package_content_hash"][:12]
+
+    confirm = FakeCallback(111, _career_package_confirm_callback(package_id, hash_prefix))
+    await controller.on_career_callback(confirm)
+
+    assert confirm.answers == ["Отправлено"]
+    assert len(gateway.applications) == 1
+    assert pkg["status"] == "submitted"
+
+    ready = FakeCallback(111, "career:ready")
+    await controller.on_career_callback(ready)
+    assert any("Готовых пакетов нет." in reply for reply in ready.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_confirm_replay_same_callback_id_is_idempotent(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    pkg = gateway.application_packages[package_id]
+    hash_prefix = pkg["package_content_hash"][:12]
+
+    first = FakeCallback(111, _career_package_confirm_callback(package_id, hash_prefix), callback_id="dup-1")
+    await controller.on_career_callback(first)
+    second = FakeCallback(111, _career_package_confirm_callback(package_id, hash_prefix), callback_id="dup-1")
+    await controller.on_career_callback(second)
+
+    assert len(gateway.applications) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_replay_with_different_update_id_creates_no_duplicate(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True, facts_bank_path=facts_path
+    )
+    package_id = await _ready_package(gateway, controller, facts_path)
+    pkg = gateway.application_packages[package_id]
+    hash_prefix = pkg["package_content_hash"][:12]
+
+    first = FakeCallback(111, _career_package_confirm_callback(package_id, hash_prefix), callback_id="first-id")
+    await controller.on_career_callback(first)
+    second = FakeCallback(111, _career_package_confirm_callback(package_id, hash_prefix), callback_id="second-id")
+    await controller.on_career_callback(second)
+
+    assert len(gateway.applications) == 1
+    assert second.answers == ["Уже отправлено"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_fails_closed_for_unknown_package():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=True)
+
+    confirm = FakeCallback(111, _career_package_confirm_callback(str(uuid4()), "abcdef123456"))
+    await controller.on_career_callback(confirm)
+
+    assert confirm.answers == ["Пакет недоступен"]
+    assert gateway.applications == {}
