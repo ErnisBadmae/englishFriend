@@ -18,12 +18,15 @@ from app.adapters.telegram.ml_technical_bot import (
     _career_draft_reject_callback,
     _career_feedback_start_callback,
     _career_item_callback,
+    _career_package_applied_callback,
     _career_package_cancel_callback,
     _career_package_confirm_callback,
     _career_package_cv_callback,
     _career_package_item_callback,
     _career_package_send_callback,
     _career_package_start_callback,
+    _career_prepare_callback,
+    _career_tech_callback,
     _career_verdict_callback,
 )
 from app.services.career_inbox_service import CareerInboxError
@@ -172,8 +175,15 @@ class FakeInboxGateway:
         self.used_idempotency_keys.add(idempotency_key)
         return {"created": True, "inbox_item": item}
 
+    _SETTLED_VERDICTS = {"skip", "false_positive", "applied"}
+
     async def list_inbox_items(self, user_id: int):
-        return [self.inbox_items[i] for i in self.inbox_order[:7]]
+        items = [
+            self.inbox_items[i]
+            for i in self.inbox_order
+            if self.inbox_items[i].get("owner_verdict") not in self._SETTLED_VERDICTS
+        ]
+        return items[:15]
 
     async def get_inbox_item(self, user_id: int, inbox_item_id: str):
         return self.inbox_items.get(inbox_item_id)
@@ -388,8 +398,12 @@ async def test_flag_off_hides_inbox_and_lead_menu_items():
     await controller.on_menu(callback)
 
     labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
-    assert "Входящие" not in labels
-    assert "Добавить контакт или ответ" not in labels
+    assert "Вакансии" not in labels
+
+    more = FakeCallback(111, "career:more")
+    await controller.on_career_callback(more)
+    more_labels = [text for text, _data in _flat_buttons(more.message.markups[-1])]
+    assert "Добавить контакт или ответ" not in more_labels
 
 
 @pytest.mark.asyncio
@@ -412,11 +426,48 @@ async def test_flag_on_shows_inbox_and_lead_menu_items():
     await controller.on_menu(callback)
 
     labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
-    assert labels == [
+    assert labels == ["Вакансии", "Отклики и ответы", "Ещё", "Назад"]
+
+    more = FakeCallback(111, "career:more")
+    await controller.on_career_callback(more)
+    more_labels = [text for text, _data in _flat_buttons(more.message.markups[-1])]
+    assert more_labels == [
         "Записать отправленный отклик",
-        "Отклики",
-        "Входящие",
         "Добавить контакт или ответ",
+        "Назад",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_all_flags_on_shows_full_compact_menu_and_more_submenu():
+    """One-flow UX v0.1: compact primary menu (<=5 rows) with every
+    low-frequency action still reachable under Ещё - no capability deleted."""
+    gateway = FakeInboxGateway()
+    controller = _controller(
+        gateway, enabled=True, refresh_enabled=True, ready_queue_enabled=True
+    )
+    callback = FakeCallback(111, "menu:career")
+
+    await controller.on_menu(callback)
+
+    labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
+    assert labels == [
+        "Вакансии",
+        "Обновить вакансии",
+        "Отклики и ответы",
+        "Ещё",
+        "Назад",
+    ]
+
+    more = FakeCallback(111, "career:more")
+    await controller.on_career_callback(more)
+    more_labels = [text for text, _data in _flat_buttons(more.message.markups[-1])]
+    assert more_labels == [
+        "Записать отправленный отклик",
+        "Добавить контакт или ответ",
+        "Источники вакансий",
+        "Добавить источник",
+        "Готовые (все пакеты)",
         "Назад",
     ]
 
@@ -648,10 +699,13 @@ async def test_batch_cancel_clears_whole_queue():
 
 
 async def _seeded_item(gateway: FakeInboxGateway, controller: MlTechnicalTelegramController) -> str:
+    """Returns the item just created by this call (diffed against what
+    existed before), so repeated seeding on the same gateway is safe."""
+    before = set(gateway.inbox_items)
     await controller.on_career_callback(FakeCallback(111, "career:lead"))
     await controller.on_text(FakeMessage(111, "Some recruiter text", message_id=20))
     await controller.on_career_callback(FakeCallback(111, "career:leadok:0", callback_id="seed-1"))
-    return next(iter(gateway.inbox_items))
+    return next(iter(set(gateway.inbox_items) - before))
 
 
 @pytest.mark.asyncio
@@ -663,9 +717,10 @@ async def test_inbox_list_shows_seeded_item():
     list_callback = FakeCallback(111, "career:inbox")
     await controller.on_career_callback(list_callback)
 
-    assert "Входящие" in list_callback.message.replies[-1]
+    assert "Вакансии" in list_callback.message.replies[-1]
     buttons = _flat_buttons(list_callback.message.markups[-1])
     assert len(buttons) == 2  # one item + Назад
+    assert buttons[0][0].startswith("Новая: ")
 
 
 @pytest.mark.asyncio
@@ -818,7 +873,10 @@ async def _prepared_item(
 
 
 @pytest.mark.asyncio
-async def test_draft_button_appears_only_after_prepare():
+async def test_primary_card_offers_prepare_before_verdict_and_retry_after():
+    """One-flow UX v0.1: the primary card offers «Подготовить отклик» before
+    any verdict, and «Повторить подготовку» once «prepare» is set without a
+    ready package yet - the old per-entity draft button is gone from this view."""
     gateway = FakeInboxGateway()
     controller = _controller(gateway, enabled=True, draft_enabled=True)
     inbox_item_id = await _seeded_item(gateway, controller)
@@ -826,6 +884,7 @@ async def test_draft_button_appears_only_after_prepare():
     detail = FakeCallback(111, _career_item_callback(inbox_item_id))
     await controller.on_career_callback(detail)
     labels_before = [t for t, _d in _flat_buttons(detail.message.markups[-1])]
+    assert "Подготовить отклик" in labels_before
     assert "Черновик сопровода" not in labels_before
 
     await controller.on_career_callback(
@@ -834,7 +893,8 @@ async def test_draft_button_appears_only_after_prepare():
     detail2 = FakeCallback(111, _career_item_callback(inbox_item_id))
     await controller.on_career_callback(detail2)
     labels_after = [t for t, _d in _flat_buttons(detail2.message.markups[-1])]
-    assert "Черновик сопровода" in labels_after
+    assert "Повторить подготовку" in labels_after
+    assert "Подготовить отклик" not in labels_after
 
 
 @pytest.mark.asyncio
@@ -1018,7 +1078,7 @@ async def test_refresh_button_shown_when_flag_on():
     await controller.on_menu(callback)
 
     labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
-    assert "Проверить новые вакансии" in labels
+    assert "Обновить вакансии" in labels
 
 
 @pytest.mark.asyncio
@@ -1219,7 +1279,7 @@ async def test_package_cv_selection_calls_prepare_with_exact_ids(tmp_path):
             "cv_variant_id": "agents_llm",
         }
     ]
-    assert any("Пакет готов" in reply for reply in callback.message.replies)
+    assert any("Готово к отклику" in reply for reply in callback.message.replies)
 
 
 @pytest.mark.asyncio
@@ -1570,6 +1630,245 @@ async def test_confirm_fails_closed_for_unknown_package():
 
 
 # ---------------------------------------------------------------------------
+# One-flow UX v0.1: Вакансии -> карточка -> Подготовить -> CV -> пакет -> Я
+# уже откликнулся, all on the same journey (career:prep / career:pkgapplied).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_actionable_list_labels_new_ask_prepare_ready(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True,
+        facts_bank_path=facts_path,
+    )
+    new_id = await _seeded_item(gateway, controller)
+    ask_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(
+        FakeCallback(111, _career_verdict_callback(ask_id, "ask"), callback_id="ask-1")
+    )
+    ready_id = await _seeded_item(gateway, controller)
+    prep = FakeCallback(111, _career_prepare_callback(ready_id), callback_id="prep-ready")
+    await controller.on_career_callback(prep)
+    draft_id = next(iter(gateway.cover_letter_drafts))
+    await controller.on_career_callback(
+        FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"), callback_id="cv-1")
+    )
+    preparing_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(
+        FakeCallback(
+            111, _career_verdict_callback(preparing_id, "prepare"), callback_id="prep-only"
+        )
+    )
+    skipped_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(
+        FakeCallback(111, _career_verdict_callback(skipped_id, "skip"), callback_id="skip-1")
+    )
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+    labels = [text for text, _data in _flat_buttons(listing.message.markups[-1])]
+
+    assert any(l.startswith("Новая: ") for l in labels)
+    assert any(l.startswith("Нужно уточнить: ") for l in labels)
+    assert any(l.startswith("Готово к отклику: ") for l in labels)
+    assert any(l.startswith("Готовится: ") for l in labels)
+    assert len(labels) == 5  # 4 actionable rows + Назад; settled (skip) excluded
+
+
+@pytest.mark.asyncio
+async def test_prepare_click_sets_prepare_and_shows_one_composite_preview():
+    gateway = FakeInboxGateway()
+    gateway.draft_body_by_call = "Здравствуйте! Хочу откликнуться на роль."
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=False)
+    item_id = await _seeded_item(gateway, controller)
+    gateway.inbox_items[item_id]["url"] = "https://hh.ru/vacancy/1"
+    gateway.inbox_items[item_id]["questions_for_recruiter"] = ["Можно удалённо?"]
+
+    prep = FakeCallback(111, _career_prepare_callback(item_id))
+    await controller.on_career_callback(prep)
+
+    assert gateway.inbox_items[item_id]["owner_verdict"] == "prepare"
+    assert gateway.generate_draft_calls == [item_id]
+    replies = "\n".join(prep.message.replies)
+    assert "https://hh.ru/vacancy/1" in replies
+    assert "Можно удалённо?" in replies
+    assert gateway.draft_body_by_call in replies
+
+
+@pytest.mark.asyncio
+async def test_cv_selection_approves_draft_and_shows_ready_package_inline(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True,
+        facts_bank_path=facts_path,
+    )
+    item_id = await _seeded_item(gateway, controller)
+    prep = FakeCallback(111, _career_prepare_callback(item_id))
+    await controller.on_career_callback(prep)
+    draft_id = next(iter(gateway.cover_letter_drafts))
+    assert gateway.cover_letter_drafts[draft_id]["status"] == "draft"
+
+    cv = FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    await controller.on_career_callback(cv)
+
+    assert gateway.cover_letter_drafts[draft_id]["status"] == "owner_approved"
+    assert len(gateway.application_packages) == 1
+    assert cv.answers == ["Пакет готов"]
+    reply = cv.message.replies[-1]
+    assert "Готово к отклику" in reply
+    labels = [t for t, _d in _flat_buttons(cv.message.markups[-1])]
+    assert "Я уже откликнулся" in labels
+    assert "career:ready" not in "\n".join(labels)  # no forced navigation elsewhere
+
+
+@pytest.mark.asyncio
+async def test_reopening_prepared_card_shows_ready_package_without_ready_menu(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True,
+        facts_bank_path=facts_path,
+    )
+    item_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(FakeCallback(111, _career_prepare_callback(item_id)))
+    draft_id = next(iter(gateway.cover_letter_drafts))
+    await controller.on_career_callback(
+        FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    )
+
+    detail = FakeCallback(111, _career_item_callback(item_id))
+    await controller.on_career_callback(detail)
+
+    assert "Готово к отклику" in detail.message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_ya_uzhe_otkliknulsya_submits_once_and_is_replay_safe(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True,
+        facts_bank_path=facts_path,
+    )
+    item_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(FakeCallback(111, _career_prepare_callback(item_id)))
+    draft_id = next(iter(gateway.cover_letter_drafts))
+    cv = FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    await controller.on_career_callback(cv)
+    package_id = next(iter(gateway.application_packages))
+    pkg = gateway.application_packages[package_id]
+    hash_prefix = pkg["package_content_hash"][:12]
+
+    applied = FakeCallback(111, _career_package_applied_callback(package_id, hash_prefix))
+    await controller.on_career_callback(applied)
+
+    assert applied.answers == ["Отклик зафиксирован"]
+    assert len(gateway.applications) == 1
+    reply = applied.message.replies[-1]
+    assert "Отклик зафиксирован" in reply
+    labels = [t for t, _d in _flat_buttons(applied.message.markups[-1])]
+    assert "Добавить ответ / отказ" in labels
+    assert "К откликам" in labels
+
+    replay = FakeCallback(111, _career_package_applied_callback(package_id, hash_prefix), callback_id="replay")
+    await controller.on_career_callback(replay)
+
+    assert replay.answers == ["Уже зафиксировано"]
+    assert len(gateway.applications) == 1  # no duplicate application
+
+
+
+
+@pytest.mark.asyncio
+async def test_generation_failure_creates_no_package_and_leaves_retryable_card():
+    gateway = FakeInboxGateway()
+    gateway.manual_path_result = {
+        "created": False,
+        "manual_path": True,
+        "reason": "draft generation unavailable",
+        "draft": None,
+    }
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+
+    prep = FakeCallback(111, _career_prepare_callback(item_id))
+    await controller.on_career_callback(prep)
+
+    assert gateway.inbox_items[item_id]["owner_verdict"] == "prepare"
+    assert gateway.application_packages == {}
+    reply = prep.message.replies[-1]
+    assert "Не получилось подготовить" in reply
+    labels = [t for t, _d in _flat_buttons(prep.message.markups[-1])]
+    assert "Повторить подготовку" in labels
+
+    detail = FakeCallback(111, _career_item_callback(item_id))
+    await controller.on_career_callback(detail)
+    detail_labels = [t for t, _d in _flat_buttons(detail.message.markups[-1])]
+    assert "Повторить подготовку" in detail_labels
+
+
+@pytest.mark.asyncio
+async def test_stale_prepare_callback_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True)
+
+    callback = FakeCallback(111, "career:prep:not-a-valid-id")
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Кнопка устарела"]
+    assert gateway.generate_draft_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_pkgapplied_callback_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=True)
+
+    callback = FakeCallback(111, "career:pkgapplied:not-a-valid-id:abcdef")
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Кнопка устарела"]
+    assert gateway.applications == {}
+
+
+@pytest.mark.asyncio
+async def test_pkgapplied_changed_hash_blocks_submit(tmp_path):
+    gateway = FakeInboxGateway()
+    facts_path = _facts_bank_with_variants(tmp_path, ["agents_llm"])
+    controller = _controller(
+        gateway, enabled=True, draft_enabled=True, ready_queue_enabled=True,
+        facts_bank_path=facts_path,
+    )
+    item_id = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(FakeCallback(111, _career_prepare_callback(item_id)))
+    draft_id = next(iter(gateway.cover_letter_drafts))
+    await controller.on_career_callback(
+        FakeCallback(111, _career_package_cv_callback(draft_id, "agents_llm"))
+    )
+    package_id = next(iter(gateway.application_packages))
+
+    stale = FakeCallback(111, _career_package_applied_callback(package_id, "000000000000"))
+    await controller.on_career_callback(stale)
+
+    assert stale.answers == ["Пакет изменился, откройте карточку заново"]
+    assert gateway.applications == {}
+
+
+@pytest.mark.asyncio
+async def test_more_menu_flag_off_hides_ready_queue_entry():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, ready_queue_enabled=False)
+    more = FakeCallback(111, "career:more")
+    await controller.on_career_callback(more)
+
+    labels = [t for t, _d in _flat_buttons(more.message.markups[-1])]
+    assert "Готовые (все пакеты)" not in labels
+
+
+# ---------------------------------------------------------------------------
 # Vacancy sources: show / add (career:sources, career:addsrc)
 # ---------------------------------------------------------------------------
 
@@ -1591,9 +1890,10 @@ async def test_sources_buttons_hidden_when_refresh_flag_off():
 async def test_sources_buttons_shown_when_refresh_flag_on():
     gateway = FakeInboxGateway()
     controller = _controller(gateway, enabled=True, refresh_enabled=True)
-    callback = FakeCallback(111, "menu:career")
+    await controller.on_menu(FakeCallback(111, "menu:career"))
+    callback = FakeCallback(111, "career:more")
 
-    await controller.on_menu(callback)
+    await controller.on_career_callback(callback)
 
     labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
     assert "Источники вакансий" in labels

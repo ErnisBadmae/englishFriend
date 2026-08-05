@@ -31,6 +31,7 @@ from app.data.ml_technical_questions import (
 from app.models.core_tables import User
 from app.services.career_inbox_service import (
     DRAFT_STATUS_APPROVED,
+    DRAFT_STATUS_REJECTED,
     FACTS_BANK_PATH,
     PACKAGE_STATUS_READY,
     VERDICT_APPLIED,
@@ -225,6 +226,18 @@ def _career_package_confirm_callback(package_id: str, hash_prefix: str) -> str:
 
 def _career_package_cancel_callback() -> str:
     return "career:pkgno"
+
+
+def _career_prepare_callback(inbox_item_id: str) -> str:
+    return f"career:prep:{_compact_uuid(inbox_item_id)}"
+
+
+def _career_tech_callback(inbox_item_id: str) -> str:
+    return f"career:tech:{_compact_uuid(inbox_item_id)}"
+
+
+def _career_package_applied_callback(package_id: str, hash_prefix: str) -> str:
+    return f"career:pkgapplied:{_compact_uuid(package_id)}:{hash_prefix}"
 
 
 def _parse_career_callback(data: str) -> tuple[str, list[str]]:
@@ -928,19 +941,31 @@ class MlTechnicalTelegramController:
         )
 
     def _career_markup(self) -> Any:
-        rows = [
+        """Compact Career root (one-flow UX v0.1): the actionable queue,
+        refresh, applications/feedback and a low-frequency ``Ещё`` submenu.
+        Low-frequency actions moved to :meth:`_career_more_markup` remain
+        reachable there - no capability is deleted."""
+        rows: list[list[tuple[str, str]]] = []
+        if self.career_inbox_enabled:
+            rows.append([("Вакансии", "career:inbox")])
+        if self.career_vacancy_refresh_enabled:
+            rows.append([("Обновить вакансии", "career:refresh")])
+        rows.append([("Отклики и ответы", "career:list")])
+        rows.append([("Ещё", "career:more")])
+        rows.append([("Назад", "career:back")])
+        return _markup(rows)
+
+    def _career_more_markup(self) -> Any:
+        rows: list[list[tuple[str, str]]] = [
             [("Записать отправленный отклик", "career:add")],
-            [("Отклики", "career:list")],
         ]
         if self.career_inbox_enabled:
-            rows.append([("Входящие", "career:inbox")])
             rows.append([("Добавить контакт или ответ", "career:lead")])
         if self.career_vacancy_refresh_enabled:
-            rows.append([("Проверить новые вакансии", "career:refresh")])
             rows.append([("Источники вакансий", "career:sources")])
             rows.append([("Добавить источник", "career:addsrc")])
         if self.career_ready_queue_enabled:
-            rows.append([("Готовые", "career:ready")])
+            rows.append([("Готовые (все пакеты)", "career:ready")])
         rows.append([("Назад", "career:back")])
         return _markup(rows)
 
@@ -1541,6 +1566,10 @@ class MlTechnicalTelegramController:
             await callback.answer("Кнопка устарела")
             return None
 
+    async def _on_career_callback_more(self, callback: Any, user_id: int) -> None:
+        await callback.answer()
+        await callback.message.answer("Ещё", reply_markup=self._career_more_markup())
+
     async def _on_career_callback_add(self, callback: Any, user_id: int) -> None:
         await self.gateway.set_pending_intent(user_id, intent=INTENT_CAREER_ADD)
         await callback.answer()
@@ -1771,14 +1800,49 @@ class MlTechnicalTelegramController:
                 pass
         await message.answer(text, reply_markup=markup)
 
+    _ROUTE_REASON_RU = {
+        "apply_candidate": "Похоже на прямое совпадение с вашим профилем.",
+        "outreach": "Может подойти - стоит присмотреться.",
+    }
+
+    async def _ready_package_for_item(
+        self, user_id: int, inbox_item_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Read-only composition over the existing bounded ready-packages
+        list - no new service method, no per-item query added."""
+        if not self.career_ready_queue_enabled:
+            return None
+        packages = await self.gateway.list_ready_application_packages(user_id, limit=7)
+        for pkg in packages:
+            if pkg.get("inbox_item_id") == inbox_item_id:
+                return pkg
+        return None
+
+    def _queue_state_label(self, item: dict[str, Any], ready_ids: set[str]) -> str:
+        verdict = item.get("owner_verdict")
+        if verdict is None:
+            return "Новая"
+        if verdict == "ask":
+            return "Нужно уточнить"
+        if verdict == VERDICT_PREPARE:
+            return (
+                "Готово к отклику" if item["inbox_item_id"] in ready_ids else "Готовится"
+            )
+        return self._VERDICT_LABELS_RU.get(verdict, verdict)
+
     async def _show_career_inbox(self, message: Any, user_id: int) -> None:
         items = await self.gateway.list_inbox_items(user_id)
         if not items:
-            await self._render_card(message, "Входящих нет.", self._career_markup())
+            await self._render_card(message, "Вакансий нет.", self._career_markup())
             return
+        ready_ids: set[str] = set()
+        if self.career_ready_queue_enabled:
+            packages = await self.gateway.list_ready_application_packages(user_id, limit=7)
+            ready_ids = {p["inbox_item_id"] for p in packages if p.get("inbox_item_id")}
         rows: list[list[tuple[str, str]]] = [
             [
                 (
+                    f"{self._queue_state_label(item, ready_ids)}: "
                     f"{item.get('company') or 'без компании'} - "
                     f"{item.get('role_title') or 'без роли'}",
                     _career_item_callback(item["inbox_item_id"]),
@@ -1788,7 +1852,92 @@ class MlTechnicalTelegramController:
         ]
         rows.append([("Назад", "career:back")])
         await self._render_card(
-            message, f"Входящие ({len(items)})", _markup(rows)
+            message, f"Вакансии ({len(items)})", _markup(rows)
+        )
+
+    def _gate_warning_lines(self, item: dict[str, Any]) -> list[str]:
+        lines = []
+        for gate_name, gate in (item.get("gates") or {}).items():
+            status = gate.get("status")
+            if status in ("fail", "unknown"):
+                lines.append(f"⚠ {gate_name}: {status}")
+        return lines
+
+    async def _render_primary_card(
+        self, message: Any, item: dict[str, Any]
+    ) -> None:
+        inbox_item_id = item["inbox_item_id"]
+        verdict = item.get("owner_verdict")
+        lines = [
+            f"{item.get('company') or 'без компании'} - {item.get('role_title') or 'без роли'}",
+            f"Локация: {item.get('location') or 'не указана'}",
+            f"Ссылка: {item.get('url') or 'не указана'}",
+            f"Почему в очереди: {self._ROUTE_REASON_RU.get(item.get('route'), 'см. технические детали')}",
+        ]
+        lines += self._gate_warning_lines(item)
+        questions = item.get("questions_for_recruiter") or []
+        if questions:
+            lines.append("Вопросы рекрутёру:")
+            lines += [f"- {q}" for q in questions]
+
+        rows: list[list[tuple[str, str]]] = []
+        if verdict == VERDICT_PREPARE:
+            lines.append("Статус: Готовится - черновик или пакет ещё не собраны.")
+            rows.append([("Повторить подготовку", _career_prepare_callback(inbox_item_id))])
+        else:
+            rows.append([("Подготовить отклик", _career_prepare_callback(inbox_item_id))])
+            if questions:
+                rows.append([("Уточнить", _career_verdict_callback(inbox_item_id, "ask"))])
+            rows.append([("Не подходит", _career_verdict_callback(inbox_item_id, "skip"))])
+            rows.append(
+                [("Ошибка данных", _career_verdict_callback(inbox_item_id, "false_positive"))]
+            )
+        rows.append([("Технические детали", _career_tech_callback(inbox_item_id))])
+        rows.append([("Назад", "career:inbox")])
+        await self._render_card(message, "\n".join(lines), _markup(rows))
+
+    async def _render_ready_package_card(
+        self, message: Any, pkg: dict[str, Any]
+    ) -> None:
+        hash_prefix = pkg["package_content_hash"][:12]
+        lines = [
+            f"Готово к отклику: {pkg['company']} - {pkg['role_title']}",
+            f"Ссылка: {pkg.get('source_url') or 'не указана'}",
+            f"CV: {self._cv_label(pkg['cv_variant_id'])}",
+        ]
+        for gate_name, gate in (pkg.get("gates_snapshot") or {}).items():
+            if gate.get("status") in ("fail", "unknown"):
+                lines.append(f"⚠ {gate_name}: {gate.get('status')}")
+        for question in (pkg.get("questions_for_recruiter") or [])[:2]:
+            lines.append(f"Вопрос рекрутёру: {question}")
+        lines.append(f"Hash: {hash_prefix}")
+        rows = [
+            [("Скопировать сопровод", _career_draft_copy_callback(pkg["cover_draft_id"]))],
+            [("Другой CV / изменить", _career_package_start_callback(pkg["cover_draft_id"]))],
+            [
+                (
+                    "Я уже откликнулся",
+                    _career_package_applied_callback(pkg["package_id"], hash_prefix),
+                )
+            ],
+            [("Назад", "career:inbox")],
+        ]
+        await message.answer("\n".join(lines), reply_markup=_markup(rows))
+
+    async def _render_applied_success(
+        self, message: Any, user_id: int, application: dict[str, Any]
+    ) -> None:
+        rows: list[list[tuple[str, str]]] = []
+        application_id = application.get("application_id")
+        if application_id:
+            rows.append(
+                [("Добавить ответ / отказ", _career_feedback_start_callback(application_id))]
+            )
+        rows.append([("К откликам", "career:list")])
+        await message.answer(
+            f"Отклик зафиксирован.\n{application.get('company')} - "
+            f"{application.get('role_title')}",
+            reply_markup=_markup(rows),
         )
 
     async def _show_inbox_item(
@@ -1798,61 +1947,165 @@ class MlTechnicalTelegramController:
         if item is None:
             await message.answer("Карточка не найдена.")
             return
-        lines = [
-            f"{item.get('company') or 'без компании'} - {item.get('role_title') or 'без роли'}",
-            f"Локация: {item.get('location') or 'не указана'}",
-            f"Ссылка: {item.get('url') or 'не указана'}",
-        ]
-        if item.get("route"):
-            lines.append(f"Route: {item['route']}")
-        gates = item.get("gates") or {}
-        for gate_name, gate in gates.items():
+        if item.get("owner_verdict") == VERDICT_PREPARE:
+            ready_pkg = await self._ready_package_for_item(user_id, inbox_item_id)
+            if ready_pkg is not None:
+                await self._render_ready_package_card(message, ready_pkg)
+                return
+        await self._render_primary_card(message, item)
+
+    async def _on_career_callback_tech(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        item = await self.gateway.get_inbox_item(user_id, inbox_item_id)
+        if item is None:
+            await callback.answer("Карточка не найдена")
+            return
+        lines = [f"Route: {item.get('route') or 'не указан'}"]
+        for gate_name, gate in (item.get("gates") or {}).items():
             reason_code = (gate.get("authority") or {}).get("reason_code", "")
             lines.append(f"- {gate_name}: {gate.get('status')} [{reason_code}]")
-        verdict = item.get("owner_verdict")
-        if verdict:
-            lines.append(f"Вердикт: {self._VERDICT_LABELS_RU.get(verdict, verdict)}")
-            if verdict == VERDICT_PREPARE and self.career_cover_letter_draft_enabled:
-                lines.append(
-                    "Дальше: «Черновик сопровода» ниже сгенерирует письмо по вашим "
-                    "фактам (бот ничего не отправляет)."
-                )
-        else:
-            lines.append(
-                "Готовить - взять в работу, дальше можно сделать черновик сопровода. "
-                "Спросить - уточнить у рекрутёра. Пропустить - не рассматривать. "
-                "Ошибка парсера - карточка попала сюда по ошибке."
+        await callback.answer()
+        await callback.message.answer("\n".join(lines))
+
+    async def _on_career_callback_prepare(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        await callback.answer("Готовлю отклик")
+        await callback.message.answer("Готовлю черновик сопровода...")
+        actor_id = str(self._telegram_id(callback))
+        # Stable per-item key (not a fresh callback id) so a retry of the same
+        # composite action reuses the same draft version instead of minting a
+        # new one - the existing generate_cover_letter_draft idempotency
+        # contract, not a second mechanism.
+        idempotency_key = f"career_one_flow:{inbox_item_id}"
+        try:
+            await self.gateway.set_inbox_verdict(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                verdict=VERDICT_PREPARE,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
             )
-        verdict_buttons = [
-            ("ask", "Спросить"),
-            ("prepare", "Готовить"),
-            ("skip", "Пропустить"),
-            ("false_positive", "Ошибка парсера"),
+        except CareerInboxError as exc:
+            await callback.message.answer(f"Не удалось подготовить: {exc}")
+            return
+        if not self.career_cover_letter_draft_enabled:
+            await self._show_inbox_item(callback.message, user_id, inbox_item_id)
+            return
+        try:
+            result = await self.gateway.generate_cover_letter_draft(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                idempotency_key=idempotency_key,
+                actor_id=actor_id,
+            )
+        except CareerInboxError as exc:
+            await callback.message.answer(f"Не удалось подготовить: {exc}")
+            await self._show_inbox_item(callback.message, user_id, inbox_item_id)
+            return
+        if result.get("manual_path"):
+            await callback.message.answer(
+                "Не получилось подготовить черновик автоматически (нет провайдера, "
+                "фактов или сбой генерации). Карточка осталась «Готовится».",
+                reply_markup=_markup(
+                    [[("Повторить подготовку", _career_prepare_callback(inbox_item_id))]]
+                ),
+            )
+            return
+        await self._render_draft_preview(callback.message, user_id, inbox_item_id, result["draft"])
+
+    async def _render_draft_preview(
+        self, message: Any, user_id: int, inbox_item_id: str, draft: dict[str, Any]
+    ) -> None:
+        item = await self.gateway.get_inbox_item(user_id, inbox_item_id)
+        item = item or {}
+        header = [
+            f"{item.get('company') or 'без компании'} - {item.get('role_title') or 'без роли'}",
+            f"Ссылка: {item.get('url') or 'не указана'}",
         ]
-        rows: list[list[tuple[str, str]]] = [
-            [
-                (
-                    f"✅ {label}" if verdict == key else label,
-                    _career_verdict_callback(inbox_item_id, key),
-                )
-            ]
-            for key, label in verdict_buttons
+        header += self._gate_warning_lines(item)
+        questions = item.get("questions_for_recruiter") or []
+        if questions:
+            header.append("Вопросы рекрутёру:")
+            header += [f"- {q}" for q in questions]
+        await message.answer("\n".join(header))
+
+        report = draft.get("grounding_report") or {}
+        flagged = report.get("flagged_sentences") or []
+        body_lines = [draft["body"]]
+        if flagged:
+            body_lines.append("")
+            body_lines.append(
+                "⚠ Непроверяемые утверждения (проверьте вручную перед отправкой):"
+            )
+            body_lines += [f"- {f['sentence']}" for f in flagged]
+        await message.answer("\n".join(body_lines))
+
+        if not self.career_ready_queue_enabled:
+            return
+        facts_bank = load_facts_bank(self.facts_bank_path)
+        role_types = (facts_bank or {}).get("role_types") or {}
+        if not role_types:
+            await message.answer("Нет доступных CV-вариантов (facts_bank недоступен).")
+            return
+        rows = [
+            [(self._cv_label(key), _career_package_cv_callback(draft["draft_id"], key))]
+            for key in list(role_types.keys())[:3]
         ]
-        applied_label = "Отклик отправлен"
-        rows.append(
-            [
-                (
-                    f"✅ {applied_label}" if verdict == VERDICT_APPLIED else applied_label,
-                    _career_applied_callback(inbox_item_id),
-                )
-            ]
+        await message.answer(
+            "Выберите резюме (CV) для отклика:", reply_markup=_markup(rows)
         )
-        if verdict == VERDICT_PREPARE and self.career_cover_letter_draft_enabled:
-            rows.append(
-                [("Черновик сопровода", _career_draft_callback(inbox_item_id))]
+
+    async def _on_career_callback_package_applied(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        if not self.career_ready_queue_enabled:
+            await callback.answer("Функция выключена")
+            return
+        package_id = await self._career_resolve_application_id(callback, rest[0])
+        if package_id is None:
+            return
+        hash_prefix = rest[1] if len(rest) > 1 else ""
+        pkg = await self.gateway.get_application_package(user_id, package_id)
+        if pkg is None:
+            await callback.answer("Пакет недоступен")
+            return
+        if not pkg["package_content_hash"].startswith(hash_prefix):
+            await callback.answer("Пакет изменился, откройте карточку заново")
+            return
+        if pkg["status"] != PACKAGE_STATUS_READY:
+            # Already submitted by this or a concurrent replayed callback -
+            # the state itself proves no duplicate is possible.
+            await callback.answer("Уже зафиксировано")
+            application = None
+            if pkg.get("linked_application_id"):
+                application = await self.gateway.get_application(
+                    user_id, pkg["linked_application_id"]
+                )
+            await self._render_applied_success(callback.message, user_id, application or pkg)
+            return
+        idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
+        try:
+            result = await self.gateway.submit_application_package(
+                user_id,
+                package_id=package_id,
+                expected_package_hash=pkg["package_content_hash"],
+                idempotency_key=idempotency_key,
+                actor_id=str(self._telegram_id(callback)),
             )
-        rows.append([("Назад", "career:inbox")])
-        await self._render_card(message, "\n".join(lines), _markup(rows))
+        except CareerInboxError as exc:
+            await callback.answer("Не получилось")
+            await callback.message.answer(f"Не удалось отправить: {exc}")
+            return
+        await callback.answer("Отклик зафиксирован")
+        await self._render_applied_success(callback.message, user_id, result["application"])
 
     async def _on_career_callback_inbox(self, callback: Any, user_id: int) -> None:
         if not self.career_inbox_enabled:
@@ -2295,10 +2548,23 @@ class MlTechnicalTelegramController:
             return
         cv_variant_id = rest[1]
         draft = await self.gateway.get_cover_letter_draft(user_id, draft_id)
-        if draft is None or draft.get("status") != DRAFT_STATUS_APPROVED:
-            await callback.answer("Сначала одобрите черновик")
+        if draft is None:
+            await callback.answer("Черновик не найден")
+            return
+        if draft.get("status") == DRAFT_STATUS_REJECTED:
+            await callback.answer("Черновик отклонён")
             return
         try:
+            # Clicking a CV button is the owner's explicit approval of the
+            # exact draft just shown, in the same action - not a second,
+            # separate "Одобрить" tap. approve_cover_letter_draft is
+            # idempotent, so this is a no-op when already approved (old
+            # Одобрить -> Собрать пакет path still works unchanged).
+            if draft.get("status") != DRAFT_STATUS_APPROVED:
+                approved = await self.gateway.approve_cover_letter_draft(
+                    user_id, draft_id=draft_id, actor_id=str(self._telegram_id(callback))
+                )
+                draft = approved["draft"]
             result = await self.gateway.prepare_application_package(
                 user_id,
                 inbox_item_id=draft["inbox_item_id"],
@@ -2310,14 +2576,8 @@ class MlTechnicalTelegramController:
             await callback.answer("Ошибка")
             await callback.message.answer(str(exc))
             return
-        pkg = result["package"]
         await callback.answer("Пакет готов")
-        await callback.message.answer(
-            f"Пакет готов: {pkg['company']} - {pkg['role_title']}\n"
-            f"CV: {self._cv_label(pkg['cv_variant_id'])}\n"
-            f"Hash: {pkg['package_content_hash'][:12]}\n\n"
-            "Найти его можно в меню «Карьера» → «Готовые»."
-        )
+        await self._render_ready_package_card(callback.message, result["package"])
 
     def _cv_label(self, cv_variant_id: str) -> str:
         """Human-readable CV name from the same facts_bank role_types mapping
@@ -2486,6 +2746,14 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_back(callback, user_id)
         elif action == "cancel":
             await self._on_career_callback_cancel(callback, user_id)
+        elif action == "more":
+            await self._on_career_callback_more(callback, user_id)
+        elif action == "prep" and rest:
+            await self._on_career_callback_prepare(callback, user_id, rest)
+        elif action == "tech" and rest:
+            await self._on_career_callback_tech(callback, user_id, rest)
+        elif action == "pkgapplied" and len(rest) >= 2:
+            await self._on_career_callback_package_applied(callback, user_id, rest)
         elif action == "app" and rest:
             await self._on_career_callback_app(callback, user_id, rest)
         elif action == "status" and len(rest) >= 2:
