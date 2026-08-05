@@ -708,12 +708,15 @@ class CareerInboxService:
         )
         if row is None:
             raise CareerInboxError(f"unknown career inbox_item_id: {inbox_item_id}")
-        if row.idempotency_key == idempotency_key and row.owner_verdict == verdict:
+        # Replay safety is judged on the resulting state (verdict + reason), not
+        # on the incoming callback idempotency_key: `idempotency_key` on the row
+        # is the immutable import/creation identity import_snapshot looks up by
+        # and must never be overwritten after creation.
+        if row.owner_verdict == verdict and row.owner_reason == reason:
             return {"created": False, "inbox_item": _inbox_item_dict(row)}
 
         row.owner_verdict = verdict
         row.owner_reason = reason
-        row.idempotency_key = idempotency_key
         row.updated_at = _utcnow()
         row.decided_at = _utcnow()
         await self.db.commit()
@@ -776,9 +779,12 @@ class CareerInboxService:
         except CareerLedgerError as exc:
             raise CareerInboxError(str(exc)) from exc
 
+        # `idempotency_key` is passed to the ledger above, which owns replay
+        # safety for the application it creates; the inbox row's own
+        # idempotency_key (its import/creation identity) is intentionally
+        # left untouched here.
         row.owner_verdict = VERDICT_APPLIED
         row.linked_application_id = ledger_result["application"]["application_id"]
-        row.idempotency_key = idempotency_key
         row.updated_at = _utcnow()
         row.decided_at = _utcnow()
         await self.db.commit()

@@ -360,6 +360,208 @@ async def test_import_rejects_bad_route(pg_session_maker):
 
 
 @pytest.mark.integration
+async def test_set_verdict_preserves_import_identity_for_reimport(pg_session_maker):
+    """Corrective regression: once the owner sets a verdict, re-importing the
+    exact same envelope must still resolve to the same row, not a new one."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        first = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=first["inbox_item"]["inbox_item_id"],
+            verdict="skip",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        second = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+
+        assert second["created"] is False
+        assert (
+            second["inbox_item"]["inbox_item_id"]
+            == first["inbox_item"]["inbox_item_id"]
+        )
+        assert second["inbox_item"]["owner_verdict"] == "skip"
+        count = await db.scalar(
+            select(func.count(CareerInboxItem.id)).where(
+                CareerInboxItem.user_id == user_id
+            )
+        )
+        assert count == 1
+
+
+@pytest.mark.integration
+async def test_confirm_applied_preserves_import_identity_for_reimport(pg_session_maker):
+    """Corrective regression: the applied state and its linked application
+    must survive an identical re-import of the same envelope."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        first = await service.import_snapshot(
+            user_id,
+            external_id="@chan:2",
+            content_hash="b" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        inbox_item_id = first["inbox_item"]["inbox_item_id"]
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict="prepare",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        await service.confirm_applied(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        second = await service.import_snapshot(
+            user_id,
+            external_id="@chan:2",
+            content_hash="b" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+
+        assert second["created"] is False
+        assert second["inbox_item"]["inbox_item_id"] == inbox_item_id
+        assert second["inbox_item"]["owner_verdict"] == "applied"
+        assert second["inbox_item"]["linked_application_id"] is not None
+
+        item_count = await db.scalar(
+            select(func.count(CareerInboxItem.id)).where(
+                CareerInboxItem.user_id == user_id
+            )
+        )
+        assert item_count == 1
+        ledger = CareerLedgerService(db)
+        summary = await ledger.get_pipeline_summary(user_id)
+        assert summary["total"] == 1
+
+
+@pytest.mark.integration
+async def test_set_verdict_replay_same_state_is_noop_but_change_is_real(
+    pg_session_maker,
+):
+    """Replaying the same verdict+reason is a no-op; a genuine state change
+    is still a real, idempotency-key-independent state transition."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        first = await service.import_snapshot(
+            user_id,
+            external_id="@chan:3",
+            content_hash="c" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        inbox_item_id = first["inbox_item"]["inbox_item_id"]
+
+        set_1 = await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict="ask",
+            reason="looks interesting",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        assert set_1["created"] is True
+
+        replay = await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict="ask",
+            reason="looks interesting",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        assert replay["created"] is False
+        assert replay["inbox_item"]["owner_verdict"] == "ask"
+
+        changed = await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict="skip",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        assert changed["created"] is True
+        assert changed["inbox_item"]["owner_verdict"] == "skip"
+
+
+@pytest.mark.integration
+async def test_manual_lead_import_identity_survives_owner_verdict(pg_session_maker):
+    """Optional coverage: confirm_manual_lead's creation key is also never
+    overwritten by set_verdict."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        idempotency_key = f"telegram:{uuid4().hex}"
+
+        first = await service.confirm_manual_lead(
+            user_id,
+            source="manual",
+            raw_text="synthetic lead text",
+            company="Acme",
+            role_title="ML Engineer",
+            idempotency_key=idempotency_key,
+            actor_id="123456",
+        )
+        inbox_item_id = first["inbox_item"]["inbox_item_id"]
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict="skip",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        second = await service.confirm_manual_lead(
+            user_id,
+            source="manual",
+            raw_text="synthetic lead text",
+            company="Acme",
+            role_title="ML Engineer",
+            idempotency_key=idempotency_key,
+            actor_id="123456",
+        )
+
+        assert second["created"] is False
+        assert second["inbox_item"]["inbox_item_id"] == inbox_item_id
+        assert second["inbox_item"]["owner_verdict"] == "skip"
+
+
+@pytest.mark.integration
 async def test_import_user_isolation_across_two_owners(pg_session_maker):
     async with pg_session_maker() as db:
         user_a = await _create_user(db)
