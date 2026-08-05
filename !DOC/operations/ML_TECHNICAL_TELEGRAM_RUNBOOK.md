@@ -55,6 +55,15 @@ so it can be linked manually.
 
 ## Read-only smoke
 
+From the portfolio checkout, use the central proxy registry and operator:
+
+```powershell
+cd ..
+powershell -File scripts\telegram_proxy.ps1 english-smoke
+```
+
+For a standalone checkout with `PROXY_URL` already configured:
+
 ```powershell
 venv\Scripts\python.exe scripts\ml_technical_bot_runtime_smoke.py
 ```
@@ -64,13 +73,23 @@ allowed ID is linked. It does not send a message or create a session.
 
 ## Run
 
+From the portfolio checkout:
+
+```powershell
+cd ..
+powershell -File scripts\telegram_proxy.ps1 run-english
+```
+
+For a standalone checkout with `PROXY_URL` already configured:
+
 ```powershell
 venv\Scripts\python.exe -m app.adapters.telegram.ml_technical_bot
 ```
 
 An empty token stops startup. Use one long-running process and configure
-`HTTPS_PROXY` or the existing `PROXY_URL` when Telegram is unavailable
-directly.
+`HTTPS_PROXY` or the existing `PROXY_URL` when Telegram is unavailable directly.
+Within the portfolio checkout, `!LOCAL/telegram-proxy.env` is the canonical
+proxy source; do not copy its credentials into this repository's `.env`.
 
 ## Manual acceptance
 

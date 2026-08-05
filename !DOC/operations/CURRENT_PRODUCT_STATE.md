@@ -90,6 +90,11 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Voice - delivery layer; evidence - control layer.
 
 ## Known Issues
+- Live refresh on 2026-08-05 exposed an import-identity defect: owner verdict and
+  applied commands overwrite `career_inbox_items.idempotency_key`, so a later
+  identical `telegram-digest` import can create a duplicate. Eleven of thirteen
+  current outreach candidates were repeats. Corrective task:
+  `../architecture/SONNET_CAREER_INBOX_IMPORT_IDEMPOTENCY_CORRECTIVE_TASK.md`.
 - Career ledger v0.2.1 запущен; после исправления pending-input еще нужна повторная ручная приемка добавления, смены статуса и `Задать следующее действие` в реальном Telegram.
 - Text-first interview loop прошел synthetic check; теперь нужен founder live/dogfood run: profile -> mission -> evidence -> next mission.
 - Founder `CareerProfile` и real vacancy input пока не зафиксированы как работающий end-to-end slice.
@@ -101,6 +106,9 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Career package flow жив и принят. Наблюдаемый карьерный blocker теперь не UX, а отсутствие новых релевантных source items; HH pilot не должен добавлять OAuth/submit/scheduler в EnglishFriend.
 
 ## Next Step
+- До следующего vacancy refresh исправить import identity по corrective task и
+  доказать регрессией: `import -> verdict/applied -> same import` создаёт ноль
+  новых inbox-строк. Текущую уже загруженную очередь можно разбирать вручную.
 - Записать через `/applied` два уже отправленных отклика и сверить `/applications` с фактической воронкой.
 - Провести первый founder typed/composer run: profile -> mission -> answer -> evidence -> next mission.
 - Собрать один replay bundle по `session_id` и проверить, что evidence объясняет next mission.
@@ -110,6 +118,10 @@ Moat and metrics doctrine (commoditized-intelligence era):
 - Не расширять Career Inbox до появления новых данных. Следующий карьерный срез выполняется в `telegram-digest`: HH read-only source pilot, затем текущий import path.
 
 ## Last Update
+- 2026-08-05: на живом повторном импорте подтверждён дефект identity: 11 из 13
+  outreach-карточек оказались ранее виденными вакансиями. Root cause локализован в
+  перезаписи стабильного import idempotency key командами владельца; подготовлена
+  узкая corrective-задача без миграции и без изменения `telegram-digest`.
 - 2026-07-29: Career OS D1c принят владельцем после live smoke, UX-коррекции и реальных откликов. Package flow работает end-to-end; новым blocker признано исчерпание vacancy queue. EnglishFriend-код не расширять до результата HH read-only source pilot.
 - 2026-07-27: Career OS D0 live acceptance (Sonnet) — migration `019` и флаг подтверждены уже применёнными к dev (не заново); 165 focused pytest зелены на `englishfriend_test_018`; verdict **D0 PASS**, детали в отчёте задачи.
 - 2026-07-27: Career OS D1a application package contract (Sonnet) — новая таблица после доказанного reuse-разбора (cover draft snapshot и application event payload не могут безопасно хранить pre-application immutable state); migration `020` только на test PostgreSQL, dev не тронут, feature flag не добавлялся; 193 focused pytest зелены; verdict **D1a PASS**, детали в отчёте задачи.
