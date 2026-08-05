@@ -21,6 +21,7 @@ from app.models.core_tables import User
 from app.services.career_ledger_service import (
     ALLOWED_TRANSITIONS,
     INTENT_CAREER_ADD,
+    INTENT_CAREER_ADD_VACANCY_SOURCE,
     INTENT_CAREER_FEEDBACK,
     INTENT_CAREER_MANUAL_LEAD,
     INTENT_CAREER_NEXT_ACTION,
@@ -67,6 +68,7 @@ def test_pending_intent_vocabulary_and_ttl():
         INTENT_CAREER_NEXT_ACTION,
         INTENT_CAREER_MANUAL_LEAD,
         INTENT_CAREER_FEEDBACK,
+        INTENT_CAREER_ADD_VACANCY_SOURCE,
     }
     assert PENDING_INPUT_TTL_MINUTES == 30
 

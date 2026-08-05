@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -112,3 +113,57 @@ async def test_full_pipeline_success_returns_last_output_line(tmp_path, monkeypa
     )
     assert result.ok is True
     assert result.message == "DONE. imported=2 skipped_duplicate=0 rejected=0 total_read=2"
+
+
+def _write_channels_config(digest_repo: Path, channels: list) -> Path:
+    digest_repo.mkdir(parents=True, exist_ok=True)
+    path = digest_repo / svc.CHANNELS_CONFIG_FILENAME
+    path.write_text(
+        json.dumps({"_comment": "x", "channels": channels, "days": 14, "output": "data/x.jsonl"}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_list_vacancy_channels_empty_when_repo_path_missing():
+    assert svc.list_vacancy_channels("") == []
+
+
+def test_list_vacancy_channels_empty_when_config_absent(tmp_path):
+    assert svc.list_vacancy_channels(str(tmp_path)) == []
+
+
+def test_list_vacancy_channels_reads_current_config(tmp_path):
+    _write_channels_config(tmp_path, [-100123, "@jobs_channel"])
+    assert svc.list_vacancy_channels(str(tmp_path)) == ["-100123", "@jobs_channel"]
+
+
+def test_add_vacancy_channel_appends_username(tmp_path):
+    path = _write_channels_config(tmp_path, ["@existing"])
+    ok, detail = svc.add_vacancy_channel(str(tmp_path), "new_channel")
+    assert ok is True
+    assert detail == "@new_channel"
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    assert cfg["channels"] == ["@existing", "@new_channel"]
+
+
+def test_add_vacancy_channel_parses_numeric_chat_id(tmp_path):
+    path = _write_channels_config(tmp_path, [])
+    ok, detail = svc.add_vacancy_channel(str(tmp_path), "-1009999999999")
+    assert ok is True
+    assert detail == "-1009999999999"
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    assert cfg["channels"] == [-1009999999999]
+
+
+def test_add_vacancy_channel_rejects_duplicate(tmp_path):
+    _write_channels_config(tmp_path, ["@existing"])
+    ok, detail = svc.add_vacancy_channel(str(tmp_path), "existing")
+    assert ok is False
+    assert "уже есть" in detail
+
+
+def test_add_vacancy_channel_fails_closed_without_config(tmp_path):
+    ok, detail = svc.add_vacancy_channel(str(tmp_path), "new_channel")
+    assert ok is False
+    assert "не найден" in detail

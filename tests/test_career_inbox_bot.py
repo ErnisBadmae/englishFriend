@@ -1567,3 +1567,147 @@ async def test_confirm_fails_closed_for_unknown_package():
 
     assert confirm.answers == ["Пакет недоступен"]
     assert gateway.applications == {}
+
+
+# ---------------------------------------------------------------------------
+# Vacancy sources: show / add (career:sources, career:addsrc)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sources_buttons_hidden_when_refresh_flag_off():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=False)
+    callback = FakeCallback(111, "menu:career")
+
+    await controller.on_menu(callback)
+
+    labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
+    assert "Источники вакансий" not in labels
+    assert "Добавить источник" not in labels
+
+
+@pytest.mark.asyncio
+async def test_sources_buttons_shown_when_refresh_flag_on():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    callback = FakeCallback(111, "menu:career")
+
+    await controller.on_menu(callback)
+
+    labels = [text for text, _data in _flat_buttons(callback.message.markups[-1])]
+    assert "Источники вакансий" in labels
+    assert "Добавить источник" in labels
+
+
+@pytest.mark.asyncio
+async def test_show_sources_flag_off_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=False)
+
+    callback = FakeCallback(111, "career:sources")
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Функция выключена"]
+
+
+@pytest.mark.asyncio
+async def test_show_sources_lists_current_channels(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    monkeypatch.setattr(
+        ml_technical_bot, "list_vacancy_channels", lambda repo_path: ["@jobs", "-100123"]
+    )
+
+    callback = FakeCallback(111, "career:sources")
+    await controller.on_career_callback(callback)
+
+    assert any("@jobs" in reply and "-100123" in reply for reply in callback.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_show_sources_empty_config_message(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    monkeypatch.setattr(ml_technical_bot, "list_vacancy_channels", lambda repo_path: [])
+
+    callback = FakeCallback(111, "career:sources")
+    await controller.on_career_callback(callback)
+
+    assert any("не настроены" in reply for reply in callback.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_add_source_flag_off_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=False)
+
+    callback = FakeCallback(111, "career:addsrc")
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Функция выключена"]
+
+
+@pytest.mark.asyncio
+async def test_add_source_start_sets_pending_intent_and_prompts():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+
+    callback = FakeCallback(111, "career:addsrc")
+    await controller.on_career_callback(callback)
+
+    pending = await gateway.get_active_pending_intent(11)
+    assert pending["intent"] == "career_add_vacancy_source"
+    assert any("Добавление источника" in reply for reply in callback.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_add_source_reply_appends_and_clears_pending_intent(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    await gateway.set_pending_intent(
+        11, intent="career_add_vacancy_source"
+    )
+    monkeypatch.setattr(
+        ml_technical_bot, "add_vacancy_channel", lambda repo_path, entry: (True, entry)
+    )
+
+    await controller.on_text(FakeMessage(111, "new_jobs_channel", message_id=50))
+
+    assert await gateway.get_active_pending_intent(11) is None
+
+
+@pytest.mark.asyncio
+async def test_add_source_reply_reports_failure_without_crashing(monkeypatch):
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    await gateway.set_pending_intent(
+        11, intent="career_add_vacancy_source"
+    )
+    monkeypatch.setattr(
+        ml_technical_bot,
+        "add_vacancy_channel",
+        lambda repo_path, entry: (False, f"{entry} уже есть в списке"),
+    )
+
+    message = FakeMessage(111, "existing_channel", message_id=51)
+    await controller.on_text(message)
+
+    assert any("Не добавлено" in reply for reply in message.replies)
+    assert await gateway.get_active_pending_intent(11) is None
+
+
+@pytest.mark.asyncio
+async def test_add_source_reply_rejects_empty_input():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True, refresh_enabled=True)
+    await gateway.set_pending_intent(
+        11, intent="career_add_vacancy_source"
+    )
+
+    message = FakeMessage(111, "   ", message_id=52)
+    await controller.on_text(message)
+
+    assert any("Повторите" in reply for reply in message.replies)
+    pending = await gateway.get_active_pending_intent(11)
+    assert pending is not None and pending["intent"] == "career_add_vacancy_source"

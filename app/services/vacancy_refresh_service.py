@@ -9,6 +9,7 @@ so both steps run as subprocesses rather than in-process imports.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,9 @@ PYTHON = REPO_ROOT / "venv" / "Scripts" / "python.exe"
 REFRESH_TIMEOUT_SECONDS = 900
 IMPORT_TIMEOUT_SECONDS = 60
 OUTPUT_TAIL_LINES = 15
+CHANNELS_CONFIG_FILENAME = "vacancy_telegram_channels.json"
+SOURCE_ENTRY_MAX_LEN = 64
+RESOLVE_NAMES_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -93,3 +97,81 @@ async def refresh_vacancies(*, digest_repo_path: str, telegram_id: int) -> Refre
 
     last_line = output.strip().splitlines()[-1] if output.strip() else "Готово"
     return RefreshResult(True, last_line)
+
+
+def _channels_config_path(digest_repo_path: str) -> Path:
+    return Path(digest_repo_path) / CHANNELS_CONFIG_FILENAME
+
+
+def list_vacancy_channels(digest_repo_path: str) -> list[str]:
+    """Read-only: current whitelist entries from telegram-digest's channel
+    config, as display strings. Just reads the JSON file - no network call,
+    no membership/liveness check."""
+    if not digest_repo_path:
+        return []
+    path = _channels_config_path(digest_repo_path)
+    if not path.exists():
+        return []
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    return [str(c) for c in cfg.get("channels", [])]
+
+
+def add_vacancy_channel(digest_repo_path: str, entry: str) -> tuple[bool, str]:
+    """Append one channel (chat_id or @username) to telegram-digest's
+    whitelist config. Deliberately no liveness/membership check here - the
+    owner confirms the source themselves on the next manual fetch run."""
+    if not digest_repo_path:
+        return False, "vacancy_refresh_repo_path не настроен"
+    path = _channels_config_path(digest_repo_path)
+    if not path.exists():
+        return False, f"конфиг не найден: {path}"
+
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    channels = cfg.get("channels", [])
+    if entry.lstrip("-").isdigit():
+        value: object = int(entry)
+    else:
+        # existing entries are always stored with a leading "@" - match that.
+        value = entry if entry.startswith("@") else f"@{entry}"
+    if value in channels:
+        return False, f"{value} уже есть в списке"
+
+    channels.append(value)
+    cfg["channels"] = channels
+    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True, str(value)
+
+
+async def resolve_vacancy_channel_names(digest_repo_path: str) -> dict[str, str]:
+    """Live lookup (via telegram-digest's userbot session) of a display name
+    per configured channel - only for entries already in the whitelist, not
+    the owner's full dialog list. Best-effort: any failure (session not
+    logged in, timeout, missing venv) returns an empty mapping and the
+    caller falls back to showing the raw channel value."""
+    if not digest_repo_path:
+        return {}
+    digest_repo = Path(digest_repo_path)
+    digest_python = digest_repo / "venv" / "Scripts" / "python.exe"
+    if not digest_python.exists():
+        return {}
+
+    returncode, output = await _run_subprocess(
+        [
+            str(digest_python),
+            "fetch_telegram_channels.py",
+            "--config",
+            CHANNELS_CONFIG_FILENAME,
+            "--resolve-names",
+        ],
+        cwd=digest_repo,
+        timeout=RESOLVE_NAMES_TIMEOUT_SECONDS,
+    )
+    if returncode != 0:
+        return {}
+
+    names: dict[str, str] = {}
+    for line in output.splitlines():
+        channel, _, name = line.partition("\t")
+        if name:
+            names[channel.strip()] = name.strip()
+    return names

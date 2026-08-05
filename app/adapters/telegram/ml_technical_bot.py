@@ -45,6 +45,7 @@ from app.services.career_inbox_service import (
 from app.services.career_ledger_service import (
     ALLOWED_TRANSITIONS,
     INTENT_CAREER_ADD,
+    INTENT_CAREER_ADD_VACANCY_SOURCE,
     INTENT_CAREER_FEEDBACK,
     INTENT_CAREER_MANUAL_LEAD,
     INTENT_CAREER_NEXT_ACTION,
@@ -64,7 +65,13 @@ from app.services.ml_technical_service import (
     MlTechnicalConflictError,
     MlTechnicalService,
 )
-from app.services.vacancy_refresh_service import refresh_vacancies
+from app.services.vacancy_refresh_service import (
+    SOURCE_ENTRY_MAX_LEN,
+    add_vacancy_channel,
+    list_vacancy_channels,
+    refresh_vacancies,
+    resolve_vacancy_channel_names,
+)
 
 MAX_SESSION_QUESTIONS = 5
 RECENT_APPLICATIONS_DISPLAY_LIMIT = 10
@@ -930,6 +937,8 @@ class MlTechnicalTelegramController:
             rows.append([("Добавить контакт или ответ", "career:lead")])
         if self.career_vacancy_refresh_enabled:
             rows.append([("Проверить новые вакансии", "career:refresh")])
+            rows.append([("Источники вакансий", "career:sources")])
+            rows.append([("Добавить источник", "career:addsrc")])
         if self.career_ready_queue_enabled:
             rows.append([("Готовые", "career:ready")])
         rows.append([("Назад", "career:back")])
@@ -1245,6 +1254,9 @@ class MlTechnicalTelegramController:
                 await self._handle_feedback_paste(
                     message, user_id, pending["application_id"]
                 )
+                return
+            if pending["intent"] == INTENT_CAREER_ADD_VACANCY_SOURCE:
+                await self._handle_add_vacancy_source_reply(message, user_id)
                 return
 
         direct_payload = _parse_direct_career_payload(str(message.text or ""))
@@ -1887,6 +1899,72 @@ class MlTechnicalTelegramController:
             f"Готово: {result.message}", reply_markup=self._career_markup()
         )
 
+    async def _on_career_callback_sources(self, callback: Any, user_id: int) -> None:
+        if not self.career_vacancy_refresh_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await callback.answer()
+        channels = list_vacancy_channels(self.vacancy_refresh_repo_path)
+        if not channels:
+            await callback.message.answer(
+                "Источники не настроены или конфиг недоступен.",
+                reply_markup=self._career_markup(),
+            )
+            return
+        names = await resolve_vacancy_channel_names(self.vacancy_refresh_repo_path)
+        lines = []
+        for c in channels:
+            if c.startswith("@"):
+                lines.append(f"- {c}")
+            else:
+                name = names.get(c)
+                lines.append(f"- {name} ({c})" if name else f"- {c}")
+        await callback.message.answer(
+            f"Источники вакансий ({len(channels)}):\n" + "\n".join(lines),
+            reply_markup=self._career_markup(),
+        )
+
+    _ADD_SOURCE_PROMPT_TEXT = (
+        "Добавление источника вакансий\n"
+        "Пришлите @username публичного канала или числовой chat_id "
+        "приватного чата одной строкой.\n\n"
+        "Источник добавляется в конфиг без проверки, что канал/чат реально "
+        "существует и доступен - это выяснится при следующем ручном запуске "
+        "«Проверить новые вакансии»."
+    )
+
+    async def _on_career_callback_add_source_start(
+        self, callback: Any, user_id: int
+    ) -> None:
+        if not self.career_vacancy_refresh_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await callback.answer()
+        await self.gateway.set_pending_intent(
+            user_id, intent=INTENT_CAREER_ADD_VACANCY_SOURCE
+        )
+        await callback.message.answer(self._ADD_SOURCE_PROMPT_TEXT)
+
+    async def _handle_add_vacancy_source_reply(
+        self, message: Any, user_id: int
+    ) -> None:
+        entry = str(message.text or "").strip()
+        if not entry or len(entry) > SOURCE_ENTRY_MAX_LEN:
+            await message.answer(
+                f"{self._ADD_SOURCE_PROMPT_TEXT}\n\nПустой или слишком длинный ввод. Повторите."
+            )
+            return
+        ok, detail = add_vacancy_channel(self.vacancy_refresh_repo_path, entry)
+        await self.gateway.clear_pending_intent(user_id)
+        if not ok:
+            await message.answer(
+                f"Не добавлено: {detail}", reply_markup=self._career_markup()
+            )
+            return
+        await message.answer(
+            f"Источник добавлен: {detail}", reply_markup=self._career_markup()
+        )
+
     async def _on_career_callback_verdict(
         self, callback: Any, user_id: int, rest: list[str]
     ) -> None:
@@ -2444,6 +2522,10 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_draft_facts(callback, user_id, rest)
         elif action == "refresh":
             await self._on_career_callback_refresh(callback, user_id)
+        elif action == "sources":
+            await self._on_career_callback_sources(callback, user_id)
+        elif action == "addsrc":
+            await self._on_career_callback_add_source_start(callback, user_id)
         elif action == "pkg" and rest:
             await self._on_career_callback_package_start(callback, user_id, rest)
         elif action == "pkgcv" and len(rest) >= 2:

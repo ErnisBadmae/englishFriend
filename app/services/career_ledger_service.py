@@ -67,11 +67,13 @@ INTENT_CAREER_ADD = "career_add"
 INTENT_CAREER_NEXT_ACTION = "career_next_action"
 INTENT_CAREER_MANUAL_LEAD = "career_manual_lead"
 INTENT_CAREER_FEEDBACK = "career_feedback"
+INTENT_CAREER_ADD_VACANCY_SOURCE = "career_add_vacancy_source"
 VALID_PENDING_INTENTS = {
     INTENT_CAREER_ADD,
     INTENT_CAREER_NEXT_ACTION,
     INTENT_CAREER_MANUAL_LEAD,
     INTENT_CAREER_FEEDBACK,
+    INTENT_CAREER_ADD_VACANCY_SOURCE,
 }
 # Intents that carry an application_id (feedback/next-action are scoped to one
 # application); the rest (add/manual_lead) must not carry one.
