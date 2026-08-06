@@ -189,3 +189,64 @@ def test_primary_follows_first_main_context(
     profile = resolve_goal_routing(goal_brief=brief)
     assert profile.primary_context == expected_primary
     assert profile.main_contexts[0] == expected_primary
+
+
+@pytest.mark.parametrize(
+    "text, expected_primary, expected_first_mission",
+    [
+        # Observed 2026-08-06: the owner picked the product's own "ML job"
+        # option and was routed to workplace_communication, because "team" was
+        # the only scoring word in the sentence.
+        (
+            "my closest goal right now is getting a new ML job in international team",
+            "interviews",
+            "foundation_speaking_drill",
+        ),
+        (
+            "I need to prepare for job interviews",
+            "interviews",
+            "foundation_speaking_drill",
+        ),
+        (
+            "I need English for team meetings and status updates",
+            "workplace_communication",
+            "stakeholder_explanation_drill",
+        ),
+        (
+            "I need to explain my ML project architecture and impact",
+            "project_walkthrough",
+            "technical_project_walkthrough",
+        ),
+    ],
+)
+def test_job_search_goal_routes_to_interviews(
+    text: str, expected_primary: str, expected_first_mission: str
+) -> None:
+    profile = resolve_goal_routing(last_user_message=text)
+    assert profile.primary_context == expected_primary
+    assert profile.first_mission_task_type == expected_first_mission
+
+
+def test_job_search_signal_outranks_a_lone_workplace_word() -> None:
+    scores = score_context_signals("looking for a new job with the team")
+    assert scores["interviews"] >= scores["workplace_communication"]
+
+
+def test_workplace_heavy_goal_still_wins_over_single_job_word() -> None:
+    profile = resolve_goal_routing(
+        last_user_message=(
+            "In my job I present status updates to stakeholders and clients "
+            "in cross-functional meetings"
+        )
+    )
+    assert profile.primary_context == "workplace_communication"
+
+
+def test_job_search_signals_do_not_override_a_confirmed_brief() -> None:
+    brief = {"status": "confirmed", "main_contexts": ["workplace_communication"]}
+    profile = resolve_goal_routing(
+        goal_brief=brief,
+        last_user_message="I want a new job offer",
+    )
+    assert profile.primary_context == "workplace_communication"
+    assert profile.decision_source == "user_confirmed"

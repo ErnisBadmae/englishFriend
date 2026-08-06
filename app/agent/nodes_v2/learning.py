@@ -14,6 +14,7 @@ from typing import Optional
 
 from app.agent.intent_policy import build_intent_context_from_state, classify_intent
 from app.agent.intent_policy.fast_rules import SUPPORT_REQUEST_RU_PATTERNS
+from app.agent.intent_policy.types import IntentType
 from app.agent.intent_policy.language import is_russian
 from app.agent.state import AgentState, AgentPhase, add_decision_log
 from app.agent.pedagogy_policy import shadow_policy_action_for_intent
@@ -212,53 +213,6 @@ ANCHOR_SIGNAL_PATTERNS = {
         "skill i want",
     ),
 }
-STATIC_CAREER_KEYWORDS = {
-    "accuracy",
-    "agent",
-    "answer",
-    "answers",
-    "analysis",
-    "career",
-    "data",
-    "deployment",
-    "document",
-    "documents",
-    "engineer",
-    "engineering",
-    "english",
-    "feature",
-    "goal",
-    "grammar",
-    "improve",
-    "inference",
-    "interview",
-    "job",
-    "latency",
-    "machine",
-    "metrics",
-    "mission",
-    "ml",
-    "model",
-    "precision",
-    "pipeline",
-    "plan",
-    "prepare",
-    "presentation",
-    "process",
-    "product",
-    "program",
-    "project",
-    "quality",
-    "rag",
-    "recall",
-    "retrieval",
-    "role",
-    "skill",
-    "step",
-    "train",
-    "vocabulary",
-    "work",
-}
 SUPPORT_REQUEST_PATTERNS = (
     "my english is bad",
     "my english is very bad",
@@ -346,7 +300,7 @@ async def learning_node(state: AgentState) -> AgentState:
             strategy="supportive_recovery",
         )
 
-    if mission_anchored and _is_low_signal_text(user_message, state):
+    if mission_anchored and _intent_is_low_signal(state):
         state["low_signal_turn_streak"] = int(state.get("low_signal_turn_streak", 0) or 0) + 1
         action = _build_low_signal_action(state)
         return _record_learning_turn(
@@ -874,52 +828,16 @@ def _tokenize_text(text: Optional[str]) -> list[str]:
     return [token.lower() for token in TOKEN_RE.findall(text)]
 
 
-def _mission_keywords(state: AgentState) -> set[str]:
-    dynamic = set(STATIC_CAREER_KEYWORDS)
-    for key in (
-        "confirmed_goal",
-        "mission_title",
-        "mission_reason",
-        "mission_success_signal",
-        "mission_linked_goal_context",
-    ):
-        dynamic.update(_tokenize_text(str(state.get(key) or "")))
-    dynamic.discard("")
-    return dynamic
+def _intent_is_low_signal(state: AgentState) -> bool:
+    """Low-signal has one authority: the intent policy classified this turn.
 
-
-def _is_low_signal_text(text: Optional[str], state: AgentState) -> bool:
-    tokens = _tokenize_text(text)
-    if not tokens:
-        return True
-
-    filler_or_number_hits = sum(
-        1
-        for token in tokens
-        if token in FILLER_TOKENS or token in NUMBER_WORDS or token.isdigit()
-    )
-    content_tokens = [
-        token
-        for token in tokens
-        if token not in FILLER_TOKENS and token not in NUMBER_WORDS and not token.isdigit()
-    ]
-
-    if len(content_tokens) < 4:
-        return True
-
-    if filler_or_number_hits / max(len(tokens), 1) > 0.4:
-        return True
-
-    if len(set(content_tokens)) <= 2 and len(content_tokens) >= 4:
-        return True
-
-    if _is_mission_anchored(state):
-        keywords = _mission_keywords(state)
-        has_anchor = any(token in keywords for token in content_tokens)
-        if not has_anchor:
-            return True
-
-    return False
+    ``_update_shadow_intent`` already ran for this turn, so the decision is a
+    read, not a second classifier. The removed duplicate additionally required
+    the answer to contain a mission keyword, which turned a normal A2-B1 answer
+    into noise whenever a typo swallowed the one matching word.
+    """
+    intent = state.get("last_intent") or {}
+    return str(intent.get("type") or "") == IntentType.LOW_SIGNAL_NOISE.value
 
 
 def _get_anchor(state: AgentState, offset: int = 0) -> dict:
@@ -1412,9 +1330,23 @@ def _dedupe_anchor_response_if_needed(state: AgentState, action: dict) -> None:
         return
 
     history = list(state.get("recent_assistant_questions") or [])
+
+    def _already_asked(candidate: str) -> bool:
+        normalized_candidate = _normalize_text(candidate).strip()
+        if not normalized_candidate:
+            return False
+        return any(
+            _jaccard(normalized_candidate, prior) >= _DUP_JACCARD_THRESHOLD
+            for prior in history
+        )
+
     if any(_jaccard(normalized_question, prior) >= _DUP_JACCARD_THRESHOLD for prior in history):
         anchor = _get_anchor(state)
         paraphrase = ANCHOR_PARAPHRASES.get(anchor["id"])
+        # The paraphrase is only an escape hatch while it is still unused;
+        # otherwise deduplicating would just repeat the earlier wording.
+        if paraphrase and _already_asked(paraphrase):
+            paraphrase = None
         if paraphrase and last_question in response_text:
             action["response_text"] = response_text.replace(last_question, paraphrase, 1)
         else:
@@ -1462,7 +1394,10 @@ def _needs_supportive_anchor_recovery(text: Optional[str]) -> bool:
     if not (text or "").strip():
         return False
     normalized = _normalize_text(text)
-    if any(pattern in normalized for pattern in SUPPORT_REQUEST_PATTERNS):
+    # Patterns go through the same normalization as the text: it turns an
+    # apostrophe into a space, so a raw "i don't know how to say" pattern could
+    # never match a learner who actually typed the apostrophe.
+    if any(_normalize_text(pattern) in normalized for pattern in SUPPORT_REQUEST_PATTERNS):
         return True
     lowered = text.lower()
     return any(pattern in lowered for pattern in SUPPORT_REQUEST_RU_PATTERNS)

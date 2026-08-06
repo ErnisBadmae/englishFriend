@@ -263,6 +263,7 @@ def _noise_reason_codes(tokens: list[str], context: IntentContext) -> list[str]:
         reason_codes.append(f"filler_ratio_{round(filler_ratio, 2)}")
     if len(set(content_tokens)) <= 2 and len(content_tokens) >= 4:
         reason_codes.append("low_unique_content")
-    if context.low_signal_turn_streak >= 1 and len(content_tokens) < 5:
-        reason_codes.append("repeat_low_signal_context")
+    # A short but meaningful answer stays a real answer after a noisy turn:
+    # short answers are normal at A2-B1, so the previous turn must not lower
+    # the bar for the current one. The streak still drives composer hints.
     return reason_codes

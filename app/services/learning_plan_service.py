@@ -26,6 +26,12 @@ from app.services.goal_brief_contract import (
 
 logger = logging.getLogger(__name__)
 
+# Where a stored ``outcome_score`` came from. Only a rated interview run is a
+# performance measurement; the generic score counts turns, vocabulary and
+# corrections, so it stays telemetry and cannot drive progression.
+OUTCOME_SCORE_SOURCE_INTERVIEW = "interview_run"
+OUTCOME_SCORE_SOURCE_PROXY = "engagement_proxy"
+
 
 @dataclass
 class GoalTemplate:
@@ -1543,13 +1549,22 @@ class LearningPlanService:
             vocabulary_count=len(vocab_words),
             interview_run=interview_run,
         )
+        # An interview run carries a real rated score. Everything else is a
+        # turn/vocabulary/correction proxy: it measures engagement, not answer
+        # quality, so it is recorded as telemetry and must never claim progress.
+        outcome_score_source = (
+            None
+            if outcome_score is None
+            else (OUTCOME_SCORE_SOURCE_INTERVIEW if interview_run else OUTCOME_SCORE_SOURCE_PROXY)
+        )
+        score_is_authoritative = outcome_score_source == OUTCOME_SCORE_SOURCE_INTERVIEW
         improvement_tags = self._build_improvement_tags(
-            outcome_score=outcome_score,
+            outcome_score=outcome_score if score_is_authoritative else None,
             weakness_tags=contextual_weakness_tags,
             previous_similar_evidence=previous_similar_evidence,
         )
         adaptation_hint = self._build_adaptation_hint(
-            outcome_score=outcome_score,
+            outcome_score=outcome_score if score_is_authoritative else None,
             weakness_tags=contextual_weakness_tags,
             previous_similar_evidence=previous_similar_evidence,
         )
@@ -1581,6 +1596,7 @@ class LearningPlanService:
                 "next_focus": (interview_run.get("next_focus") or [])[:3],
                 "evidence_signals": evidence_signals,
                 "outcome_score": outcome_score,
+                "outcome_score_source": outcome_score_source,
                 "weakness_tags": contextual_weakness_tags,
                 "improvement_tags": improvement_tags,
                 "adaptation_hint": adaptation_hint,
@@ -1613,6 +1629,7 @@ class LearningPlanService:
                 "next_focus": next_focus[:3],
                 "evidence_signals": evidence_signals,
                 "outcome_score": outcome_score,
+                "outcome_score_source": outcome_score_source,
                 "weakness_tags": contextual_weakness_tags,
                 "improvement_tags": improvement_tags,
                 "adaptation_hint": adaptation_hint,
@@ -1647,6 +1664,7 @@ class LearningPlanService:
                     f"{user_turns} speaking turn{'s' if user_turns != 1 else ''}",
                 ],
                 "outcome_score": outcome_score,
+                "outcome_score_source": outcome_score_source,
                 "weakness_tags": contextual_weakness_tags,
                 "improvement_tags": improvement_tags,
                 "adaptation_hint": adaptation_hint,
@@ -1715,6 +1733,7 @@ class LearningPlanService:
             "next_focus": next_focus[:3],
             "evidence_signals": evidence_signals,
             "outcome_score": outcome_score,
+            "outcome_score_source": outcome_score_source,
             "weakness_tags": contextual_weakness_tags,
             "improvement_tags": improvement_tags,
             "adaptation_hint": adaptation_hint,

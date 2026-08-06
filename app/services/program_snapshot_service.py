@@ -17,7 +17,10 @@ from app.services.goal_brief_contract import (
 from app.services.ai.vocabulary_service import VocabularyService
 from app.services.gamification import StreakService, XPService
 from app.services.interview_service import build_interview_summary
-from app.services.learning_plan_service import LearningPlanService
+from app.services.learning_plan_service import (
+    OUTCOME_SCORE_SOURCE_INTERVIEW,
+    LearningPlanService,
+)
 from app.services.pronunciation_assessment_service import build_pronunciation_summary
 from app.services.routing import (
     GoalRoutingProfile,
@@ -768,6 +771,16 @@ def _evidence_main_issue(item: dict[str, Any]) -> Optional[str]:
 
 
 def _evidence_outcome_score(item: dict[str, Any]) -> Optional[float]:
+    """Return the score only when it actually measures answer quality.
+
+    The generic score is derived from turn, vocabulary and correction counts,
+    so a session that produced many short turns and no corrections outscores a
+    session where the learner struggled productively. It stays in stored JSON
+    as telemetry, but it must not select ``repeat`` or ``advance``. Records
+    written before the source was stamped are treated as non-authoritative.
+    """
+    if item.get("outcome_score_source") != OUTCOME_SCORE_SOURCE_INTERVIEW:
+        return None
     raw = item.get("outcome_score")
     if raw is None:
         return None
@@ -891,7 +904,9 @@ def _build_evidence_binding(
         return (
             f"Carrying forward last session's improvement: {improvement_tags[0]}.",
             "latest_improvement",
-            "advance",
+            # Continuing from the last session is fine; claiming the learner
+            # advanced is not, unless a measured score backs it.
+            "advance" if _evidence_outcome_score(latest) is not None else "new",
         )
     if main_issue:
         return (

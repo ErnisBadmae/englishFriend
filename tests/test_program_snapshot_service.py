@@ -193,7 +193,8 @@ def test_recommend_next_mission_uses_foundation_stage_for_speaking_drill():
     assert mission["estimated_minutes"] == 9
 
 
-def test_recommend_next_mission_repeats_when_same_issue_plateaus():
+def test_flat_generic_proxy_scores_do_not_force_repeat():
+    """The generic score counts turns and corrections, not answer quality."""
     mission = recommend_next_mission(
         goal_brief={
             "primary_goal": "Get an ML role abroad",
@@ -238,13 +239,11 @@ def test_recommend_next_mission_repeats_when_same_issue_plateaus():
         interview_runs_count=1,
     )
 
-    assert mission["task_type"] == "project_walkthrough_drill"
-    assert mission["repeat_vs_advance"] == "repeat"
-    assert mission["evidence_source"] == "repeated_main_issue"
-    assert "impact is still vague" in mission["reason"].lower()
+    assert mission["repeat_vs_advance"] != "repeat"
+    assert mission["evidence_source"] != "repeated_main_issue"
 
 
-def test_recommend_next_mission_marks_advance_when_recent_score_improves():
+def test_rising_generic_proxy_score_does_not_claim_advance():
     mission = recommend_next_mission(
         goal_brief={
             "primary_goal": "Get an ML role abroad",
@@ -285,8 +284,7 @@ def test_recommend_next_mission_marks_advance_when_recent_score_improves():
     )
 
     assert mission["task_type"] == "foundation_speaking_drill"
-    assert mission["repeat_vs_advance"] == "advance"
-    assert mission["adaptation_reason"]
+    assert mission["repeat_vs_advance"] != "advance"
 
 
 @pytest.mark.parametrize(
@@ -735,3 +733,100 @@ async def test_get_snapshot_reconciles_stale_interview_pack_with_primary_context
     assert snapshot["mission"]["task_type"] == "stakeholder_explanation_drill"
     assert snapshot["mission"]["linked_goal_context"] == "workplace_communication"
     assert snapshot["product_signals"]["value_stage"] == "structured_evidence_visible"
+
+
+def _confirmed_ml_brief() -> dict:
+    return {
+        "primary_goal": "Get an ML role abroad",
+        "target_role": "ML Engineer",
+        "domain": "machine_learning",
+        "target_market": "international_company",
+        "deadline_type": "medium_3_6m",
+        "main_contexts": ["interviews", "project_walkthrough"],
+        "status": "confirmed",
+    }
+
+
+def test_single_high_generic_proxy_score_does_not_claim_advance():
+    """Observed 2026-08-06: a looping session scored 0.98 and said "advance"."""
+    mission = recommend_next_mission(
+        goal_brief=_confirmed_ml_brief(),
+        program_plan={"current_stage": "foundation", "weekly_focus": ["Build short answers"]},
+        due_count=0,
+        error_patterns=[],
+        has_assessment=True,
+        session_evidence=[
+            {
+                "mission_type": "free_conversation",
+                "mode": "free_conversation",
+                "task_type": "stakeholder_explanation_drill",
+                "mission_title": "Explain the project to a stakeholder",
+                "outcome_score": 0.98,
+                "outcome_score_source": "engagement_proxy",
+                "weakness_tags": [],
+            }
+        ],
+        interview_runs_count=0,
+    )
+
+    assert mission["repeat_vs_advance"] != "advance"
+
+
+def test_rated_interview_evidence_still_drives_progression():
+    """Interview runs carry a real rated score and keep their authority."""
+    mission = recommend_next_mission(
+        goal_brief=_confirmed_ml_brief(),
+        program_plan={"current_stage": "foundation", "weekly_focus": ["Build short answers"]},
+        due_count=0,
+        error_patterns=[],
+        has_assessment=True,
+        session_evidence=[
+            {
+                "mission_type": "mock_interview",
+                "mode": "mock_interview",
+                "task_type": "hr_intro_drill",
+                "mission_title": "Run a STAR structure drill",
+                "outcome_score": 0.41,
+                "outcome_score_source": "interview_run",
+                "weakness_tags": ["structure is unclear"],
+            },
+            {
+                "mission_type": "mock_interview",
+                "mode": "mock_interview",
+                "task_type": "hr_intro_drill",
+                "mission_title": "Run a STAR structure drill",
+                "outcome_score": 0.40,
+                "outcome_score_source": "interview_run",
+                "weakness_tags": ["structure is unclear"],
+            },
+        ],
+        interview_runs_count=2,
+    )
+
+    assert mission["repeat_vs_advance"] == "repeat"
+    assert mission["evidence_source"] == "repeated_main_issue"
+
+
+def test_weakest_interview_area_routing_is_unchanged():
+    mission = recommend_next_mission(
+        goal_brief=_confirmed_ml_brief(),
+        program_plan={"current_stage": "career_scenarios", "weekly_focus": []},
+        due_count=0,
+        error_patterns=[],
+        has_assessment=True,
+        weakest_interview_area="structure",
+        session_evidence=[
+            {
+                "mission_type": "free_conversation",
+                "mode": "free_conversation",
+                "task_type": "foundation_speaking_drill",
+                "outcome_score": 0.98,
+                "outcome_score_source": "engagement_proxy",
+                "weakness_tags": [],
+            }
+        ],
+        interview_runs_count=1,
+    )
+
+    assert mission["task_type"] == "hr_intro_drill"
+    assert mission["evidence_source"] == "last_session_weakness"

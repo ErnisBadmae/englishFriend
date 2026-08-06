@@ -119,7 +119,11 @@ async def test_learning_node_uses_mission_opener_without_llm():
 @pytest.mark.asyncio
 async def test_learning_node_low_signal_turn_stays_on_anchor():
     state = _foundation_state()
-    state["last_user_message"] = "as let us know watch your car"
+    # Filler-only noise stays low-signal. Note this used to be asserted with
+    # "as let us know watch your car": that is meaningful-looking English which
+    # only counted as noise under the removed mission-keyword gate, the same
+    # gate that rejected the owner's real answers.
+    state["last_user_message"] = "eh mm ok now"
 
     llm = MagicMock()
     llm.generate = AsyncMock()
@@ -660,3 +664,113 @@ async def test_learning_node_dedupes_near_duplicate_llm_question():
         "let me put it differently" in response
         or "walk me through one recent project. what problem were you solving" not in response
     )
+
+
+def _stakeholder_state() -> dict:
+    """Mirror the mission the owner actually got on 2026-08-06."""
+    state = create_initial_state(user_id=1, session_id="stakeholder-session")
+    state["current_phase"] = AgentPhase.LEARNING_SESSION
+    state["current_mode"] = LearningModeEnum.FREE_CONVERSATION
+    state["goal_setup_complete"] = True
+    state["assessed_level"] = "B1"
+    state["mission_task_type"] = "stakeholder_explanation_drill"
+    state["mission_title"] = "Explain the project to a stakeholder"
+    state["mission_reason"] = "Clarify your target role and context"
+    state["mission_success_signal"] = (
+        "You can explain the problem, your contribution, and the business value "
+        "without collapsing into jargon."
+    )
+    state["mission_linked_goal_context"] = "workplace_communication"
+    return state
+
+
+async def _run_turn(state: dict) -> dict:
+    llm = MagicMock()
+    llm.generate = AsyncMock(
+        return_value='{"action": "continue", "response_text": "Good. What problem did it solve?", "should_end": false}'
+    )
+    with patch("app.agent.nodes_v2.learning.get_llm_provider", return_value=llm), patch(
+        "app.agent.nodes_v2.learning.get_prompt_service",
+        return_value=MagicMock(log_usage=AsyncMock()),
+    ), patch(
+        "app.agent.nodes_v2.learning.get_pedagogy_logger",
+        return_value=MagicMock(),
+    ):
+        return await learning_node(state)
+
+
+@pytest.mark.asyncio
+async def test_meaningful_answer_with_typo_is_not_low_signal():
+    """A typo swallowed the one mission keyword and the answer became noise."""
+    state = _stakeholder_state()
+    state["last_user_message"] = (
+        "my curren tproject is a platform where managers assign experts"
+    )
+
+    updated = await _run_turn(state)
+
+    assert updated["last_intent"]["type"] == "direct_answer"
+    assert updated["low_signal_turn_streak"] == 0
+    assert "keep it simple and stay with" not in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_short_three_word_answer_is_a_direct_answer():
+    state = _stakeholder_state()
+    state["last_user_message"] = "Global remote team"
+
+    updated = await _run_turn(state)
+
+    assert updated["last_intent"]["type"] == "direct_answer"
+    assert updated["low_signal_turn_streak"] == 0
+
+
+@pytest.mark.asyncio
+async def test_short_answer_after_a_low_signal_turn_is_still_an_answer():
+    """Short answers are normal at A2-B1; one noisy turn must not lower the bar."""
+    state = _stakeholder_state()
+    state["low_signal_turn_streak"] = 1
+    state["last_user_message"] = "operations routines killed"
+
+    updated = await _run_turn(state)
+
+    assert updated["last_intent"]["type"] == "direct_answer"
+    assert updated["low_signal_turn_streak"] == 0
+
+
+@pytest.mark.asyncio
+async def test_filler_only_answer_remains_low_signal():
+    state = _stakeholder_state()
+    state["last_user_message"] = "um... uh ok"
+
+    updated = await _run_turn(state)
+
+    assert updated["last_intent"]["type"] == "low_signal_noise"
+    assert updated["low_signal_turn_streak"] == 1
+
+
+@pytest.mark.asyncio
+async def test_english_help_request_with_apostrophe_stays_supportive():
+    state = _stakeholder_state()
+    state["last_user_message"] = "I don't know how to say it in English"
+
+    updated = await _run_turn(state)
+
+    assert updated["low_signal_turn_streak"] == 1
+    assert "example" in updated["pending_response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_off_topic_english_answer_reaches_the_coach_instead_of_the_noise_branch():
+    """Deliberate behavior change: only the noise policy can reject a turn.
+
+    Meaningful English that misses the mission vocabulary is now a real answer
+    and gets a coaching turn, instead of being bounced by a keyword gate.
+    """
+    state = _stakeholder_state()
+    state["last_user_message"] = "as let us know watch your car"
+
+    updated = await _run_turn(state)
+
+    assert updated["last_intent"]["type"] == "direct_answer"
+    assert updated["low_signal_turn_streak"] == 0

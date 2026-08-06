@@ -59,6 +59,31 @@ INTERVIEW_SIGNAL_PATTERNS: tuple[str, ...] = (
     "self-intro",
 )
 
+# Job-search signals score as ``interviews``: preparing for a new job is
+# interview preparation, even when the sentence never says "interview".
+# Deliberately narrow — this is not the broad career-anchor vocabulary, which
+# also matches wording like "remote" or "international" that says nothing about
+# which context to practise.
+JOB_SEARCH_SIGNAL_PATTERNS: tuple[str, ...] = (
+    "job",
+    "jobs",
+    "job search",
+    "new job",
+    "hire",
+    "hired",
+    "hiring",
+    "offer",
+    "offers",
+    "position",
+    "positions",
+    "vacancy",
+    "vacancies",
+    "apply",
+    "applying",
+    "job application",
+    "job applications",
+)
+
 # Project signals describe talking about a specific piece of technical work.
 # ``explain`` is intentionally NOT here — it collides with
 # "explain to a non-technical stakeholder" which is a workplace scenario.
@@ -176,6 +201,7 @@ CAREER_ANCHOR_PATTERNS: tuple[str, ...] = (
     # Existing context buckets — reuse lexicon so anything recognised by
     # routing is also recognised as a career anchor.
     *INTERVIEW_SIGNAL_PATTERNS,
+    *JOB_SEARCH_SIGNAL_PATTERNS,
     *PROJECT_SIGNAL_PATTERNS,
     *WORKPLACE_SIGNAL_PATTERNS,
 )
@@ -384,7 +410,13 @@ def score_context_signals(text: str) -> dict[str, int]:
     if not normalized:
         return {key: 0 for key in _SUPPORTED_PRIMARY}
     return {
-        "interviews": _count_hits(normalized, INTERVIEW_SIGNAL_PATTERNS),
+        # A job-search goal is an interview-preparation goal. Scoring it here
+        # means one such signal already outranks a lone workplace word like
+        # "team", because ties resolve in ``_SUPPORTED_PRIMARY`` order, while a
+        # genuinely workplace-heavy goal still wins on its own count.
+        "interviews": _count_hits(
+            normalized, (*INTERVIEW_SIGNAL_PATTERNS, *JOB_SEARCH_SIGNAL_PATTERNS)
+        ),
         "workplace_communication": _count_hits(normalized, WORKPLACE_SIGNAL_PATTERNS),
         "project_walkthrough": _count_hits(normalized, PROJECT_SIGNAL_PATTERNS),
     }
