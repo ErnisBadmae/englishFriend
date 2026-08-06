@@ -13,6 +13,7 @@ from app.services.voice_session import (
     SessionPersistenceService,
     VoiceSessionDependencies,
 )
+from app.services.voice_session.service import UnknownSessionUserError
 
 
 def _session_dependencies():
@@ -136,8 +137,23 @@ async def test_bootstrap_service_loads_user_learning_vocab_and_memory():
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_service_resolves_telegram_id_to_internal_user_id():
+async def test_bootstrap_service_resolves_existing_internal_user_id():
     deps, learning_plan_service, _, learner_profile_service = _session_dependencies()
+    service = SessionBootstrapService(AsyncMock(), dependencies=deps)
+
+    context = await service.build(user_id=42, session_id="session-internal")
+
+    assert context.user_id == 42
+    assert context.telegram_id == 4242
+    learning_plan_service.get_or_create_plan.assert_awaited_once_with(42)
+    learner_profile_service.build_summary.assert_awaited_once()
+    assert learner_profile_service.build_summary.await_args.kwargs["user_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_service_rejects_telegram_id_used_as_internal_id():
+    """A telegram_id that is not a users.id must not open a session."""
+    deps, learning_plan_service, _, _ = _session_dependencies()
     user_service = deps.user_service_factory(None)
     user_service.get_user = AsyncMock(return_value=None)
     user_service.get_user_by_telegram_id = AsyncMock(
@@ -145,13 +161,25 @@ async def test_bootstrap_service_resolves_telegram_id_to_internal_user_id():
     )
     service = SessionBootstrapService(AsyncMock(), dependencies=deps)
 
-    context = await service.build(user_id=900123, session_id="session-tg")
+    with pytest.raises(UnknownSessionUserError):
+        await service.build(user_id=900123, session_id="session-tg")
 
-    assert context.user_id == 123
-    assert context.telegram_id == 900123
-    learning_plan_service.get_or_create_plan.assert_awaited_once_with(123)
-    learner_profile_service.build_summary.assert_awaited_once()
-    assert learner_profile_service.build_summary.await_args.kwargs["user_id"] == 123
+    learning_plan_service.get_or_create_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_service_fails_closed_for_unknown_user_without_side_effects():
+    deps, learning_plan_service, _, _ = _session_dependencies()
+    user_service = deps.user_service_factory(None)
+    user_service.get_user = AsyncMock(return_value=None)
+    user_service.get_user_by_telegram_id = AsyncMock(return_value=None)
+    service = SessionBootstrapService(AsyncMock(), dependencies=deps)
+
+    with pytest.raises(UnknownSessionUserError):
+        await service.build(user_id=999999, session_id="session-unknown")
+
+    user_service.create_user.assert_not_awaited()
+    learning_plan_service.get_or_create_plan.assert_not_awaited()
 
 
 @pytest.mark.asyncio

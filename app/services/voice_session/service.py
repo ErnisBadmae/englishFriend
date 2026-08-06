@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph_v2 import initialize_session_v2
 from app.core.metrics import voice_errors_total
-from app.schemas.user import UserCreate
 from app.services.ai.learner_profile_service import (
     LearnerProfileService,
     create_learner_profile_service,
@@ -38,6 +37,17 @@ from app.services.voice_session.persistence import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class UnknownSessionUserError(RuntimeError):
+    """A session was requested for an internal user id that does not exist.
+
+    Sessions accept only an existing ``users.id``. Telegram external ids are
+    translated to an internal id by the user-resolution endpoint before a
+    session starts, so the runtime must never guess a namespace or create a
+    profile on the fly.
+    """
+
 
 _EMBEDDED_BASELINE_MISSION_TYPES = {
     "technical_project_walkthrough",
@@ -203,23 +213,20 @@ class SessionBootstrapService:
         except Exception as exc:  # pragma: no cover - defensive rollback guard
             logger.warning("[VoiceSession] Rollback failed: %s", exc)
 
-    async def _resolve_user_record(self, requested_user_id: int) -> Any | None:
-        user = await self._user_service.get_user(requested_user_id)
-        if user:
-            return user
+    async def _load_session_user(self, user_id: int) -> Any:
+        """Load an existing internal user, or fail closed.
 
-        user = await self._user_service.get_user_by_telegram_id(requested_user_id)
-        if user:
-            return user
-
-        logger.info("[VoiceSession] User %s not found, auto-creating by telegram_id", requested_user_id)
-        return await self._user_service.create_user(
-            UserCreate(
-                telegram_id=requested_user_id,
-                username=f"User_{requested_user_id}",
-                language_level="B1",
+        There is deliberately no Telegram-id fallback and no auto-create here:
+        resolving an external id to ``users.id`` belongs to the user-resolution
+        endpoint, and a session that cannot confirm whose profile it writes to
+        must not start.
+        """
+        user = await self._user_service.get_user(user_id)
+        if user is None:
+            raise UnknownSessionUserError(
+                f"No user with internal id {user_id}; resolve the profile before starting a session"
             )
-        )
+        return user
 
     async def build(
         self,
@@ -246,23 +253,23 @@ class SessionBootstrapService:
         )
 
         try:
-            user = await self._resolve_user_record(user_id)
-
-            if user:
-                context.user_id = int(getattr(user, "id", user_id) or user_id)
-                context.telegram_id = int(getattr(user, "telegram_id", user_id) or user_id)
-                context.username = user.username or "Student"
-                context.language_level = user.language_level or "B1"
+            user = await self._load_session_user(user_id)
         except Exception as exc:
-            logger.warning("[VoiceSession] Could not fetch/create user %s: %s", user_id, exc)
+            # Identity is a precondition, not a best-effort field: without a
+            # confirmed profile the session would write a learning plan for a
+            # user that may not exist.
+            logger.warning("[VoiceSession] Refusing session for user %s: %s", user_id, exc)
             voice_errors_total.labels(stage="db").inc()
             await self._rollback_if_needed()
+            raise
 
-        resolved_user_id = int(context.user_id or user_id)
-        if context.user_id is None:
-            context.user_id = resolved_user_id
-        if context.telegram_id is None:
-            context.telegram_id = user_id
+        raw_telegram_id = getattr(user, "telegram_id", None)
+        context.user_id = int(user.id)
+        context.telegram_id = int(raw_telegram_id) if raw_telegram_id is not None else None
+        context.username = user.username or "Student"
+        context.language_level = user.language_level or "B1"
+
+        resolved_user_id = context.user_id
 
         try:
             learning_plan = await self._learning_plan_service.get_or_create_plan(resolved_user_id)

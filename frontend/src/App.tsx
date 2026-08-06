@@ -47,6 +47,56 @@ interface SessionConfig {
 
 const DEFAULT_STT_PROVIDER = import.meta.env.VITE_STT_PROVIDER || "composer";
 
+interface TelegramIdentity {
+  telegramId: number;
+  username: string;
+}
+
+/**
+ * Telegram ids are external identifiers. Only a positive safe integer is
+ * accepted, and there is no fallback person: an unusable value must surface as
+ * a setup error instead of silently resolving somebody else's profile.
+ */
+function parseTelegramId(raw: unknown): number | null {
+  if (typeof raw === "number") {
+    return Number.isSafeInteger(raw) && raw > 0 ? raw : null;
+  }
+  if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+    const parsed = Number(raw.trim());
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function resolveTelegramIdentity(
+  telegramUser: { id?: unknown; username?: unknown; first_name?: unknown } | undefined,
+  localEnvValue: unknown
+): TelegramIdentity | null {
+  const telegramWebAppId = parseTelegramId(telegramUser?.id);
+  if (telegramWebAppId !== null) {
+    const named =
+      (typeof telegramUser?.username === "string" && telegramUser.username) ||
+      (typeof telegramUser?.first_name === "string" && telegramUser.first_name) ||
+      "";
+    return {
+      telegramId: telegramWebAppId,
+      username: named || `tg_${telegramWebAppId}`
+    };
+  }
+
+  const localId = parseTelegramId(localEnvValue);
+  if (localId !== null) {
+    return { telegramId: localId, username: `tg_${localId}` };
+  }
+
+  return null;
+}
+
+const IDENTITY_SETUP_ERROR =
+  "No profile identity available. Open this app inside Telegram, or set " +
+  "VITE_LOCAL_TELEGRAM_ID to your existing Telegram id in frontend/.env.local " +
+  "and restart the dev server.";
+
 function shouldForceGuidedReview(mission?: MissionSummary | null): boolean {
   if (!mission) {
     return false;
@@ -97,9 +147,8 @@ function readScreenFromHash(): Screen {
 }
 
 function App() {
-  const [telegramId, setTelegramId] = useState<number>(23);
-  const [telegramUsername, setTelegramUsername] =
-    useState<string>("Local User");
+  const [identity, setIdentity] = useState<TelegramIdentity | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
   const [userId, setUserId] = useState<number | null>(null);
   const [snapshot, setSnapshot] = useState<ProgramSnapshot | null>(null);
   const [screen, setScreen] = useState<Screen>(readScreenFromHash());
@@ -125,18 +174,16 @@ function App() {
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
 
+    const resolved = resolveTelegramIdentity(
+      tg?.initDataUnsafe?.user,
+      import.meta.env.VITE_LOCAL_TELEGRAM_ID
+    );
+    setIdentity(resolved);
+    setIdentityError(resolved ? null : IDENTITY_SETUP_ERROR);
+
     if (tg) {
       tg.ready();
       tg.expand();
-
-      const tgUser = tg.initDataUnsafe?.user;
-      if (tgUser?.id) {
-        setTelegramId(tgUser.id);
-        setTelegramUsername(
-          tgUser.username || tgUser.first_name || `tg_${tgUser.id}`
-        );
-        console.log("Telegram user ID:", tgUser.id);
-      }
 
       document.documentElement.style.setProperty(
         "--tg-theme-bg-color",
@@ -194,15 +241,25 @@ function App() {
       return;
     }
 
+    // Fail closed: without a validated external identity we never call the
+    // resolution endpoint, so no accidental profile can be created.
+    if (!identity) {
+      setIsResolvingUser(false);
+      setUserId(null);
+      return;
+    }
+
     let cancelled = false;
 
-    async function resolveUser() {
+    async function resolveUser(current: TelegramIdentity) {
       setIsResolvingUser(true);
       setError(null);
       try {
+        // External Telegram id in, canonical internal users.id out. Only the
+        // internal id is passed to snapshots and WebSocket sessions.
         const resolved = await resolveOrCreateUser(
-          telegramId,
-          telegramUsername
+          current.telegramId,
+          current.username
         );
         if (!cancelled) {
           setUserId(resolved.id);
@@ -222,11 +279,11 @@ function App() {
       }
     }
 
-    void resolveUser();
+    void resolveUser(identity);
     return () => {
       cancelled = true;
     };
-  }, [isReady, telegramId, telegramUsername]);
+  }, [isReady, identity]);
 
   async function refreshSnapshot(): Promise<ProgramSnapshot | null> {
     if (!userId) {
@@ -365,6 +422,15 @@ function App() {
     );
   }
 
+  if (identityError) {
+    return (
+      <div className="empty-state-card">
+        <h2>Profile not configured</h2>
+        <p>{identityError}</p>
+      </div>
+    );
+  }
+
   if (isResolvingUser || !userId) {
     return (
       <div className="loading">
@@ -382,7 +448,7 @@ function App() {
           <h1>EnglishFriend</h1>
         </div>
         <div className="header-meta">
-          <span>{snapshot?.user.username || telegramUsername}</span>
+          <span>{snapshot?.user.username || identity?.username}</span>
           <span className="header-endpoint">{API_BASE}</span>
         </div>
       </header>
