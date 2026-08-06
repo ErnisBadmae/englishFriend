@@ -36,13 +36,47 @@ function buildSnapshot(
   };
 }
 
+const LATEST_KEY = 'englishfriend.voiceDebug.latest';
+const SESSION_KEY_PREFIX = 'englishfriend.voiceDebug.session.';
+
+/** Drop debug snapshots from earlier sessions; only the current one is useful. */
+function dropOtherSessionSnapshots(currentKey: string) {
+  const stale: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key && key.startsWith(SESSION_KEY_PREFIX) && key !== currentKey) {
+      stale.push(key);
+    }
+  }
+  stale.forEach((key) => window.localStorage.removeItem(key));
+}
+
+/**
+ * Debug capture must never break a session. It used to write the full snapshot
+ * under two keys on every event and never clean up older sessions, so the
+ * storage quota eventually threw mid-mission and took the screen down with it.
+ */
 function persistSnapshot(snapshot: VoiceDebugSnapshot, sessionMeta: Record<string, unknown>) {
-  const latestKey = 'englishfriend.voiceDebug.latest';
   const sessionId = String(sessionMeta.sessionId || 'pending');
-  const sessionKey = `englishfriend.voiceDebug.session.${sessionId}`;
+  const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
   const payload = JSON.stringify(snapshot);
-  window.localStorage.setItem(latestKey, payload);
-  window.localStorage.setItem(sessionKey, payload);
+
+  const write = () => {
+    window.localStorage.setItem(sessionKey, payload);
+    window.localStorage.setItem(LATEST_KEY, payload);
+  };
+
+  try {
+    write();
+  } catch {
+    try {
+      dropOtherSessionSnapshots(sessionKey);
+      write();
+    } catch {
+      // Still no room: keep the session running without debug persistence.
+      console.warn('[VoiceDebug] Snapshot not persisted: storage quota exceeded');
+    }
+  }
 }
 
 export function useVoiceDebugSession(enabled: boolean): UseVoiceDebugSessionReturn {
