@@ -550,3 +550,64 @@ async def test_evidence_falls_back_to_correction_category_without_patterns():
 
     assert evidence is not None
     assert "articles" in str(evidence["main_issue"])
+
+
+@pytest.mark.asyncio
+async def test_long_pattern_is_clipped_inside_sentences_but_kept_whole_in_tags():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {}
+    long_pattern = (
+        "Struggles with complex English instructions, responding with Russian "
+        "questions about the purpose of tasks"
+    )
+    _stub_error_patterns(db, [long_pattern])
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    evidence = await service.record_session_evidence(
+        user_id=11,
+        session_id="sess-long",
+        mode="free_conversation",
+        mission_task_type="tradeoff_explanation_drill",
+        conversation_history=[
+            {"role": "user", "content": "we chose the simpler pipeline"},
+            {"role": "user", "content": "it was fast enough"},
+        ],
+    )
+
+    assert evidence is not None
+    # Full observation is preserved as data...
+    assert long_pattern in evidence["weakness_tags"]
+    assert evidence["main_issue"] == long_pattern
+    # ...but sentences stay readable.
+    inlined = " ".join(evidence["next_focus"]) + evidence["summary"]
+    assert long_pattern not in inlined
+    assert "Struggles with complex English" in inlined
+
+
+@pytest.mark.asyncio
+async def test_no_finding_leaves_main_issue_empty_instead_of_a_placeholder():
+    """A placeholder used to be stored, then re-read as a recurring blocker."""
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {}
+    _stub_error_patterns(db, [])
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    evidence = await service.record_session_evidence(
+        user_id=11,
+        session_id="sess-clean",
+        mode="free_conversation",
+        mission_task_type="foundation_speaking_drill",
+        conversation_history=[
+            {"role": "user", "content": "i build machine learning pipelines"},
+            {"role": "user", "content": "the model improved recall"},
+        ],
+    )
+
+    assert evidence is not None
+    assert evidence["main_issue"] is None

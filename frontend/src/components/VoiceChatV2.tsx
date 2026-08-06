@@ -136,9 +136,20 @@ export function VoiceChatV2({
     downloadJson,
   } = debugSession;
 
+  // The composer is the text-first input path. While the product is text-first
+  // it must be available in every mission, not only in the two hardcoded
+  // "strict" ones: technical drills used to leave voice as the only option.
+  const composerInputSelected = sttProvider === 'composer';
   const guidedReviewMode = useMemo(
-    () => usesBackendStt || reviewBeforeSend || isStrictMission || mode === 'assessment' || mode === 'guided_setup' || !mode,
-    [isStrictMission, mode, reviewBeforeSend, usesBackendStt]
+    () =>
+      composerInputSelected ||
+      usesBackendStt ||
+      reviewBeforeSend ||
+      isStrictMission ||
+      mode === 'assessment' ||
+      mode === 'guided_setup' ||
+      !mode,
+    [composerInputSelected, isStrictMission, mode, reviewBeforeSend, usesBackendStt]
   );
 
   const composerChips = useMemo(

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { HomePage } from "./components/HomePage";
 import { InterviewPage } from "./components/InterviewPage";
 import { InterviewResultsPage } from "./components/InterviewResultsPage";
@@ -468,7 +469,13 @@ function App() {
         ) : null}
 
         {snapshot ? (
-          <>
+          <ErrorBoundary
+            key={screen}
+            onReset={() => {
+              setScreen("home");
+              void refreshSnapshot();
+            }}
+          >
             {screen === "home" && (
               <HomePage
                 snapshot={snapshot}
@@ -620,7 +627,7 @@ function App() {
               />
             )}
             {screen === "progress" && <ProgressPage snapshot={snapshot} />}
-          </>
+          </ErrorBoundary>
         ) : (
           <div className="empty-state-card">
             <h2>Program data unavailable</h2>

@@ -33,6 +33,19 @@ OUTCOME_SCORE_SOURCE_PROXY = "engagement_proxy"
 _SESSION_ERROR_PATTERN_WINDOW = timedelta(hours=1)
 _SESSION_ERROR_PATTERN_LIMIT = 4
 
+# An observed pattern is a full sentence. It reads well on its own, but not
+# inlined mid-phrase, so sentence templates use a clipped form.
+_INLINE_TAG_MAX_CHARS = 52
+
+
+def _inline_tag(tag: Optional[str]) -> str:
+    """Shorten an observed pattern so it can sit inside a sentence."""
+    text = re.sub(r"\s+", " ", str(tag or "")).strip()
+    if len(text) <= _INLINE_TAG_MAX_CHARS:
+        return text
+    clipped = text[:_INLINE_TAG_MAX_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:.")
+    return f"{clipped}..." if clipped else text[:_INLINE_TAG_MAX_CHARS]
+
 
 @dataclass
 class GoalTemplate:
@@ -1702,7 +1715,7 @@ class LearningPlanService:
 
         next_focus = []
         if contextual_weakness_tags:
-            next_focus.append(f"Repeat one more drill focusing on {contextual_weakness_tags[0]}.")
+            next_focus.append(f"Repeat one more drill focusing on {_inline_tag(contextual_weakness_tags[0])}.")
         if vocab_words:
             next_focus.append(f"Reuse {vocab_words[0]} in your next answer.")
         next_focus.append("Keep answers short, clear, and tied to your target job context.")
@@ -1720,13 +1733,13 @@ class LearningPlanService:
         if task_type in {"technical_project_walkthrough", "project_walkthrough_drill"}:
             summary = "You turned one rough project explanation into a clearer reusable answer."
             if contextual_weakness_tags:
-                summary = f"You produced a clearer project answer and surfaced one repeatable issue around {contextual_weakness_tags[0]}."
+                summary = f"You produced a clearer project answer and surfaced one repeatable issue around {_inline_tag(contextual_weakness_tags[0])}."
         elif task_type == "stakeholder_explanation_drill":
             summary = "You practiced a simpler stakeholder-friendly explanation of your work."
             if contextual_weakness_tags:
-                summary = f"You shaped a clearer stakeholder explanation and surfaced one repeatable issue around {contextual_weakness_tags[0]}."
+                summary = f"You shaped a clearer stakeholder explanation and surfaced one repeatable issue around {_inline_tag(contextual_weakness_tags[0])}."
         elif contextual_weakness_tags:
-            summary = f"You practiced {mode_label} and surfaced a repeatable issue around {contextual_weakness_tags[0]}."
+            summary = f"You practiced {mode_label} and surfaced a repeatable issue around {_inline_tag(contextual_weakness_tags[0])}."
         elif vocab_words:
             summary = f"You practiced {mode_label} and reinforced vocabulary in context."
         if embedded_baseline:
@@ -1743,7 +1756,9 @@ class LearningPlanService:
             "summary": summary,
             "what_was_trained": self._describe_trained_area(task_type),
             "what_went_well": what_went_well[:3],
-            "main_issue": contextual_weakness_tags[0] if contextual_weakness_tags else "Need more repetitions before a clear weak point emerges.",
+            # No finding is not a finding: a placeholder here used to be stored,
+            # then re-read as a "recurring blocker" once it repeated.
+            "main_issue": contextual_weakness_tags[0] if contextual_weakness_tags else None,
             "next_focus": next_focus[:3],
             "evidence_signals": evidence_signals,
             "outcome_score": outcome_score,
