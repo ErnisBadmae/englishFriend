@@ -4,7 +4,7 @@ import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -12,12 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.data.interview_tracks import recommend_interview_track
-from app.models.enums_and_dimensions import CEFRLevel
-from app.models.extended_tables import LearningPlan
-from app.services.ai.memory_extraction_service import (
-    MemoryExtractionSoftFailure,
-    get_memory_extraction_service,
-)
+from app.models.enums_and_dimensions import CEFRLevel, MemoryKind
+from app.models.extended_tables import LearningPlan, Memory
 from app.services.goal_brief_contract import (
     is_goal_brief_complete,
     is_goal_brief_routing_ready,
@@ -31,6 +27,11 @@ logger = logging.getLogger(__name__)
 # corrections, so it stays telemetry and cannot drive progression.
 OUTCOME_SCORE_SOURCE_INTERVIEW = "interview_run"
 OUTCOME_SCORE_SOURCE_PROXY = "engagement_proxy"
+
+# Error patterns are written by the memory pipeline at session end, moments
+# before evidence is built. The window only has to cover one session.
+_SESSION_ERROR_PATTERN_WINDOW = timedelta(hours=1)
+_SESSION_ERROR_PATTERN_LIMIT = 4
 
 
 @dataclass
@@ -566,7 +567,7 @@ class LearningPlanService:
             ),
             None,
         )
-        weakness_tags = await self._extract_session_weakness_tags(user_messages)
+        weakness_tags = await self._extract_session_weakness_tags(user_id)
 
         evidence = self._build_session_evidence(
             session_id=session_id,
@@ -1259,27 +1260,37 @@ class LearningPlanService:
                 normalized.append(str(item))
         return _dedupe(normalized)
 
-    async def _extract_session_weakness_tags(self, user_messages: list[str]) -> list[str]:
-        if len(user_messages) < 2:
-            return []
+    async def _extract_session_weakness_tags(self, user_id: int) -> list[str]:
+        """Reuse the error patterns the memory pipeline already extracted.
 
+        This used to run a second, independent LLM pass over the same
+        transcript. On 2026-08-06 that pass returned truncated JSON, was
+        swallowed, and the evidence fell back to the correction type - the word
+        "grammar" - while four precise observations sat in memory unused. One
+        extraction, one result: fewer calls, no silent failure path, and the
+        specific finding reaches the learner.
+        """
+        cutoff = datetime.utcnow() - _SESSION_ERROR_PATTERN_WINDOW
         try:
-            memories = await get_memory_extraction_service().extract_error_patterns(user_messages)
-        except MemoryExtractionSoftFailure as exc:
-            logger.info(
-                "Skipped error-pattern extraction due to transient provider failure: %s",
-                exc.reason,
+            result = await self.db.execute(
+                select(Memory.content)
+                .where(
+                    Memory.user_id == user_id,
+                    Memory.kind == MemoryKind.ERROR_PATTERN,
+                    Memory.created_at >= cutoff,
+                )
+                .order_by(Memory.created_at.desc())
+                .limit(_SESSION_ERROR_PATTERN_LIMIT)
             )
-            return []
-        except Exception as exc:  # pragma: no cover - defensive logging guard
-            logger.warning("Failed to extract session weakness tags: %s", exc)
+        except Exception as exc:  # pragma: no cover - defensive read guard
+            logger.warning("Could not read session error patterns: %s", exc)
             return []
 
         return _dedupe([
-            str(memory.content).strip()
-            for memory in memories
-            if getattr(memory, "content", None)
-        ])[:4]
+            str(content).strip()
+            for content in result.scalars().all()
+            if str(content or "").strip()
+        ])[:_SESSION_ERROR_PATTERN_LIMIT]
 
     def _score_session_outcome(
         self,
@@ -1528,9 +1539,12 @@ class LearningPlanService:
         recorded_at = _utcnow_iso()
         correction_issue = self._extract_correction_issue(corrections)
 
+        # An observed pattern ("uses gerund after 'want'") is more actionable
+        # than the correction's category ("grammar"), so it leads. The category
+        # stays as a fallback for sessions with no extracted patterns.
         contextual_weakness_tags = list(weakness_tags)
         if correction_issue:
-            contextual_weakness_tags.insert(0, correction_issue)
+            contextual_weakness_tags.append(correction_issue)
         if (
             project_story_pack
             and (

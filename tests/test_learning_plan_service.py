@@ -1,8 +1,15 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.learning_plan_service import LearningPlanService
+
+
+def _stub_error_patterns(db: AsyncMock, contents: list[str]) -> None:
+    """Stub the error patterns the memory pipeline already stored."""
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = list(contents)
+    db.execute = AsyncMock(return_value=result)
 
 
 @pytest.mark.asyncio
@@ -247,29 +254,28 @@ async def test_record_session_evidence_saves_generic_guided_result():
     plan = MagicMock()
     plan.roadmap = {}
 
+    _stub_error_patterns(db, [])
+
     service = LearningPlanService(db)
     service.get_or_create_plan = AsyncMock(return_value=plan)
 
-    with patch("app.services.learning_plan_service.get_memory_extraction_service") as mock_extractor:
-        mock_extractor.return_value.extract_error_patterns = AsyncMock(return_value=[])
-
-        evidence = await service.record_session_evidence(
-            user_id=1,
-            session_id="sess-1",
-            mode="free_conversation",
-            mission_task_type="stakeholder_explanation_drill",
-            mission_title="Explain the project to a stakeholder",
-            mission_linked_goal_context="workplace_communication",
-            duration_minutes=8,
-            conversation_history=[
-                {"role": "assistant", "content": "Tell me about your work."},
-                {"role": "user", "content": "I build machine learning pipelines."},
-                {"role": "assistant", "content": "What was hard?"},
-                {"role": "user", "content": "Explaining trade-offs clearly."},
-            ],
-            corrections_made=[{"type": "articles", "original": "a architecture", "corrected": "an architecture"}],
-            vocabulary_reviewed=[{"word": "trade-off"}],
-        )
+    evidence = await service.record_session_evidence(
+        user_id=1,
+        session_id="sess-1",
+        mode="free_conversation",
+        mission_task_type="stakeholder_explanation_drill",
+        mission_title="Explain the project to a stakeholder",
+        mission_linked_goal_context="workplace_communication",
+        duration_minutes=8,
+        conversation_history=[
+            {"role": "assistant", "content": "Tell me about your work."},
+            {"role": "user", "content": "I build machine learning pipelines."},
+            {"role": "assistant", "content": "What was hard?"},
+            {"role": "user", "content": "Explaining trade-offs clearly."},
+        ],
+        corrections_made=[{"type": "articles", "original": "a architecture", "corrected": "an architecture"}],
+        vocabulary_reviewed=[{"word": "trade-off"}],
+    )
 
     assert evidence is not None
     assert evidence["session_id"] == "sess-1"
@@ -302,17 +308,17 @@ async def test_record_session_evidence_deduplicates_by_session_id():
     plan = MagicMock()
     plan.roadmap = {"session_evidence": [existing]}
 
+    _stub_error_patterns(db, [])
+
     service = LearningPlanService(db)
     service.get_or_create_plan = AsyncMock(return_value=plan)
 
-    with patch("app.services.learning_plan_service.get_memory_extraction_service") as mock_extractor:
-        mock_extractor.return_value.extract_error_patterns = AsyncMock(return_value=[])
-        evidence = await service.record_session_evidence(
-            user_id=1,
-            session_id="sess-1",
-            mode="assessment",
-            assessed_level="B1",
-        )
+    evidence = await service.record_session_evidence(
+        user_id=1,
+        session_id="sess-1",
+        mode="assessment",
+        assessed_level="B1",
+    )
 
     assert evidence == existing
     assert plan.roadmap["session_evidence"] == [existing]
@@ -482,3 +488,65 @@ async def test_set_project_notes_builds_project_story_pack():
     assert pack["english_example_answer"]
     assert isinstance(pack["weak_spots"], list)
     assert updated.roadmap["project_notes"].startswith("I built a churn prediction model")
+
+
+@pytest.mark.asyncio
+async def test_evidence_prefers_observed_error_pattern_over_correction_category():
+    """Observed 2026-08-06: four precise patterns sat in memory unused while
+    the evidence reported the correction category, the single word "grammar"."""
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {}
+    _stub_error_patterns(
+        db,
+        [
+            "Uses incorrect gerund structure after 'want' (e.g., 'i wanna getting')",
+            "Mispronounces 'abroad' as 'aboad'",
+        ],
+    )
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    evidence = await service.record_session_evidence(
+        user_id=11,
+        session_id="sess-patterns",
+        mode="free_conversation",
+        mission_task_type="foundation_speaking_drill",
+        conversation_history=[
+            {"role": "user", "content": "i wanna getting a new role"},
+            {"role": "user", "content": "i worked aboad before"},
+        ],
+        corrections_made=[{"type": "grammar", "original": "wanna getting", "corrected": "want to get"}],
+    )
+
+    assert evidence is not None
+    assert "gerund" in evidence["main_issue"]
+    # The category is still recorded, just no longer the headline finding.
+    assert any("grammar" in tag for tag in evidence["weakness_tags"])
+
+
+@pytest.mark.asyncio
+async def test_evidence_falls_back_to_correction_category_without_patterns():
+    db = AsyncMock()
+    plan = MagicMock()
+    plan.roadmap = {}
+    _stub_error_patterns(db, [])
+
+    service = LearningPlanService(db)
+    service.get_or_create_plan = AsyncMock(return_value=plan)
+
+    evidence = await service.record_session_evidence(
+        user_id=11,
+        session_id="sess-nopatterns",
+        mode="free_conversation",
+        mission_task_type="foundation_speaking_drill",
+        conversation_history=[
+            {"role": "user", "content": "i build pipelines"},
+            {"role": "user", "content": "it was hard"},
+        ],
+        corrections_made=[{"type": "articles", "original": "a architecture", "corrected": "an architecture"}],
+    )
+
+    assert evidence is not None
+    assert "articles" in str(evidence["main_issue"])
