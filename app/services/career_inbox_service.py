@@ -20,7 +20,7 @@ from typing import Any, Optional, Protocol
 from uuid import uuid4
 
 import yaml
-from sqlalchemy import String, func, or_, select
+from sqlalchemy import String, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -551,7 +551,14 @@ class CareerInboxService:
         DIFFERENT content_hash for the same external_id inserts a NEW
         immutable row rather than overwriting the old one (SPEC section 6);
         :meth:`list_inbox_items` surfaces only the latest version. No fetch
-        or Qwen call happens here - the caller already has the JSONL file."""
+        or Qwen call happens here - the caller already has the JSONL file.
+
+        Exception: once the owner has decided anything about a vacancy, that
+        vacancy is frozen and a re-import with a drifted content_hash adds no
+        new version. Otherwise incidental churn in the source post (view
+        counters, edits) would mint a verdict-less row and hand the owner a
+        card they already worked - and would orphan the drafts and packages
+        that reference the decided row's id."""
         if route not in IMPORT_ROUTES:
             raise CareerInboxError(f"unsupported import route: {route}")
         external_id = _bounded_text("external_id", external_id, 200, required=True)
@@ -572,6 +579,20 @@ class CareerInboxService:
         existing = await self._inbox_item_by_idempotency_key(user_id, idempotency_key)
         if existing is not None:
             return {"created": False, "inbox_item": _inbox_item_dict(existing)}
+
+        decided = await self.db.scalar(
+            select(CareerInboxItem)
+            .where(
+                CareerInboxItem.user_id == user_id,
+                CareerInboxItem.source == SOURCE_TELEGRAM_DIGEST,
+                CareerInboxItem.external_id == external_id,
+                CareerInboxItem.owner_verdict.isnot(None),
+            )
+            .order_by(CareerInboxItem.created_at.desc())
+            .limit(1)
+        )
+        if decided is not None:
+            return {"created": False, "inbox_item": _inbox_item_dict(decided)}
 
         now = _utcnow()
         item_id = str(uuid4())
@@ -625,10 +646,16 @@ class CareerInboxService:
         stable key (source, external_id), only the newest content_hash
         version is shown - older immutable snapshots stay in the table for
         audit but are not surfaced (SPEC section 6). Manual leads have no
-        external_id, so each one is its own group. Settled cards
-        (SETTLED_INBOX_VERDICTS) are excluded so they stop crowding out
-        cards still needing an owner look; they remain in the table and are
-        still reachable individually via get_inbox_item / Отклики."""
+        external_id, so each one is its own group.
+
+        A settled decision belongs to the vacancy, not to the snapshot row
+        that happened to be on screen when it was made: the whole group is
+        excluded as soon as ANY of its versions is settled
+        (SETTLED_INBOX_VERDICTS). Checking only the newest row would let a
+        re-import with a changed content_hash mint a fresh verdict-less
+        version and resurrect a vacancy the owner already skipped, marked a
+        false positive, or applied to. Settled rows remain in the table and
+        are still reachable individually via get_inbox_item / Отклики."""
         await self._ensure_user_exists(user_id)
         bounded_limit = max(1, min(limit, INBOX_DISPLAY_LIMIT))
         group_key = func.coalesce(
@@ -642,8 +669,13 @@ class CareerInboxService:
             )
             .label("rn")
         )
+        group_settled = (
+            func.bool_or(CareerInboxItem.owner_verdict.in_(SETTLED_INBOX_VERDICTS))
+            .over(partition_by=(CareerInboxItem.source, group_key))
+            .label("group_settled")
+        )
         ranked = (
-            select(CareerInboxItem, rank)
+            select(CareerInboxItem, rank, group_settled)
             .where(CareerInboxItem.user_id == user_id)
             .subquery()
         )
@@ -653,10 +685,9 @@ class CareerInboxService:
                 select(latest)
                 .where(
                     ranked.c.rn == 1,
-                    or_(
-                        latest.owner_verdict.is_(None),
-                        latest.owner_verdict.notin_(SETTLED_INBOX_VERDICTS),
-                    ),
+                    # bool_or is NULL when every row in the group is
+                    # unverdicted, so isnot(True) keeps those groups.
+                    ranked.c.group_settled.isnot(True),
                 )
                 .order_by(ranked.c.created_at.desc(), ranked.c.id.desc())
                 .limit(bounded_limit)

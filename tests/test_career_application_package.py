@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,7 +11,11 @@ from sqlalchemy import func, insert, select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.career import CareerApplicationEvent, CareerApplicationPackage
+from app.models.career import (
+    CareerApplicationEvent,
+    CareerApplicationPackage,
+    CareerInboxItem,
+)
 from app.models.core_tables import User
 from app.services.career_inbox_service import (
     PACKAGE_STATUS_READY,
@@ -523,22 +528,34 @@ async def test_submit_blocks_when_newer_inbox_version_exists(pg_session_maker, t
         )
         pkg = prepared["package"]
 
-        # A re-import with the same external_id but different content_hash
-        # creates a NEW, newer inbox item row - the old one is now stale.
-        await service.import_snapshot(
-            user_id,
-            external_id="digest:1",
-            content_hash="b" * 64,
-            company="Acme",
-            role_title="ML Engineer (updated)",
-            route="apply_candidate",
-            gates={
-                "legal_hire_from_rf": {"status": "pass"},
-                "language_path": {"status": "pass"},
-                "comp_threshold": {"status": "pass"},
-                "role_scope": {"status": "pass"},
-            },
+        # import_snapshot now freezes a vacancy the owner has already decided,
+        # so a newer version can only be a legacy row that split before that
+        # freeze existed. Insert one directly to keep the guard covered.
+        await db.execute(
+            insert(CareerInboxItem).values(
+                id=str(uuid4()),
+                user_id=user_id,
+                source="telegram_digest",
+                external_id="digest:1",
+                content_hash="b" * 64,
+                source_snapshot={},
+                company="Acme",
+                role_title="ML Engineer (updated)",
+                route="apply_candidate",
+                gates={
+                    "legal_hire_from_rf": {"status": "pass"},
+                    "language_path": {"status": "pass"},
+                    "comp_threshold": {"status": "pass"},
+                    "role_scope": {"status": "pass"},
+                },
+                questions_for_recruiter=[],
+                owner_verdict=None,
+                idempotency_key=f"telegram_digest:digest:1:{'b' * 64}",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
         )
+        await db.commit()
 
         with pytest.raises(CareerInboxError, match="stale package"):
             await service.submit_application_package(
@@ -549,6 +566,86 @@ async def test_submit_blocks_when_newer_inbox_version_exists(pg_session_maker, t
                 actor_id="123456",
                 facts_bank_path=facts_path,
             )
+
+
+@pytest.mark.integration
+async def test_drifted_reimport_no_longer_invalidates_a_prepared_package(
+    pg_session_maker, tmp_path
+):
+    """Once the owner has prepared a package, incidental churn in the source
+    post (view counters, an edit) must not silently destroy that work. The
+    vacancy is frozen at import, so no newer version appears to stale it."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        facts_path = _facts_bank_with_cv(tmp_path)
+
+        gates = {
+            "legal_hire_from_rf": {"status": "pass"},
+            "language_path": {"status": "pass"},
+            "comp_threshold": {"status": "pass"},
+            "role_scope": {"status": "pass"},
+        }
+        first_import = await service.import_snapshot(
+            user_id,
+            external_id="digest:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="apply_candidate",
+            gates=gates,
+        )
+        inbox_item_id = first_import["inbox_item"]["inbox_item_id"]
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict=VERDICT_PREPARE,
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        generated = await service.generate_cover_letter_draft(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            provider=_DraftProvider("Здравствуйте!"),
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+        draft_id = generated["draft"]["draft_id"]
+        await service.approve_cover_letter_draft(
+            user_id, draft_id=draft_id, actor_id="123456"
+        )
+        prepared = await service.prepare_application_package(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            cover_draft_id=draft_id,
+            cv_variant_id="test_variant",
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+        pkg = prepared["package"]
+
+        reimport = await service.import_snapshot(
+            user_id,
+            external_id="digest:1",
+            content_hash="b" * 64,
+            company="Acme",
+            role_title="ML Engineer (edited)",
+            route="apply_candidate",
+            gates=gates,
+        )
+        assert reimport["created"] is False
+        assert reimport["inbox_item"]["inbox_item_id"] == inbox_item_id
+
+        submitted = await service.submit_application_package(
+            user_id,
+            package_id=pkg["package_id"],
+            expected_package_hash=pkg["package_content_hash"],
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+            facts_bank_path=facts_path,
+        )
+        assert submitted["created"] is True
 
 
 @pytest.mark.integration

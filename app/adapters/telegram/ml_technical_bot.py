@@ -35,7 +35,9 @@ from app.services.career_inbox_service import (
     FACTS_BANK_PATH,
     PACKAGE_STATUS_READY,
     VERDICT_APPLIED,
+    VERDICT_FALSE_POSITIVE,
     VERDICT_PREPARE,
+    VERDICT_SKIP,
     CareerInboxError,
     CareerInboxService,
     load_facts_bank,
@@ -172,8 +174,11 @@ def _career_item_callback(inbox_item_id: str) -> str:
     return f"career:item:{_compact_uuid(inbox_item_id)}"
 
 
-def _career_verdict_callback(inbox_item_id: str, verdict: str) -> str:
-    return f"career:iv:{_compact_uuid(inbox_item_id)}:{verdict}"
+def _career_verdict_callback(
+    inbox_item_id: str, verdict: str, reason: Optional[str] = None
+) -> str:
+    tail = f":{reason}" if reason else ""
+    return f"career:iv:{_compact_uuid(inbox_item_id)}:{verdict}{tail}"
 
 
 def _career_applied_callback(inbox_item_id: str) -> str:
@@ -383,6 +388,7 @@ class TelegramPracticeGateway(Protocol):
         *,
         inbox_item_id: str,
         verdict: str,
+        reason: Optional[str] = None,
         idempotency_key: str,
         actor_id: str,
     ) -> dict[str, Any]:
@@ -709,6 +715,7 @@ class DbTelegramPracticeGateway:
         *,
         inbox_item_id: str,
         verdict: str,
+        reason: Optional[str] = None,
         idempotency_key: str,
         actor_id: str,
     ) -> dict[str, Any]:
@@ -717,6 +724,7 @@ class DbTelegramPracticeGateway:
                 user_id,
                 inbox_item_id=inbox_item_id,
                 verdict=verdict,
+                reason=reason,
                 idempotency_key=idempotency_key,
                 actor_id=actor_id,
             )
@@ -1783,6 +1791,12 @@ class MlTechnicalTelegramController:
         "applied": "Отклик отправлен",
     }
 
+    # Compact codes travel in callback_data; the stored owner_reason is the
+    # human text. Unknown codes are rejected as stale buttons.
+    _VERDICT_REASON_RU: dict[str, str] = {
+        "closed": "Вакансия уже закрыта",
+    }
+
     @staticmethod
     async def _render_card(message: Any, text: str, markup: Any) -> None:
         """Edit the existing bot message in place when possible.
@@ -1818,6 +1832,16 @@ class MlTechnicalTelegramController:
                 return pkg
         return None
 
+    @staticmethod
+    def _item_title(item: dict[str, Any]) -> str:
+        company = item.get("company")
+        role = item.get("role_title")
+        if not company and not role:
+            # Manual leads saved before company/role were filled in; naming
+            # them plainly is what lets the owner recognise and close them.
+            return "Пустой лид (без данных)"
+        return f"{company or 'без компании'} - {role or 'без роли'}"
+
     def _queue_state_label(self, item: dict[str, Any], ready_ids: set[str]) -> str:
         verdict = item.get("owner_verdict")
         if verdict is None:
@@ -1843,8 +1867,7 @@ class MlTechnicalTelegramController:
             [
                 (
                     f"{self._queue_state_label(item, ready_ids)}: "
-                    f"{item.get('company') or 'без компании'} - "
-                    f"{item.get('role_title') or 'без роли'}",
+                    f"{self._item_title(item)}",
                     _career_item_callback(item["inbox_item_id"]),
                 )
             ]
@@ -1889,6 +1912,14 @@ class MlTechnicalTelegramController:
             if questions:
                 rows.append([("Уточнить", _career_verdict_callback(inbox_item_id, "ask"))])
             rows.append([("Не подходит", _career_verdict_callback(inbox_item_id, "skip"))])
+            rows.append(
+                [
+                    (
+                        "Вакансия закрыта",
+                        _career_verdict_callback(inbox_item_id, "skip", "closed"),
+                    )
+                ]
+            )
             rows.append(
                 [("Ошибка данных", _career_verdict_callback(inbox_item_id, "false_positive"))]
             )
@@ -2225,12 +2256,19 @@ class MlTechnicalTelegramController:
         if inbox_item_id is None:
             return
         verdict = rest[1]
+        reason: Optional[str] = None
+        if len(rest) > 2:
+            reason = self._VERDICT_REASON_RU.get(rest[2])
+            if reason is None:
+                await callback.answer("Кнопка устарела")
+                return
         idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
         try:
             result = await self.gateway.set_inbox_verdict(
                 user_id,
                 inbox_item_id=inbox_item_id,
                 verdict=verdict,
+                reason=reason,
                 idempotency_key=idempotency_key,
                 actor_id=str(self._telegram_id(callback)),
             )
@@ -2238,7 +2276,7 @@ class MlTechnicalTelegramController:
             await callback.answer("Ошибка")
             await callback.message.answer(str(exc))
             return
-        await callback.answer(self._VERDICT_LABELS_RU.get(verdict, "Сохранено"))
+        await callback.answer(reason or self._VERDICT_LABELS_RU.get(verdict, "Сохранено"))
         if verdict == "ask":
             questions = result["inbox_item"].get("questions_for_recruiter") or []
             text = (
@@ -2247,6 +2285,12 @@ class MlTechnicalTelegramController:
                 else "Вопросов нет."
             )
             await callback.message.answer(text)
+        if verdict in (VERDICT_SKIP, VERDICT_FALSE_POSITIVE):
+            # The card is settled and has just left the queue - re-rendering it
+            # would look like nothing happened, which is what made repeated
+            # taps feel broken. Show the shortened queue instead.
+            await self._show_career_inbox(callback.message, user_id)
+            return
         await self._show_inbox_item(callback.message, user_id, inbox_item_id)
 
     async def _on_career_callback_applied(

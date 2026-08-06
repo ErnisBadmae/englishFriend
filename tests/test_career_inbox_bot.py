@@ -188,11 +188,14 @@ class FakeInboxGateway:
     async def get_inbox_item(self, user_id: int, inbox_item_id: str):
         return self.inbox_items.get(inbox_item_id)
 
-    async def set_inbox_verdict(self, user_id, *, inbox_item_id, verdict, idempotency_key, actor_id):
+    async def set_inbox_verdict(
+        self, user_id, *, inbox_item_id, verdict, reason=None, idempotency_key, actor_id
+    ):
         item = self.inbox_items.get(inbox_item_id)
         if item is None:
             raise CareerInboxError(f"unknown career inbox_item_id: {inbox_item_id}")
         item["owner_verdict"] = verdict
+        item["owner_reason"] = reason
         return {"created": True, "inbox_item": item}
 
     async def confirm_inbox_applied(self, user_id, *, inbox_item_id, idempotency_key, actor_id):
@@ -1866,6 +1869,80 @@ async def test_more_menu_flag_off_hides_ready_queue_entry():
 
     labels = [t for t, _d in _flat_buttons(more.message.markups[-1])]
     assert "Готовые (все пакеты)" not in labels
+
+
+# ---------------------------------------------------------------------------
+# Queue hygiene: closing a card actually shortens the queue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vacancy_closed_button_records_reason_and_skips():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+
+    open_card = FakeCallback(111, _career_item_callback(item_id))
+    await controller.on_career_callback(open_card)
+    labels = dict(
+        (text, data) for text, data in _flat_buttons(open_card.message.markups[-1])
+    )
+    assert "Вакансия закрыта" in labels
+
+    closed = FakeCallback(111, labels["Вакансия закрыта"])
+    await controller.on_career_callback(closed)
+
+    assert gateway.inbox_items[item_id]["owner_verdict"] == "skip"
+    assert gateway.inbox_items[item_id]["owner_reason"] == "Вакансия уже закрыта"
+    assert closed.answers == ["Вакансия уже закрыта"]
+
+
+@pytest.mark.asyncio
+async def test_settling_a_card_returns_to_shortened_queue():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    kept_id = await _seeded_item(gateway, controller)
+    closed_id = await _seeded_item(gateway, controller)
+
+    verdict = FakeCallback(111, _career_verdict_callback(closed_id, "false_positive"))
+    await controller.on_career_callback(verdict)
+
+    # The settled card must not be re-rendered: the owner should land back on
+    # the queue and see it is one item shorter.
+    assert "Вакансии (1)" in verdict.message.replies[-1]
+    buttons = _flat_buttons(verdict.message.markups[-1])
+    assert [data for _t, data in buttons] == [
+        _career_item_callback(kept_id),
+        "career:back",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unknown_verdict_reason_code_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+
+    bogus = FakeCallback(111, _career_verdict_callback(item_id, "skip", "made_up"))
+    await controller.on_career_callback(bogus)
+
+    assert bogus.answers == ["Кнопка устарела"]
+    assert gateway.inbox_items[item_id]["owner_verdict"] is None
+
+
+@pytest.mark.asyncio
+async def test_empty_manual_lead_is_named_so_it_can_be_recognised():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+    gateway.inbox_items[item_id]["company"] = None
+    gateway.inbox_items[item_id]["role_title"] = None
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    labels = [t for t, _d in _flat_buttons(listing.message.markups[-1])]
+    assert labels[0] == "Новая: Пустой лид (без данных)"
 
 
 # ---------------------------------------------------------------------------

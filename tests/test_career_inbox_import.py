@@ -360,6 +360,176 @@ async def test_import_rejects_bad_route(pg_session_maker):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("settled_verdict", ["skip", "false_positive"])
+async def test_drifted_reimport_cannot_resurrect_a_settled_vacancy(
+    pg_session_maker, settled_verdict
+):
+    """The owner decides about a VACANCY, not about the snapshot row that
+    happened to be on screen. A re-import whose content_hash drifted (view
+    counters, a source edit) must not hand the card back."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        first = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=first["inbox_item"]["inbox_item_id"],
+            verdict=settled_verdict,
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        assert await service.list_inbox_items(user_id) == []
+
+        drifted = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="b" * 64,
+            company="Acme",
+            role_title="ML Engineer (edited)",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+
+        # No second version is minted, and the queue stays empty.
+        assert drifted["created"] is False
+        assert (
+            drifted["inbox_item"]["inbox_item_id"]
+            == first["inbox_item"]["inbox_item_id"]
+        )
+        assert await service.list_inbox_items(user_id) == []
+        count = await db.scalar(
+            select(func.count(CareerInboxItem.id)).where(
+                CareerInboxItem.user_id == user_id
+            )
+        )
+        assert count == 1
+
+
+@pytest.mark.integration
+async def test_settled_group_stays_hidden_even_with_a_preexisting_split(
+    pg_session_maker,
+):
+    """Defence in depth for rows that split BEFORE the import-side freeze
+    existed: a verdict-less newer version must not un-hide the group."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        first = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        second = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="b" * 64,
+            company="Acme",
+            role_title="ML Engineer (edited)",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        assert second["created"] is True
+        assert len(await service.list_inbox_items(user_id)) == 1
+
+        # The owner settles the OLDER row; the newer one keeps verdict=None.
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=first["inbox_item"]["inbox_item_id"],
+            verdict="skip",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        assert await service.list_inbox_items(user_id) == []
+
+
+@pytest.mark.integration
+async def test_undecided_vacancy_still_accepts_a_content_refresh(pg_session_maker):
+    """The freeze is scoped to owner-decided vacancies - untouched ones must
+    keep tracking the newest source content."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer (v1)",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        refreshed = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="b" * 64,
+            company="Acme",
+            role_title="ML Engineer (v2)",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+
+        assert refreshed["created"] is True
+        items = await service.list_inbox_items(user_id)
+        assert len(items) == 1
+        assert items[0]["role_title"] == "ML Engineer (v2)"
+
+
+@pytest.mark.integration
+async def test_freeze_is_per_vacancy_not_global(pg_session_maker):
+    """Deciding one vacancy must not stop a different one from importing."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        decided = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=decided["inbox_item"]["inbox_item_id"],
+            verdict="skip",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        other = await service.import_snapshot(
+            user_id,
+            external_id="@chan:2",
+            content_hash="c" * 64,
+            company="Globex",
+            role_title="LLM Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+
+        assert other["created"] is True
+        items = await service.list_inbox_items(user_id)
+        assert [i["role_title"] for i in items] == ["LLM Engineer"]
+
+
+@pytest.mark.integration
 async def test_set_verdict_preserves_import_identity_for_reimport(pg_session_maker):
     """Corrective regression: once the owner sets a verdict, re-importing the
     exact same envelope must still resolve to the same row, not a new one."""
