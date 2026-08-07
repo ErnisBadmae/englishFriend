@@ -34,6 +34,8 @@ from app.services.career_inbox_service import (
     DRAFT_STATUS_REJECTED,
     FACTS_BANK_PATH,
     PACKAGE_STATUS_READY,
+    ACTIONABLE_IMPORT_ROUTES,
+    ROUTE_REVIEW,
     VERDICT_APPLIED,
     VERDICT_FALSE_POSITIVE,
     VERDICT_PREPARE,
@@ -374,7 +376,13 @@ class TelegramPracticeGateway(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    async def list_inbox_items(self, user_id: int) -> list[dict[str, Any]]:
+    async def list_inbox_items(
+        self,
+        user_id: int,
+        *,
+        routes: Optional[list[str]] = None,
+        include_manual: bool = True,
+    ) -> list[dict[str, Any]]:
         ...
 
     async def get_inbox_item(
@@ -699,9 +707,17 @@ class DbTelegramPracticeGateway:
                 actor_id=actor_id,
             )
 
-    async def list_inbox_items(self, user_id: int) -> list[dict[str, Any]]:
+    async def list_inbox_items(
+        self,
+        user_id: int,
+        *,
+        routes: Optional[list[str]] = None,
+        include_manual: bool = True,
+    ) -> list[dict[str, Any]]:
         async with self.session_factory() as db:
-            return await CareerInboxService(db).list_inbox_items(user_id)
+            return await CareerInboxService(db).list_inbox_items(
+                user_id, routes=routes, include_manual=include_manual
+            )
 
     async def get_inbox_item(
         self, user_id: int, inbox_item_id: str
@@ -1817,6 +1833,7 @@ class MlTechnicalTelegramController:
     _ROUTE_REASON_RU = {
         "apply_candidate": "Похоже на прямое совпадение с вашим профилем.",
         "outreach": "Может подойти - стоит присмотреться.",
+        ROUTE_REVIEW: "Гейты не смогли определить роль - решает владелец.",
     }
 
     async def _ready_package_for_item(
@@ -1854,10 +1871,20 @@ class MlTechnicalTelegramController:
             )
         return self._VERDICT_LABELS_RU.get(verdict, verdict)
 
-    async def _show_career_inbox(self, message: Any, user_id: int) -> None:
-        items = await self.gateway.list_inbox_items(user_id)
+    async def _render_queue(
+        self,
+        message: Any,
+        user_id: int,
+        *,
+        items: list[dict[str, Any]],
+        title: str,
+        empty_text: str,
+        back_callback: str,
+        extra_rows: Optional[list[list[tuple[str, str]]]] = None,
+    ) -> None:
         if not items:
-            await self._render_card(message, "Вакансий нет.", self._career_markup())
+            rows = list(extra_rows or []) + [[("Назад", back_callback)]]
+            await self._render_card(message, empty_text, _markup(rows))
             return
         ready_ids: set[str] = set()
         if self.career_ready_queue_enabled:
@@ -1873,9 +1900,44 @@ class MlTechnicalTelegramController:
             ]
             for item in items
         ]
-        rows.append([("Назад", "career:back")])
-        await self._render_card(
-            message, f"Вакансии ({len(items)})", _markup(rows)
+        rows += list(extra_rows or [])
+        rows.append([("Назад", back_callback)])
+        await self._render_card(message, f"{title} ({len(items)})", _markup(rows))
+
+    async def _show_career_inbox(self, message: Any, user_id: int) -> None:
+        items = await self.gateway.list_inbox_items(
+            user_id, routes=sorted(ACTIONABLE_IMPORT_ROUTES), include_manual=True
+        )
+        # The review bucket hangs off the vacancy screen rather than the Career
+        # root: it is a second queue of the same thing, and the root menu is
+        # deliberately capped at five rows (one-flow UX v0.1).
+        review = await self.gateway.list_inbox_items(
+            user_id, routes=[ROUTE_REVIEW], include_manual=False
+        )
+        extra = [[(f"На проверку ({len(review)})", "career:review")]] if review else []
+        await self._render_queue(
+            message,
+            user_id,
+            items=items,
+            title="Вакансии",
+            empty_text="Вакансий нет.",
+            back_callback="career:back",
+            extra_rows=extra,
+        )
+
+    async def _show_career_review(self, message: Any, user_id: int) -> None:
+        """Second, lower-priority bucket: vacancies whose role gate stayed
+        unresolved upstream. They are shown, never silently dropped."""
+        items = await self.gateway.list_inbox_items(
+            user_id, routes=[ROUTE_REVIEW], include_manual=False
+        )
+        await self._render_queue(
+            message,
+            user_id,
+            items=items,
+            title="На проверку",
+            empty_text="На проверку ничего нет.",
+            back_callback="career:inbox",
         )
 
     def _gate_warning_lines(self, item: dict[str, Any]) -> list[str]:
@@ -2144,6 +2206,13 @@ class MlTechnicalTelegramController:
             return
         await callback.answer()
         await self._show_career_inbox(callback.message, user_id)
+
+    async def _on_career_callback_review(self, callback: Any, user_id: int) -> None:
+        if not self.career_inbox_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await callback.answer()
+        await self._show_career_review(callback.message, user_id)
 
     async def _on_career_callback_item(
         self, callback: Any, user_id: int, rest: list[str]
@@ -2806,6 +2875,8 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_next(callback, user_id, rest)
         elif action == "inbox":
             await self._on_career_callback_inbox(callback, user_id)
+        elif action == "review":
+            await self._on_career_callback_review(callback, user_id)
         elif action == "item" and rest:
             await self._on_career_callback_item(callback, user_id, rest)
         elif action == "iv" and len(rest) >= 2:

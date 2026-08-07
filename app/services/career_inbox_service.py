@@ -16,11 +16,11 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Iterable, Optional, Protocol
 from uuid import uuid4
 
 import yaml
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,8 +65,12 @@ _NUMBERED_MARKER_RE = re.compile(r"^\s*\d+[.)]\s*", re.MULTILINE)
 _BLANK_LINE_RE = re.compile(r"\n\s*\n")
 
 # Slice B: telegram-digest import envelope (career/CAREER_TELEGRAM_COCKPIT_SPEC.md
-# section 5). Only these two routes are ever exported/imported.
-IMPORT_ROUTES = {"apply_candidate", "outreach"}
+# section 5). `review` carries vacancies whose role_scope gate stayed unresolved:
+# upstream now hands those to the owner instead of deleting them, so they import
+# like any other card but are surfaced in their own, lower-priority queue.
+ROUTE_REVIEW = "review"
+ACTIONABLE_IMPORT_ROUTES = frozenset({"apply_candidate", "outreach"})
+IMPORT_ROUTES = {"apply_candidate", "outreach", ROUTE_REVIEW}
 IMPORT_GATE_NAMES = ("legal_hire_from_rf", "language_path", "comp_threshold", "role_scope")
 IMPORT_SCHEMA_VERSION = 1
 _CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -640,7 +644,12 @@ class CareerInboxService:
         return {"created": True, "inbox_item": _inbox_item_dict(row)}
 
     async def list_inbox_items(
-        self, user_id: int, *, limit: int = INBOX_DISPLAY_LIMIT
+        self,
+        user_id: int,
+        *,
+        limit: int = INBOX_DISPLAY_LIMIT,
+        routes: Optional[Iterable[str]] = None,
+        include_manual: bool = True,
     ) -> list[dict[str, Any]]:
         """Bounded, latest-version-only view: for imported rows that share a
         stable key (source, external_id), only the newest content_hash
@@ -655,7 +664,11 @@ class CareerInboxService:
         re-import with a changed content_hash mint a fresh verdict-less
         version and resurrect a vacancy the owner already skipped, marked a
         false positive, or applied to. Settled rows remain in the table and
-        are still reachable individually via get_inbox_item / Отклики."""
+        are still reachable individually via get_inbox_item / Отклики.
+
+        `routes` splits the queue into buckets (actionable vs `review`).
+        Manual leads carry no route, so `include_manual` decides whether they
+        ride along - they belong to the actionable queue, never to `review`."""
         await self._ensure_user_exists(user_id)
         bounded_limit = max(1, min(limit, INBOX_DISPLAY_LIMIT))
         group_key = func.coalesce(
@@ -680,15 +693,21 @@ class CareerInboxService:
             .subquery()
         )
         latest = aliased(CareerInboxItem, ranked)
+        conditions = [
+            ranked.c.rn == 1,
+            # bool_or is NULL when every row in the group is
+            # unverdicted, so isnot(True) keeps those groups.
+            ranked.c.group_settled.isnot(True),
+        ]
+        if routes is not None:
+            route_filter = latest.route.in_(list(routes))
+            if include_manual:
+                route_filter = or_(route_filter, latest.route.is_(None))
+            conditions.append(route_filter)
         rows = (
             await self.db.execute(
                 select(latest)
-                .where(
-                    ranked.c.rn == 1,
-                    # bool_or is NULL when every row in the group is
-                    # unverdicted, so isnot(True) keeps those groups.
-                    ranked.c.group_settled.isnot(True),
-                )
+                .where(*conditions)
                 .order_by(ranked.c.created_at.desc(), ranked.c.id.desc())
                 .limit(bounded_limit)
             )

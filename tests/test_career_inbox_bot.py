@@ -177,12 +177,20 @@ class FakeInboxGateway:
 
     _SETTLED_VERDICTS = {"skip", "false_positive", "applied"}
 
-    async def list_inbox_items(self, user_id: int):
-        items = [
-            self.inbox_items[i]
-            for i in self.inbox_order
-            if self.inbox_items[i].get("owner_verdict") not in self._SETTLED_VERDICTS
-        ]
+    async def list_inbox_items(self, user_id: int, *, routes=None, include_manual=True):
+        items = []
+        for i in self.inbox_order:
+            item = self.inbox_items[i]
+            if item.get("owner_verdict") in self._SETTLED_VERDICTS:
+                continue
+            if routes is not None:
+                route = item.get("route")
+                if route is None:
+                    if not include_manual:
+                        continue
+                elif route not in routes:
+                    continue
+            items.append(item)
         return items[:15]
 
     async def get_inbox_item(self, user_id: int, inbox_item_id: str):
@@ -1869,6 +1877,98 @@ async def test_more_menu_flag_off_hides_ready_queue_entry():
 
     labels = [t for t, _d in _flat_buttons(more.message.markups[-1])]
     assert "Готовые (все пакеты)" not in labels
+
+
+# ---------------------------------------------------------------------------
+# Review bucket: unresolved role_scope is shown, never silently dropped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_review_items_are_kept_out_of_the_actionable_queue():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    actionable = await _seeded_item(gateway, controller)
+    review = await _seeded_item(gateway, controller)
+    gateway.inbox_items[actionable]["route"] = "outreach"
+    gateway.inbox_items[review]["route"] = "review"
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    data = [d for _t, d in _flat_buttons(listing.message.markups[-1])]
+    assert _career_item_callback(actionable) in data
+    assert _career_item_callback(review) not in data
+    assert "Вакансии (1)" in listing.message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_review_bucket_is_reachable_with_a_count_from_the_queue():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    actionable = await _seeded_item(gateway, controller)
+    review = await _seeded_item(gateway, controller)
+    gateway.inbox_items[actionable]["route"] = "outreach"
+    gateway.inbox_items[review]["route"] = "review"
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+    labels = dict(_flat_buttons(listing.message.markups[-1]))
+    assert "На проверку (1)" in labels
+
+    opened = FakeCallback(111, labels["На проверку (1)"])
+    await controller.on_career_callback(opened)
+
+    assert "На проверку (1)" in opened.message.replies[-1]
+    data = [d for _t, d in _flat_buttons(opened.message.markups[-1])]
+    assert _career_item_callback(review) in data
+    assert _career_item_callback(actionable) not in data
+    assert "career:inbox" in data  # Назад returns to the main queue
+
+
+@pytest.mark.asyncio
+async def test_review_entry_hidden_when_bucket_is_empty():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+    gateway.inbox_items[item_id]["route"] = "outreach"
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    labels = [t for t, _d in _flat_buttons(listing.message.markups[-1])]
+    assert not any(label.startswith("На проверку") for label in labels)
+
+
+@pytest.mark.asyncio
+async def test_manual_leads_stay_in_the_actionable_queue_not_review():
+    """Manual leads carry no route; they must not fall through the route
+    filter into invisibility."""
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    manual = await _seeded_item(gateway, controller)
+    assert gateway.inbox_items[manual].get("route") is None
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+    data = [d for _t, d in _flat_buttons(listing.message.markups[-1])]
+    assert _career_item_callback(manual) in data
+
+    opened = FakeCallback(111, "career:review")
+    await controller.on_career_callback(opened)
+    review_data = [d for _t, d in _flat_buttons(opened.message.markups[-1])]
+    assert _career_item_callback(manual) not in review_data
+
+
+@pytest.mark.asyncio
+async def test_review_flag_off_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=False)
+    callback = FakeCallback(111, "career:review")
+
+    await controller.on_career_callback(callback)
+
+    assert callback.answers == ["Функция выключена"]
 
 
 # ---------------------------------------------------------------------------

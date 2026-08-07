@@ -360,6 +360,75 @@ async def test_import_rejects_bad_route(pg_session_maker):
 
 
 @pytest.mark.integration
+async def test_review_route_imports_and_splits_into_its_own_bucket(pg_session_maker):
+    """Upstream now routes unresolved role_scope to `review` instead of deleting
+    it. Those cards must import, and must not crowd the actionable queue."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        review = await service.import_snapshot(
+            user_id,
+            external_id="@chan:2",
+            content_hash="b" * 64,
+            company="Globex",
+            role_title="Data Scientist",
+            route="review",
+            gates=_gates_kwargs(),
+        )
+        assert review["created"] is True
+
+        actionable = await service.list_inbox_items(
+            user_id, routes=["apply_candidate", "outreach"]
+        )
+        assert [i["role_title"] for i in actionable] == ["ML Engineer"]
+
+        in_review = await service.list_inbox_items(
+            user_id, routes=["review"], include_manual=False
+        )
+        assert [i["role_title"] for i in in_review] == ["Data Scientist"]
+
+        # Unfiltered stays the whole queue, so nothing is lost by default.
+        assert len(await service.list_inbox_items(user_id)) == 2
+
+
+@pytest.mark.integration
+async def test_manual_lead_rides_with_the_actionable_queue_only(pg_session_maker):
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        await service.confirm_manual_lead(
+            user_id,
+            source="manual",
+            raw_text="Позвонил рекрутёр, вакансия ML",
+            company="Acme",
+            role_title="ML Engineer",
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        actionable = await service.list_inbox_items(
+            user_id, routes=["apply_candidate", "outreach"], include_manual=True
+        )
+        assert len(actionable) == 1
+
+        in_review = await service.list_inbox_items(
+            user_id, routes=["review"], include_manual=False
+        )
+        assert in_review == []
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("settled_verdict", ["skip", "false_positive"])
 async def test_drifted_reimport_cannot_resurrect_a_settled_vacancy(
     pg_session_maker, settled_verdict
