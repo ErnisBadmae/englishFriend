@@ -26,6 +26,7 @@ from app.adapters.telegram.ml_technical_bot import (
     _career_package_send_callback,
     _career_package_start_callback,
     _career_prepare_callback,
+    _career_reject_callback,
     _career_tech_callback,
     _career_verdict_callback,
 )
@@ -1977,24 +1978,92 @@ async def test_review_flag_off_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_vacancy_closed_button_records_reason_and_skips():
+@pytest.mark.parametrize(
+    "label,stored",
+    [
+        ("Не та роль", "role_scope"),
+        ("Не берут из РФ", "legal_hire_from_rf"),
+        ("Мало денег", "comp_threshold"),
+        ("Английский", "language_path"),
+        ("Вакансия закрыта", "vacancy_closed"),
+        ("Другое", "other"),
+    ],
+)
+async def test_rejection_stores_the_gate_that_got_it_wrong(label, stored):
+    """The stored reason names a gate, not prose: that is what makes the owner's
+    judgement countable as calibration data."""
     gateway = FakeInboxGateway()
     controller = _controller(gateway, enabled=True)
     item_id = await _seeded_item(gateway, controller)
 
     open_card = FakeCallback(111, _career_item_callback(item_id))
     await controller.on_career_callback(open_card)
-    labels = dict(
-        (text, data) for text, data in _flat_buttons(open_card.message.markups[-1])
-    )
-    assert "Вакансия закрыта" in labels
+    card = dict(_flat_buttons(open_card.message.markups[-1]))
+    assert "Не подходит" in card
 
-    closed = FakeCallback(111, labels["Вакансия закрыта"])
-    await controller.on_career_callback(closed)
+    picker = FakeCallback(111, card["Не подходит"])
+    await controller.on_career_callback(picker)
+    assert "Почему не подходит?" in picker.message.replies[-1]
+    reasons = dict(_flat_buttons(picker.message.markups[-1]))
+
+    chosen = FakeCallback(111, reasons[label])
+    await controller.on_career_callback(chosen)
 
     assert gateway.inbox_items[item_id]["owner_verdict"] == "skip"
-    assert gateway.inbox_items[item_id]["owner_reason"] == "Вакансия уже закрыта"
-    assert closed.answers == ["Вакансия уже закрыта"]
+    assert gateway.inbox_items[item_id]["owner_reason"] == stored
+    assert chosen.answers == [label]
+
+
+@pytest.mark.asyncio
+async def test_rejection_picker_offers_every_gate_and_a_way_back():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+
+    picker = FakeCallback(111, _career_reject_callback(item_id))
+    await controller.on_career_callback(picker)
+
+    labels = [t for t, _d in _flat_buttons(picker.message.markups[-1])]
+    assert labels == [
+        "Не та роль",
+        "Не берут из РФ",
+        "Мало денег",
+        "Английский",
+        "Вакансия закрыта",
+        "Другое",
+        "Назад",
+    ]
+    # Opening the picker must not decide anything on its own.
+    assert gateway.inbox_items[item_id]["owner_verdict"] is None
+
+
+@pytest.mark.asyncio
+async def test_choosing_a_reason_on_a_stale_card_fails_closed():
+    """The picker itself decides nothing, so it need not validate; the verdict
+    call behind it must."""
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_item(gateway, controller)
+    gone = str(uuid4())
+
+    chosen = FakeCallback(111, _career_verdict_callback(gone, "skip", "role"))
+    await controller.on_career_callback(chosen)
+
+    assert chosen.answers == ["Ошибка"]
+    assert all(i.get("owner_verdict") is None for i in gateway.inbox_items.values())
+
+
+@pytest.mark.asyncio
+async def test_unknown_reason_code_is_rejected_before_any_write():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+
+    bogus = FakeCallback(111, _career_verdict_callback(item_id, "skip", "made_up"))
+    await controller.on_career_callback(bogus)
+
+    assert bogus.answers == ["Кнопка устарела"]
+    assert gateway.inbox_items[item_id]["owner_verdict"] is None
 
 
 @pytest.mark.asyncio

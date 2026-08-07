@@ -183,6 +183,10 @@ def _career_verdict_callback(
     return f"career:iv:{_compact_uuid(inbox_item_id)}:{verdict}{tail}"
 
 
+def _career_reject_callback(inbox_item_id: str) -> str:
+    return f"career:no:{_compact_uuid(inbox_item_id)}"
+
+
 def _career_applied_callback(inbox_item_id: str) -> str:
     return f"career:ia:{_compact_uuid(inbox_item_id)}"
 
@@ -1807,10 +1811,28 @@ class MlTechnicalTelegramController:
         "applied": "Отклик отправлен",
     }
 
-    # Compact codes travel in callback_data; the stored owner_reason is the
-    # human text. Unknown codes are rejected as stale buttons.
-    _VERDICT_REASON_RU: dict[str, str] = {
-        "closed": "Вакансия уже закрыта",
+    # Why a vacancy was rejected, as a CLOSED vocabulary rather than free text.
+    #
+    # This is calibration data, not decoration: the stored value names the gate
+    # that got it wrong, so "how often does role_scope let through something the
+    # owner does not want" becomes countable. Free text would have to be
+    # categorised by an LLM to be counted - and the LLM is the thing being
+    # measured, so that argument is circular.
+    #
+    # (compact callback code, button label, stored owner_reason)
+    _SKIP_REASONS: tuple[tuple[str, str, str], ...] = (
+        ("role", "Не та роль", "role_scope"),
+        ("legal", "Не берут из РФ", "legal_hire_from_rf"),
+        ("comp", "Мало денег", "comp_threshold"),
+        ("lang", "Английский", "language_path"),
+        # Not a gate error: the gates were right when the post was written.
+        ("closed", "Вакансия закрыта", "vacancy_closed"),
+        ("other", "Другое", "other"),
+    )
+
+    # Unknown codes are rejected as stale buttons rather than silently stored.
+    _SKIP_REASON_BY_CODE: dict[str, tuple[str, str]] = {
+        code: (label, stored) for code, label, stored in _SKIP_REASONS
     }
 
     @staticmethod
@@ -1973,15 +1995,7 @@ class MlTechnicalTelegramController:
             rows.append([("Подготовить отклик", _career_prepare_callback(inbox_item_id))])
             if questions:
                 rows.append([("Уточнить", _career_verdict_callback(inbox_item_id, "ask"))])
-            rows.append([("Не подходит", _career_verdict_callback(inbox_item_id, "skip"))])
-            rows.append(
-                [
-                    (
-                        "Вакансия закрыта",
-                        _career_verdict_callback(inbox_item_id, "skip", "closed"),
-                    )
-                ]
-            )
+            rows.append([("Не подходит", _career_reject_callback(inbox_item_id))])
             rows.append(
                 [("Ошибка данных", _career_verdict_callback(inbox_item_id, "false_positive"))]
             )
@@ -2207,6 +2221,27 @@ class MlTechnicalTelegramController:
         await callback.answer()
         await self._show_career_inbox(callback.message, user_id)
 
+    async def _on_career_callback_reject(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        """One extra tap buys a labelled rejection instead of an anonymous one.
+
+        Without it the owner's judgement is unusable as calibration data: we would
+        know the card was wrong but not which gate was wrong about it.
+        """
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        await callback.answer()
+        rows = [
+            [(label, _career_verdict_callback(inbox_item_id, VERDICT_SKIP, code))]
+            for code, label, _stored in self._SKIP_REASONS
+        ]
+        rows.append([("Назад", _career_item_callback(inbox_item_id))])
+        await self._render_card(
+            callback.message, "Почему не подходит?", _markup(rows)
+        )
+
     async def _on_career_callback_review(self, callback: Any, user_id: int) -> None:
         if not self.career_inbox_enabled:
             await callback.answer("Функция выключена")
@@ -2326,11 +2361,13 @@ class MlTechnicalTelegramController:
             return
         verdict = rest[1]
         reason: Optional[str] = None
+        toast: Optional[str] = None
         if len(rest) > 2:
-            reason = self._VERDICT_REASON_RU.get(rest[2])
-            if reason is None:
+            known = self._SKIP_REASON_BY_CODE.get(rest[2])
+            if known is None:
                 await callback.answer("Кнопка устарела")
                 return
+            toast, reason = known
         idempotency_key = f"telegram_callback:{getattr(callback, 'id', str(callback.data))}"
         try:
             result = await self.gateway.set_inbox_verdict(
@@ -2345,7 +2382,7 @@ class MlTechnicalTelegramController:
             await callback.answer("Ошибка")
             await callback.message.answer(str(exc))
             return
-        await callback.answer(reason or self._VERDICT_LABELS_RU.get(verdict, "Сохранено"))
+        await callback.answer(toast or self._VERDICT_LABELS_RU.get(verdict, "Сохранено"))
         if verdict == "ask":
             questions = result["inbox_item"].get("questions_for_recruiter") or []
             text = (
@@ -2877,6 +2914,8 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_inbox(callback, user_id)
         elif action == "review":
             await self._on_career_callback_review(callback, user_id)
+        elif action == "no" and rest:
+            await self._on_career_callback_reject(callback, user_id, rest)
         elif action == "item" and rest:
             await self._on_career_callback_item(callback, user_id, rest)
         elif action == "iv" and len(rest) >= 2:
