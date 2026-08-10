@@ -1902,6 +1902,8 @@ class MlTechnicalTelegramController:
         title: str,
         empty_text: str,
         back_callback: str,
+        page: int = 0,
+        page_callback: Optional[str] = None,
         extra_rows: Optional[list[list[tuple[str, str]]]] = None,
     ) -> None:
         if not items:
@@ -1912,6 +1914,11 @@ class MlTechnicalTelegramController:
         if self.career_ready_queue_enabled:
             packages = await self.gateway.list_ready_application_packages(user_id, limit=7)
             ready_ids = {p["inbox_item_id"] for p in packages if p.get("inbox_item_id")}
+
+        # Одна страница, а не вся выборка: сорок пять кнопок в одном сообщении
+        # нечитаемы, а Telegram и вовсе может его не принять.
+        start = max(0, page) * self._QUEUE_PAGE_SIZE
+        visible = items[start : start + self._QUEUE_PAGE_SIZE]
         rows: list[list[tuple[str, str]]] = [
             [
                 (
@@ -1920,13 +1927,25 @@ class MlTechnicalTelegramController:
                     _career_item_callback(item["inbox_item_id"]),
                 )
             ]
-            for item in items
+            for item in visible
         ]
+        shown = start + len(visible)
+        if page_callback is not None and shown < len(items):
+            rows.append(
+                [(f"Показать ещё ({len(items) - shown})", f"{page_callback}:{page + 1}")]
+            )
         rows += list(extra_rows or [])
         rows.append([("Назад", back_callback)])
-        await self._render_card(message, f"{title} ({len(items)})", _markup(rows))
+        header = f"{title} ({len(items)})"
+        if len(items) > self._QUEUE_PAGE_SIZE:
+            header = f"{title} — {start + 1}-{shown} из {len(items)}"
+        await self._render_card(message, header, _markup(rows))
 
-    async def _show_career_inbox(self, message: Any, user_id: int) -> None:
+    _QUEUE_PAGE_SIZE = 15
+
+    async def _show_career_inbox(
+        self, message: Any, user_id: int, *, page: int = 0
+    ) -> None:
         items = await self.gateway.list_inbox_items(
             user_id, routes=sorted(ACTIONABLE_IMPORT_ROUTES), include_manual=True
         )
@@ -1944,10 +1963,14 @@ class MlTechnicalTelegramController:
             title="Вакансии",
             empty_text="Вакансий нет.",
             back_callback="career:back",
+            page=page,
+            page_callback="career:inbox",
             extra_rows=extra,
         )
 
-    async def _show_career_review(self, message: Any, user_id: int) -> None:
+    async def _show_career_review(
+        self, message: Any, user_id: int, *, page: int = 0
+    ) -> None:
         """Second, lower-priority bucket: vacancies whose role gate stayed
         unresolved upstream. They are shown, never silently dropped."""
         items = await self.gateway.list_inbox_items(
@@ -1960,6 +1983,8 @@ class MlTechnicalTelegramController:
             title="На проверку",
             empty_text="На проверку ничего нет.",
             back_callback="career:inbox",
+            page=page,
+            page_callback="career:review",
         )
 
     def _gate_warning_lines(self, item: dict[str, Any]) -> list[str]:
@@ -2214,12 +2239,26 @@ class MlTechnicalTelegramController:
         await callback.answer("Отклик зафиксирован")
         await self._render_applied_success(callback.message, user_id, result["application"])
 
-    async def _on_career_callback_inbox(self, callback: Any, user_id: int) -> None:
+    @staticmethod
+    def _queue_page(rest: list[str]) -> int:
+        """Номер страницы из хвоста callback_data; мусор трактуем как первую."""
+        if not rest:
+            return 0
+        try:
+            return max(0, int(rest[0]))
+        except ValueError:
+            return 0
+
+    async def _on_career_callback_inbox(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
         if not self.career_inbox_enabled:
             await callback.answer("Функция выключена")
             return
         await callback.answer()
-        await self._show_career_inbox(callback.message, user_id)
+        await self._show_career_inbox(
+            callback.message, user_id, page=self._queue_page(rest)
+        )
 
     async def _on_career_callback_reject(
         self, callback: Any, user_id: int, rest: list[str]
@@ -2242,12 +2281,16 @@ class MlTechnicalTelegramController:
             callback.message, "Почему не подходит?", _markup(rows)
         )
 
-    async def _on_career_callback_review(self, callback: Any, user_id: int) -> None:
+    async def _on_career_callback_review(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
         if not self.career_inbox_enabled:
             await callback.answer("Функция выключена")
             return
         await callback.answer()
-        await self._show_career_review(callback.message, user_id)
+        await self._show_career_review(
+            callback.message, user_id, page=self._queue_page(rest)
+        )
 
     async def _on_career_callback_item(
         self, callback: Any, user_id: int, rest: list[str]
@@ -2911,9 +2954,9 @@ class MlTechnicalTelegramController:
         elif action == "next" and rest:
             await self._on_career_callback_next(callback, user_id, rest)
         elif action == "inbox":
-            await self._on_career_callback_inbox(callback, user_id)
+            await self._on_career_callback_inbox(callback, user_id, rest)
         elif action == "review":
-            await self._on_career_callback_review(callback, user_id)
+            await self._on_career_callback_review(callback, user_id, rest)
         elif action == "no" and rest:
             await self._on_career_callback_reject(callback, user_id, rest)
         elif action == "item" and rest:

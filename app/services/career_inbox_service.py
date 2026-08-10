@@ -45,7 +45,11 @@ URL_MAX_LEN = 500
 RAW_TEXT_MAX_LEN = 4000
 NEXT_ACTION_MAX_LEN = 200
 EVIDENCE_MAX_LEN = 1000
-INBOX_DISPLAY_LIMIT = 15
+# Верхняя граница выборки из БД. Экран показывает не всё сразу (см. пагинацию
+# в боте): `review` набирает сотни карточек, и смысл корзины в том, что её МОЖНО
+# пересмотреть — узкий предел возвращает исходную проблему «карточка есть, но
+# владелец её не видит».
+INBOX_DISPLAY_LIMIT = 45
 
 SOURCE_MANUAL = "manual"
 SOURCE_LINKEDIN_INBOUND = "linkedin_inbound"

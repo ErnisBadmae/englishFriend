@@ -192,7 +192,7 @@ class FakeInboxGateway:
                 elif route not in routes:
                     continue
             items.append(item)
-        return items[:15]
+        return items[:45]  # INBOX_DISPLAY_LIMIT
 
     async def get_inbox_item(self, user_id: int, inbox_item_id: str):
         return self.inbox_items.get(inbox_item_id)
@@ -2257,3 +2257,75 @@ async def test_add_source_reply_rejects_empty_input():
     assert any("Повторите" in reply for reply in message.replies)
     pending = await gateway.get_active_pending_intent(11)
     assert pending is not None and pending["intent"] == "career_add_vacancy_source"
+
+
+# ---------------------------------------------------------------------------
+# Pagination: the review bucket runs to hundreds, one screen does not
+# ---------------------------------------------------------------------------
+
+
+async def _seeded_many(gateway, controller, count: int, route: str) -> list[str]:
+    ids = []
+    for _ in range(count):
+        item_id = await _seeded_item(gateway, controller)
+        gateway.inbox_items[item_id]["route"] = route
+        ids.append(item_id)
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_queue_shows_one_page_and_offers_the_rest():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_many(gateway, controller, 20, "review")
+
+    first = FakeCallback(111, "career:review")
+    await controller.on_career_callback(first)
+
+    labels = [t for t, _d in _flat_buttons(first.message.markups[-1])]
+    # 15 карточек + «Показать ещё» + «Назад»
+    assert len(labels) == 17
+    assert "На проверку — 1-15 из 20" in first.message.replies[-1]
+    assert "Показать ещё (5)" in labels
+
+
+@pytest.mark.asyncio
+async def test_second_page_shows_the_remainder_without_a_next_button():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    ids = await _seeded_many(gateway, controller, 20, "review")
+
+    second = FakeCallback(111, "career:review:1")
+    await controller.on_career_callback(second)
+
+    data = [d for _t, d in _flat_buttons(second.message.markups[-1])]
+    assert "На проверку — 16-20 из 20" in second.message.replies[-1]
+    assert _career_item_callback(ids[15]) in data
+    assert _career_item_callback(ids[0]) not in data
+    assert not any(t.startswith("Показать ещё") for t, _d in _flat_buttons(second.message.markups[-1]))
+
+
+@pytest.mark.asyncio
+async def test_short_queue_has_no_pagination_noise():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_many(gateway, controller, 3, "outreach")
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    labels = [t for t, _d in _flat_buttons(listing.message.markups[-1])]
+    assert "Вакансии (3)" in listing.message.replies[-1]
+    assert not any(t.startswith("Показать ещё") for t in labels)
+
+
+@pytest.mark.asyncio
+async def test_garbage_page_number_falls_back_to_the_first_page():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_many(gateway, controller, 20, "review")
+
+    bogus = FakeCallback(111, "career:review:чтоэто")
+    await controller.on_career_callback(bogus)
+
+    assert "На проверку — 1-15 из 20" in bogus.message.replies[-1]
