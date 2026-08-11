@@ -26,6 +26,7 @@ from app.adapters.telegram.ml_technical_bot import (
     _career_package_send_callback,
     _career_package_start_callback,
     _career_prepare_callback,
+    _career_favorite_callback,
     _career_reject_callback,
     _career_tech_callback,
     _career_verdict_callback,
@@ -177,12 +178,20 @@ class FakeInboxGateway:
         return {"created": True, "inbox_item": item}
 
     _SETTLED_VERDICTS = {"skip", "false_positive", "applied"}
+    _PARKED_VERDICTS = {"later"}
 
-    async def list_inbox_items(self, user_id: int, *, routes=None, include_manual=True):
+    async def list_inbox_items(
+        self, user_id: int, *, routes=None, include_manual=True, only_verdicts=None
+    ):
         items = []
         for i in self.inbox_order:
             item = self.inbox_items[i]
             if item.get("owner_verdict") in self._SETTLED_VERDICTS:
+                continue
+            if only_verdicts is not None:
+                if item.get("owner_verdict") not in only_verdicts:
+                    continue
+            elif item.get("owner_verdict") in self._PARKED_VERDICTS:
                 continue
             if routes is not None:
                 route = item.get("route")
@@ -2329,3 +2338,96 @@ async def test_garbage_page_number_falls_back_to_the_first_page():
     await controller.on_career_callback(bogus)
 
     assert "На проверку — 1-15 из 20" in bogus.message.replies[-1]
+
+
+# ---------------------------------------------------------------------------
+# Favourites: "interesting, but not yet" is neither a rejection nor a start
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_favourite_leaves_the_working_queue_without_rejecting():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    kept = await _seeded_item(gateway, controller)
+    saved = await _seeded_item(gateway, controller)
+
+    card = FakeCallback(111, _career_item_callback(saved))
+    await controller.on_career_callback(card)
+    assert "В избранное" in dict(_flat_buttons(card.message.markups[-1]))
+
+    fav = FakeCallback(111, _career_favorite_callback(saved))
+    await controller.on_career_callback(fav)
+
+    assert gateway.inbox_items[saved]["owner_verdict"] == "later"
+    assert fav.answers == ["В избранном"]
+    # Очередь укоротилась, но карточка не отклонена.
+    assert "Вакансии (1)" in fav.message.replies[-1]
+    data = [d for _t, d in _flat_buttons(fav.message.markups[-1])]
+    assert _career_item_callback(kept) in data
+    assert _career_item_callback(saved) not in data
+
+
+@pytest.mark.asyncio
+async def test_favourites_have_their_own_reachable_list():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_item(gateway, controller)
+    saved = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(FakeCallback(111, _career_favorite_callback(saved)))
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+    labels = dict(_flat_buttons(listing.message.markups[-1]))
+    assert "Избранное (1)" in labels
+
+    opened = FakeCallback(111, labels["Избранное (1)"])
+    await controller.on_career_callback(opened)
+
+    assert "Избранное (1)" in opened.message.replies[-1]
+    data = [d for _t, d in _flat_buttons(opened.message.markups[-1])]
+    assert _career_item_callback(saved) in data
+    assert "career:inbox" in data
+
+
+@pytest.mark.asyncio
+async def test_favourite_card_is_labelled_and_can_still_be_prepared():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    saved = await _seeded_item(gateway, controller)
+    await controller.on_career_callback(FakeCallback(111, _career_favorite_callback(saved)))
+
+    opened = FakeCallback(111, "career:saved")
+    await controller.on_career_callback(opened)
+    labels = [t for t, _d in _flat_buttons(opened.message.markups[-1])]
+    assert labels[0].startswith("На будущее: ")
+
+    card = FakeCallback(111, _career_item_callback(saved))
+    await controller.on_career_callback(card)
+    assert "Подготовить отклик" in dict(_flat_buttons(card.message.markups[-1]))
+
+
+@pytest.mark.asyncio
+async def test_favourites_entry_hidden_when_empty():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_item(gateway, controller)
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    labels = [t for t, _d in _flat_buttons(listing.message.markups[-1])]
+    assert not any(label.startswith("Избранное") for label in labels)
+
+
+@pytest.mark.asyncio
+async def test_stale_favourite_callback_fails_closed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    await _seeded_item(gateway, controller)
+
+    bogus = FakeCallback(111, _career_favorite_callback(str(uuid4())))
+    await controller.on_career_callback(bogus)
+
+    assert bogus.answers == ["Ошибка"]
+    assert all(i.get("owner_verdict") is None for i in gateway.inbox_items.values())

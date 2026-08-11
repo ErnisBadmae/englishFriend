@@ -36,6 +36,7 @@ from app.services.career_inbox_service import (
     PACKAGE_STATUS_READY,
     ACTIONABLE_IMPORT_ROUTES,
     ROUTE_REVIEW,
+    VERDICT_LATER,
     VERDICT_APPLIED,
     VERDICT_FALSE_POSITIVE,
     VERDICT_PREPARE,
@@ -181,6 +182,10 @@ def _career_verdict_callback(
 ) -> str:
     tail = f":{reason}" if reason else ""
     return f"career:iv:{_compact_uuid(inbox_item_id)}:{verdict}{tail}"
+
+
+def _career_favorite_callback(inbox_item_id: str) -> str:
+    return f"career:fav:{_compact_uuid(inbox_item_id)}"
 
 
 def _career_reject_callback(inbox_item_id: str) -> str:
@@ -386,6 +391,7 @@ class TelegramPracticeGateway(Protocol):
         *,
         routes: Optional[list[str]] = None,
         include_manual: bool = True,
+        only_verdicts: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -717,10 +723,14 @@ class DbTelegramPracticeGateway:
         *,
         routes: Optional[list[str]] = None,
         include_manual: bool = True,
+        only_verdicts: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         async with self.session_factory() as db:
             return await CareerInboxService(db).list_inbox_items(
-                user_id, routes=routes, include_manual=include_manual
+                user_id,
+                routes=routes,
+                include_manual=include_manual,
+                only_verdicts=only_verdicts,
             )
 
     async def get_inbox_item(
@@ -1809,6 +1819,7 @@ class MlTechnicalTelegramController:
         "skip": "Пропустить",
         "false_positive": "Ошибка парсера",
         "applied": "Отклик отправлен",
+        "later": "В избранном",
     }
 
     # Why a vacancy was rejected, as a CLOSED vocabulary rather than free text.
@@ -1887,6 +1898,8 @@ class MlTechnicalTelegramController:
             return "Новая"
         if verdict == "ask":
             return "Нужно уточнить"
+        if verdict == VERDICT_LATER:
+            return "На будущее"
         if verdict == VERDICT_PREPARE:
             return (
                 "Готово к отклику" if item["inbox_item_id"] in ready_ids else "Готовится"
@@ -1956,6 +1969,11 @@ class MlTechnicalTelegramController:
             user_id, routes=[ROUTE_REVIEW], include_manual=False
         )
         extra = [[(f"На проверку ({len(review)})", "career:review")]] if review else []
+        saved = await self.gateway.list_inbox_items(
+            user_id, only_verdicts=[VERDICT_LATER]
+        )
+        if saved:
+            extra.append([(f"Избранное ({len(saved)})", "career:saved")])
         await self._render_queue(
             message,
             user_id,
@@ -1966,6 +1984,24 @@ class MlTechnicalTelegramController:
             page=page,
             page_callback="career:inbox",
             extra_rows=extra,
+        )
+
+    async def _show_career_saved(
+        self, message: Any, user_id: int, *, page: int = 0
+    ) -> None:
+        """Отложенное, а не отклонённое: вакансии, к которым владелец вернётся."""
+        items = await self.gateway.list_inbox_items(
+            user_id, only_verdicts=[VERDICT_LATER]
+        )
+        await self._render_queue(
+            message,
+            user_id,
+            items=items,
+            title="Избранное",
+            empty_text="В избранном пусто.",
+            back_callback="career:inbox",
+            page=page,
+            page_callback="career:saved",
         )
 
     async def _show_career_review(
@@ -2020,6 +2056,7 @@ class MlTechnicalTelegramController:
             rows.append([("Подготовить отклик", _career_prepare_callback(inbox_item_id))])
             if questions:
                 rows.append([("Уточнить", _career_verdict_callback(inbox_item_id, "ask"))])
+            rows.append([("В избранное", _career_favorite_callback(inbox_item_id))])
             rows.append([("Не подходит", _career_reject_callback(inbox_item_id))])
             rows.append(
                 [("Ошибка данных", _career_verdict_callback(inbox_item_id, "false_positive"))]
@@ -2279,6 +2316,41 @@ class MlTechnicalTelegramController:
         rows.append([("Назад", _career_item_callback(inbox_item_id))])
         await self._render_card(
             callback.message, "Почему не подходит?", _markup(rows)
+        )
+
+    async def _on_career_callback_favorite(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        """Отправляет карточку в избранное: один тап, без экрана-подтверждения."""
+        inbox_item_id = await self._career_resolve_application_id(callback, rest[0])
+        if inbox_item_id is None:
+            return
+        try:
+            await self.gateway.set_inbox_verdict(
+                user_id,
+                inbox_item_id=inbox_item_id,
+                verdict=VERDICT_LATER,
+                idempotency_key=f"telegram_callback:{getattr(callback, 'id', str(callback.data))}",
+                actor_id=str(self._telegram_id(callback)),
+            )
+        except CareerInboxError as exc:
+            await callback.answer("Ошибка")
+            await callback.message.answer(str(exc))
+            return
+        await callback.answer("В избранном")
+        # Карточка ушла из рабочей очереди — показываем укоротившуюся очередь,
+        # иначе повторная отрисовка выглядит как «ничего не произошло».
+        await self._show_career_inbox(callback.message, user_id)
+
+    async def _on_career_callback_saved(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        if not self.career_inbox_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await callback.answer()
+        await self._show_career_saved(
+            callback.message, user_id, page=self._queue_page(rest)
         )
 
     async def _on_career_callback_review(
@@ -2959,6 +3031,10 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_review(callback, user_id, rest)
         elif action == "no" and rest:
             await self._on_career_callback_reject(callback, user_id, rest)
+        elif action == "fav" and rest:
+            await self._on_career_callback_favorite(callback, user_id, rest)
+        elif action == "saved":
+            await self._on_career_callback_saved(callback, user_id, rest)
         elif action == "item" and rest:
             await self._on_career_callback_item(callback, user_id, rest)
         elif action == "iv" and len(rest) >= 2:

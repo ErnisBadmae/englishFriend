@@ -821,3 +821,92 @@ async def test_import_user_isolation_across_two_owners(pg_session_maker):
 
         assert len(items_a) == 1
         assert len(items_b) == 0
+
+
+@pytest.mark.integration
+async def test_later_verdict_parks_a_card_without_settling_it(pg_session_maker):
+    """«Интересно, но не сейчас» — не отказ и не старт. Карточка уходит из
+    рабочей очереди, но остаётся доступной в своём списке."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        kept = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        parked = await service.import_snapshot(
+            user_id,
+            external_id="@chan:2",
+            content_hash="b" * 64,
+            company="Globex",
+            role_title="Senior LLM Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=parked["inbox_item"]["inbox_item_id"],
+            verdict="later",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        working = await service.list_inbox_items(user_id)
+        assert [i["role_title"] for i in working] == ["ML Engineer"]
+
+        saved = await service.list_inbox_items(user_id, only_verdicts=["later"])
+        assert [i["role_title"] for i in saved] == ["Senior LLM Engineer"]
+
+        # Отложенная карточка по-прежнему доступна поимённо, а не потеряна.
+        assert (
+            await service.get_inbox_item(
+                user_id, parked["inbox_item"]["inbox_item_id"]
+            )
+        )["owner_verdict"] == "later"
+        assert kept["created"] is True
+
+
+@pytest.mark.integration
+async def test_reimport_does_not_resurrect_a_parked_card(pg_session_maker):
+    """`later` — это решение владельца, поэтому вакансия заморожена так же, как
+    любая решённая: дрейф текста не поднимет её обратно в очередь."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+
+        first = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="a" * 64,
+            company="Acme",
+            role_title="ML Engineer",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=first["inbox_item"]["inbox_item_id"],
+            verdict="later",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+
+        drifted = await service.import_snapshot(
+            user_id,
+            external_id="@chan:1",
+            content_hash="c" * 64,
+            company="Acme",
+            role_title="ML Engineer (edited)",
+            route="outreach",
+            gates=_gates_kwargs(),
+        )
+
+        assert drifted["created"] is False
+        assert await service.list_inbox_items(user_id) == []
+        assert len(await service.list_inbox_items(user_id, only_verdicts=["later"])) == 1

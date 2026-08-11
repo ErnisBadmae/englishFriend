@@ -84,10 +84,24 @@ VERDICT_PREPARE = "prepare"
 VERDICT_SKIP = "skip"
 VERDICT_FALSE_POSITIVE = "false_positive"
 VERDICT_APPLIED = "applied"
-VALID_MANUAL_VERDICTS = {VERDICT_ASK, VERDICT_PREPARE, VERDICT_SKIP, VERDICT_FALSE_POSITIVE}
+# "Interesting, but not yet": the owner wants this vacancy later, not now. It is
+# neither a rejection nor a start - keeping it in the working queue would make the
+# queue lie about what is actionable today, and rejecting it would lose it.
+VERDICT_LATER = "later"
+VALID_MANUAL_VERDICTS = {
+    VERDICT_ASK,
+    VERDICT_PREPARE,
+    VERDICT_SKIP,
+    VERDICT_FALSE_POSITIVE,
+    VERDICT_LATER,
+}
 # Settled = no further owner action expected on this card; kept out of the
 # default inbox view so they stop crowding out cards still needing a look.
 SETTLED_INBOX_VERDICTS = {VERDICT_SKIP, VERDICT_FALSE_POSITIVE, VERDICT_APPLIED}
+# Parked = the owner WILL come back to it, so it is not settled: a re-import must
+# not resurrect it and the group must not be hidden the way a settled one is. It
+# simply lives in its own list instead of the working queue.
+PARKED_INBOX_VERDICTS = frozenset({VERDICT_LATER})
 
 FEEDBACK_CATEGORIES = {
     "positive_next_step",
@@ -654,6 +668,7 @@ class CareerInboxService:
         limit: int = INBOX_DISPLAY_LIMIT,
         routes: Optional[Iterable[str]] = None,
         include_manual: bool = True,
+        only_verdicts: Optional[Iterable[str]] = None,
     ) -> list[dict[str, Any]]:
         """Bounded, latest-version-only view: for imported rows that share a
         stable key (source, external_id), only the newest content_hash
@@ -672,7 +687,12 @@ class CareerInboxService:
 
         `routes` splits the queue into buckets (actionable vs `review`).
         Manual leads carry no route, so `include_manual` decides whether they
-        ride along - they belong to the actionable queue, never to `review`."""
+        ride along - they belong to the actionable queue, never to `review`.
+
+        Parked cards (PARKED_INBOX_VERDICTS) are excluded by default: the owner
+        set them aside on purpose, and leaving them in the working queue would
+        make it lie about what is actionable today. `only_verdicts` is how their
+        own list asks for them back."""
         await self._ensure_user_exists(user_id)
         bounded_limit = max(1, min(limit, INBOX_DISPLAY_LIMIT))
         group_key = func.coalesce(
@@ -708,6 +728,15 @@ class CareerInboxService:
             if include_manual:
                 route_filter = or_(route_filter, latest.route.is_(None))
             conditions.append(route_filter)
+        if only_verdicts is not None:
+            conditions.append(latest.owner_verdict.in_(list(only_verdicts)))
+        else:
+            conditions.append(
+                or_(
+                    latest.owner_verdict.is_(None),
+                    latest.owner_verdict.notin_(PARKED_INBOX_VERDICTS),
+                )
+            )
         rows = (
             await self.db.execute(
                 select(latest)
@@ -1633,6 +1662,7 @@ __all__ = [
     "IMPORT_SCHEMA_VERSION",
     "INBOX_DISPLAY_LIMIT",
     "MANUAL_LEAD_SOURCES",
+    "PARKED_INBOX_VERDICTS",
     "MAX_PASTED_LEADS",
     "PACKAGE_KIND_APPLICATION",
     "PACKAGE_STATUS_EXPIRED",
@@ -1649,6 +1679,7 @@ __all__ = [
     "VERDICT_APPLIED",
     "VERDICT_ASK",
     "VERDICT_FALSE_POSITIVE",
+    "VERDICT_LATER",
     "VERDICT_PREPARE",
     "VERDICT_SKIP",
     "build_grounding_report",
