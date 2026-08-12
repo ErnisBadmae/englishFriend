@@ -7,6 +7,8 @@ network access. PostgreSQL is the only source of active-session state.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import asyncio
 import base64
 import logging
@@ -1883,6 +1885,22 @@ class MlTechnicalTelegramController:
         return None
 
     @staticmethod
+    def _waiting_days(item: dict[str, Any]) -> Optional[int]:
+        """Сколько дней карточка ждёт подтверждения. Возраст показывается, потому
+        что зависший отклик выглядит точно так же, как свежий, и без него забытое
+        не отличить от начатого пять минут назад."""
+        stamp = item.get("decided_at") or item.get("updated_at")
+        if not stamp:
+            return None
+        try:
+            decided = datetime.fromisoformat(stamp)
+        except ValueError:
+            return None
+        if decided.tzinfo is None:
+            decided = decided.replace(tzinfo=timezone.utc)
+        return max(0, (datetime.now(timezone.utc) - decided).days)
+
+    @staticmethod
     def _item_title(item: dict[str, Any]) -> str:
         company = item.get("company")
         role = item.get("role_title")
@@ -1917,10 +1935,11 @@ class MlTechnicalTelegramController:
         back_callback: str,
         page: int = 0,
         page_callback: Optional[str] = None,
+        lead_rows: Optional[list[list[tuple[str, str]]]] = None,
         extra_rows: Optional[list[list[tuple[str, str]]]] = None,
     ) -> None:
         if not items:
-            rows = list(extra_rows or []) + [[("Назад", back_callback)]]
+            rows = list(lead_rows or []) + list(extra_rows or []) + [[("Назад", back_callback)]]
             await self._render_card(message, empty_text, _markup(rows))
             return
         ready_ids: set[str] = set()
@@ -1932,7 +1951,8 @@ class MlTechnicalTelegramController:
         # нечитаемы, а Telegram и вовсе может его не принять.
         start = max(0, page) * self._QUEUE_PAGE_SIZE
         visible = items[start : start + self._QUEUE_PAGE_SIZE]
-        rows: list[list[tuple[str, str]]] = [
+        rows: list[list[tuple[str, str]]] = list(lead_rows or [])
+        rows += [
             [
                 (
                     f"{self._queue_state_label(item, ready_ids)}: "
@@ -1956,6 +1976,17 @@ class MlTechnicalTelegramController:
 
     _QUEUE_PAGE_SIZE = 15
 
+    # Код причины, которым upstream помечает «в названии целевая роль, но
+    # подтвердить цитатой не вышло». Единственное, что бот знает о политике ролей:
+    # сама политика живёт в telegram-digest и сюда не копируется.
+    _TITLE_MATCH_REASON_CODE = "title_profile_match_unconfirmed"
+
+    @classmethod
+    def _title_matches_profile(cls, item: dict[str, Any]) -> bool:
+        role_scope = (item.get("gates") or {}).get("role_scope") or {}
+        code = (role_scope.get("authority") or {}).get("reason_code")
+        return code == cls._TITLE_MATCH_REASON_CODE
+
     async def _show_career_inbox(
         self, message: Any, user_id: int, *, page: int = 0
     ) -> None:
@@ -1967,6 +1998,14 @@ class MlTechnicalTelegramController:
         # deliberately capped at five rows (one-flow UX v0.1).
         review = await self.gateway.list_inbox_items(
             user_id, routes=[ROUTE_REVIEW], include_manual=False
+        )
+        pending = await self.gateway.list_inbox_items(
+            user_id, only_verdicts=[VERDICT_PREPARE]
+        )
+        lead = (
+            [[(f"Подтвердить отправку ({len(pending)})", "career:pending")]]
+            if pending
+            else []
         )
         extra = [[(f"На проверку ({len(review)})", "career:review")]] if review else []
         saved = await self.gateway.list_inbox_items(
@@ -1983,8 +2022,43 @@ class MlTechnicalTelegramController:
             back_callback="career:back",
             page=page,
             page_callback="career:inbox",
+            lead_rows=lead,
             extra_rows=extra,
         )
+
+    async def _show_career_pending(
+        self, message: Any, user_id: int, *, page: int = 0
+    ) -> None:
+        """Начатое, но не подтверждённое как отправленное.
+
+        Отклик уходит вне бота — человек читает вакансию, правит резюме, отправляет
+        и назад уже не возвращается. Требовать «вспомни и найди карточку» — значит
+        гарантированно терять данные: подтверждение должно само попадаться на глаза
+        там, куда владелец и так заходит."""
+        items = await self.gateway.list_inbox_items(
+            user_id, only_verdicts=[VERDICT_PREPARE]
+        )
+        items.sort(key=lambda i: -(self._waiting_days(i) or 0))
+        rows = []
+        for item in items[: self._QUEUE_PAGE_SIZE]:
+            days = self._waiting_days(item)
+            age = f" · {days} дн." if days else ""
+            rows.append(
+                [
+                    (
+                        f"{self._item_title(item)}{age}",
+                        _career_item_callback(item["inbox_item_id"]),
+                    )
+                ]
+            )
+        rows.append([("Назад", "career:inbox")])
+        text = (
+            f"Подтвердить отправку ({len(items)})\n"
+            "Открой карточку и отметь «Я уже откликнулся», если отклик ушёл."
+            if items
+            else "Нечего подтверждать."
+        )
+        await self._render_card(message, text, _markup(rows))
 
     async def _show_career_saved(
         self, message: Any, user_id: int, *, page: int = 0
@@ -2012,6 +2086,9 @@ class MlTechnicalTelegramController:
         items = await self.gateway.list_inbox_items(
             user_id, routes=[ROUTE_REVIEW], include_manual=False
         )
+        # Профильные роли наверх: корзина набирает сотни карточек, и три нужные
+        # иначе теряются среди аналитиков и фронтендеров.
+        items.sort(key=lambda i: not self._title_matches_profile(i))
         await self._render_queue(
             message,
             user_id,
@@ -2341,6 +2418,17 @@ class MlTechnicalTelegramController:
         # Карточка ушла из рабочей очереди — показываем укоротившуюся очередь,
         # иначе повторная отрисовка выглядит как «ничего не произошло».
         await self._show_career_inbox(callback.message, user_id)
+
+    async def _on_career_callback_pending(
+        self, callback: Any, user_id: int, rest: list[str]
+    ) -> None:
+        if not self.career_inbox_enabled:
+            await callback.answer("Функция выключена")
+            return
+        await callback.answer()
+        await self._show_career_pending(
+            callback.message, user_id, page=self._queue_page(rest)
+        )
 
     async def _on_career_callback_saved(
         self, callback: Any, user_id: int, rest: list[str]
@@ -3035,6 +3123,8 @@ class MlTechnicalTelegramController:
             await self._on_career_callback_favorite(callback, user_id, rest)
         elif action == "saved":
             await self._on_career_callback_saved(callback, user_id, rest)
+        elif action == "pending":
+            await self._on_career_callback_pending(callback, user_id, rest)
         elif action == "item" and rest:
             await self._on_career_callback_item(callback, user_id, rest)
         elif action == "iv" and len(rest) >= 2:

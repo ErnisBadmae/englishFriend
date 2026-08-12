@@ -1695,7 +1695,9 @@ async def test_actionable_list_labels_new_ask_prepare_ready(tmp_path):
     assert any(l.startswith("Нужно уточнить: ") for l in labels)
     assert any(l.startswith("Готово к отклику: ") for l in labels)
     assert any(l.startswith("Готовится: ") for l in labels)
-    assert len(labels) == 5  # 4 actionable rows + Назад; settled (skip) excluded
+    # 4 actionable rows + Назад + строка подтверждения (в наборе есть prepare)
+    assert labels[0] == "Подтвердить отправку (2)"
+    assert len(labels) == 6
 
 
 @pytest.mark.asyncio
@@ -2431,3 +2433,79 @@ async def test_stale_favourite_callback_fails_closed():
 
     assert bogus.answers == ["Ошибка"]
     assert all(i.get("owner_verdict") is None for i in gateway.inbox_items.values())
+
+
+# ---------------------------------------------------------------------------
+# Sent-confirmation: the application leaves the bot, the owner does not return
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_queue_leads_with_a_pending_confirmation_row():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    started = await _seeded_item(gateway, controller)
+    gateway.inbox_items[started]["owner_verdict"] = "prepare"
+    await _seeded_item(gateway, controller)
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    labels = [t for t, _d in _flat_buttons(listing.message.markups[-1])]
+    # Первым, а не в конце: это то, о чём владелец забыл.
+    assert labels[0] == "Подтвердить отправку (1)"
+
+
+@pytest.mark.asyncio
+async def test_pending_screen_lists_started_cards_with_their_age():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    old = await _seeded_item(gateway, controller)
+    gateway.inbox_items[old]["owner_verdict"] = "prepare"
+    gateway.inbox_items[old]["decided_at"] = "2026-08-05T00:00:00+00:00"
+
+    opened = FakeCallback(111, "career:pending")
+    await controller.on_career_callback(opened)
+
+    assert "Подтвердить отправку (1)" in opened.message.replies[-1]
+    labels = [t for t, _d in _flat_buttons(opened.message.markups[-1])]
+    assert " дн." in labels[0]
+    data = [d for _t, d in _flat_buttons(opened.message.markups[-1])]
+    assert _career_item_callback(old) in data
+    assert "career:inbox" in data
+
+
+@pytest.mark.asyncio
+async def test_pending_row_disappears_once_everything_is_confirmed():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+    gateway.inbox_items[item_id]["owner_verdict"] = "applied"
+
+    listing = FakeCallback(111, "career:inbox")
+    await controller.on_career_callback(listing)
+
+    labels = [t for t, _d in _flat_buttons(listing.message.markups[-1])]
+    assert not any(label.startswith("Подтвердить отправку") for label in labels)
+
+
+@pytest.mark.asyncio
+async def test_review_puts_profile_titled_cards_first():
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    plain = await _seeded_item(gateway, controller)
+    titled = await _seeded_item(gateway, controller)
+    for item_id in (plain, titled):
+        gateway.inbox_items[item_id]["route"] = "review"
+    gateway.inbox_items[plain]["gates"] = {
+        "role_scope": {"authority": {"reason_code": "insufficient_role_signal"}}
+    }
+    gateway.inbox_items[titled]["gates"] = {
+        "role_scope": {"authority": {"reason_code": "title_profile_match_unconfirmed"}}
+    }
+
+    opened = FakeCallback(111, "career:review")
+    await controller.on_career_callback(opened)
+
+    data = [d for _t, d in _flat_buttons(opened.message.markups[-1])]
+    assert data[0] == _career_item_callback(titled)
