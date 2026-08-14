@@ -910,3 +910,41 @@ async def test_reimport_does_not_resurrect_a_parked_card(pg_session_maker):
         assert drifted["created"] is False
         assert await service.list_inbox_items(user_id) == []
         assert len(await service.list_inbox_items(user_id, only_verdicts=["later"])) == 1
+
+
+# ---------------------------------------------------------------------------
+# Сохранение полноты на границе импорта (grounded-judge-gate)
+# ---------------------------------------------------------------------------
+
+
+def test_import_contract_accepts_a_fully_accounted_run():
+    from scripts.import_career_inbox import IMPORT_CONTRACT
+    from judge_gate.totals import check_run
+
+    outcomes = [("imported", None)] * 3 + [("duplicate", None)] * 2
+    violations = check_run(
+        outcomes, IMPORT_CONTRACT, expected_count=7, exclusions={"over_limit": 2}
+    )
+    assert violations == []
+
+
+def test_import_contract_catches_envelopes_that_got_no_outcome():
+    """Ровно тот случай, который раньше проходил молча: срез по --limit съедал
+    часть конвертов, а строка отчёта выглядела нормально."""
+    from scripts.import_career_inbox import IMPORT_CONTRACT
+    from judge_gate.totals import check_run
+
+    outcomes = [("imported", None)] * 45
+    violations = check_run(outcomes, IMPORT_CONTRACT, expected_count=60)
+    assert len(violations) == 1
+    assert "15 of 60 input(s) produced no outcome" in violations[0]
+
+
+def test_import_contract_rejects_an_undeclared_exclusion_name():
+    """Исключение — санкционированная дыра, и она должна быть названа заранее,
+    иначе станет способом замести остаток под ковёр."""
+    from scripts.import_career_inbox import IMPORT_CONTRACT
+    from judge_gate.totals import TotalsContractError, check_run
+
+    with pytest.raises(TotalsContractError, match="unknown name"):
+        check_run([], IMPORT_CONTRACT, expected_count=1, exclusions={"вроде_ок": 1})

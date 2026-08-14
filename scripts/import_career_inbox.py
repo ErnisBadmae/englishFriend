@@ -22,6 +22,7 @@ import json
 import sys
 from pathlib import Path
 
+from judge_gate.totals import TotalsContract, check_run
 from sqlalchemy import select
 
 from app.core.database import get_async_session
@@ -31,6 +32,15 @@ from app.services.career_inbox_service import (
     CareerInboxError,
     CareerInboxService,
     validate_import_envelope,
+)
+
+
+# Каждый конверт обязан получить ровно один исход. `over_limit` — единственная
+# санкционированная дыра: усечение по --limit это решение вызывающего, и оно
+# должно быть названо и посчитано, а не молча съедено срезом списка.
+IMPORT_CONTRACT = TotalsContract(
+    routes=("imported", "duplicate", "rejected"),
+    exclusion_reasons=("over_limit",),
 )
 
 
@@ -53,10 +63,12 @@ async def _run(args: argparse.Namespace) -> int:
 
         service = CareerInboxService(db)
         imported = skipped_duplicate = rejected = 0
+        outcomes: list[tuple[str, str | None]] = []
         for envelope in envelopes[: args.limit]:
             error = validate_import_envelope(envelope)
             if error:
                 rejected += 1
+                outcomes.append(("rejected", None))
                 print(f"[REJECT] {envelope.get('external_id')}: {error}")
                 continue
             try:
@@ -75,17 +87,33 @@ async def _run(args: argparse.Namespace) -> int:
                 )
             except CareerInboxError as exc:
                 rejected += 1
+                outcomes.append(("rejected", None))
                 print(f"[REJECT] {envelope.get('external_id')}: {exc}")
                 continue
             if result["created"]:
                 imported += 1
+                outcomes.append(("imported", None))
             else:
                 skipped_duplicate += 1
+                outcomes.append(("duplicate", None))
 
+    truncated = max(0, len(envelopes) - args.limit)
     print(
         f"DONE. imported={imported} skipped_duplicate={skipped_duplicate} "
-        f"rejected={rejected} total_read={len(envelopes)}"
+        f"rejected={rejected} over_limit={truncated} total_read={len(envelopes)}"
     )
+
+    violations = check_run(
+        outcomes,
+        IMPORT_CONTRACT,
+        expected_count=len(envelopes),
+        exclusions={"over_limit": truncated},
+    )
+    if violations:
+        print("\nFAIL conservation: не каждый конверт получил исход")
+        for violation in violations:
+            print(f"  {violation}")
+        return 1
     return 0
 
 
