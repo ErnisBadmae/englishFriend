@@ -769,8 +769,9 @@ class CareerInboxService:
         idempotency_key: str,
         actor_id: str,
     ) -> dict[str, Any]:
-        """Owner-only. ``applied`` is not allowed here - it requires
-        :meth:`confirm_applied` after ``prepare`` (SPEC section 9)."""
+        """Owner-only. ``applied`` is not allowed here - it goes through
+        :meth:`confirm_applied`, which also creates the ledger application
+        (SPEC section 9)."""
         if verdict not in VALID_MANUAL_VERDICTS:
             raise CareerInboxError(f"unsupported inbox verdict: {verdict}")
         idempotency_key = _bounded_text(
@@ -814,9 +815,20 @@ class CareerInboxService:
         idempotency_key: str,
         actor_id: str,
     ) -> dict[str, Any]:
-        """Owner-only, second confirmation step after ``prepare``. Links a
-        real :class:`CareerApplication` created via the existing ledger
-        idempotent path - no new send/apply logic is introduced here."""
+        """Owner-only confirmation that an application was sent. Links a real
+        :class:`CareerApplication` created via the existing ledger idempotent
+        path - no new send/apply logic is introduced here.
+
+        Accepts any card that is not already settled, not only one that went
+        through ``prepare``. The owner applies on the company's own site far
+        more often than through the package flow, and requiring ``prepare``
+        first meant those applications had nowhere to be recorded: over
+        2026-08-27..28 the owner processed most of the queue and exactly one
+        decision reached the database. Unrecorded outcomes are not a cosmetic
+        loss - they are the calibration signal itself.
+
+        A settled card (skip / false_positive) still cannot be flipped, and an
+        already-applied card replays idempotently."""
         idempotency_key = _bounded_text(
             "idempotency_key", idempotency_key, 200, required=True
         )
@@ -843,9 +855,12 @@ class CareerInboxService:
                 "inbox_item": _inbox_item_dict(row),
                 "application": application,
             }
-        if row.owner_verdict != VERDICT_PREPARE:
+        if row.owner_verdict in SETTLED_INBOX_VERDICTS:
+            # VERDICT_APPLIED is handled above as an idempotent replay; reaching
+            # here means skip/false_positive - a decision already made against
+            # this vacancy, which a later tap must not silently overwrite.
             raise CareerInboxError(
-                "confirm_applied requires a prior 'prepare' verdict"
+                f"cannot confirm applied for a settled card: {row.owner_verdict}"
             )
 
         try:

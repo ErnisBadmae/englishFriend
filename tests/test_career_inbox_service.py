@@ -622,7 +622,10 @@ async def test_skip_verdict_never_creates_an_application(pg_session_maker):
 
 
 @pytest.mark.integration
-async def test_confirm_applied_requires_prior_prepare_verdict(pg_session_maker):
+async def test_confirm_applied_without_prepare_records_the_application(pg_session_maker):
+    """Отклик уходит на сайте компании чаще, чем через сборку пакета. Требование
+    предварительного `prepare` означало, что такие отклики негде записать, и
+    очередь выглядела необработанной при том, что владелец её разобрал."""
     async with pg_session_maker() as db:
         user_id = await _create_user(db)
         service = CareerInboxService(db)
@@ -636,6 +639,43 @@ async def test_confirm_applied_requires_prior_prepare_verdict(pg_session_maker):
             actor_id="123456",
         )
         inbox_item_id = result["inbox_item"]["inbox_item_id"]
+
+        applied = await service.confirm_applied(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
+        assert applied["created"] is True
+        assert applied["inbox_item"]["owner_verdict"] == "applied"
+        assert applied["application"]["application_id"]
+
+
+@pytest.mark.integration
+async def test_confirm_applied_refuses_a_settled_card(pg_session_maker):
+    """Снятое ограничение не должно позволять переписать уже принятое решение:
+    карточка, закрытая как «не подходит», не становится откликом по нажатию."""
+    async with pg_session_maker() as db:
+        user_id = await _create_user(db)
+        service = CareerInboxService(db)
+        result = await service.confirm_manual_lead(
+            user_id,
+            source="manual",
+            raw_text="ГСП-Центр приглашает на техническое интервью",
+            company="ГСП-Центр",
+            role_title="Applied AI Engineer",
+            idempotency_key=f"telegram:{uuid4().hex}",
+            actor_id="123456",
+        )
+        inbox_item_id = result["inbox_item"]["inbox_item_id"]
+        await service.set_verdict(
+            user_id,
+            inbox_item_id=inbox_item_id,
+            verdict="skip",
+            reason="role_scope",
+            idempotency_key=f"telegram_callback:{uuid4().hex}",
+            actor_id="123456",
+        )
 
         with pytest.raises(CareerInboxError):
             await service.confirm_applied(

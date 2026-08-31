@@ -1840,6 +1840,11 @@ class MlTechnicalTelegramController:
         ("lang", "Английский", "language_path"),
         # Not a gate error: the gates were right when the post was written.
         ("closed", "Вакансия закрыта", "vacancy_closed"),
+        # Also not a gate error - the role fits, the application channel does
+        # not. Kept separate from "other" because lumping it in would read as
+        # "the gates were wrong" during calibration, when in fact nothing about
+        # the vacancy was misjudged.
+        ("extreg", "Нужна регистрация на площадке", "external_platform_signup"),
         ("other", "Другое", "other"),
     )
 
@@ -2131,6 +2136,10 @@ class MlTechnicalTelegramController:
             rows.append([("Повторить подготовку", _career_prepare_callback(inbox_item_id))])
         else:
             rows.append([("Подготовить отклик", _career_prepare_callback(inbox_item_id))])
+            # Рядом с вакансией, а не только в конце сборки пакета: отклик чаще
+            # уходит прямо на сайте компании, и без этой кнопки его некуда было
+            # записать — очередь выглядела необработанной, а калибровка пустой.
+            rows.append([("Я уже откликнулся", _career_applied_callback(inbox_item_id))])
             if questions:
                 rows.append([("Уточнить", _career_verdict_callback(inbox_item_id, "ask"))])
             rows.append([("В избранное", _career_favorite_callback(inbox_item_id))])
@@ -2617,7 +2626,9 @@ class MlTechnicalTelegramController:
                 actor_id=str(self._telegram_id(callback)),
             )
         except CareerInboxError:
-            await callback.answer("Сначала нажмите Готовить")
+            # Единственный оставшийся отказ — карточка уже закрыта решением
+            # (не подходит / ошибка данных); «Готовить» больше не требуется.
+            await callback.answer("Карточка уже закрыта другим решением")
             return
         await callback.answer("Отклик отправлен")
         await self._show_inbox_item(callback.message, user_id, inbox_item_id)

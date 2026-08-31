@@ -218,8 +218,14 @@ class FakeInboxGateway:
 
     async def confirm_inbox_applied(self, user_id, *, inbox_item_id, idempotency_key, actor_id):
         item = self.inbox_items.get(inbox_item_id)
-        if item is None or item["owner_verdict"] != "prepare":
-            raise CareerInboxError("confirm_applied requires a prior 'prepare' verdict")
+        if item is None:
+            raise CareerInboxError(f"unknown career inbox_item_id: {inbox_item_id}")
+        # Зеркалит CareerInboxService.confirm_applied: отклик принимается с любой
+        # неразрешённой карточки, но уже закрытое решение не переписывается.
+        if item["owner_verdict"] in ("skip", "false_positive"):
+            raise CareerInboxError(
+                f"cannot confirm applied for a settled card: {item['owner_verdict']}"
+            )
         application_id = str(uuid4())
         application = {
             "application_id": application_id,
@@ -762,7 +768,10 @@ async def test_prepare_then_applied_links_one_application():
 
 
 @pytest.mark.asyncio
-async def test_applied_without_prior_prepare_fails_closed_and_creates_nothing():
+async def test_applied_without_prior_prepare_records_the_application():
+    """Отклик уходит на сайте компании, минуя сборку пакета. Пока это требовало
+    предварительного «Готовить», такие отклики было некуда записать — очередь
+    выглядела необработанной при разобранной очереди."""
     gateway = FakeInboxGateway()
     controller = _controller(gateway, enabled=True)
     item_id = await _seeded_item(gateway, controller)
@@ -770,9 +779,26 @@ async def test_applied_without_prior_prepare_fails_closed_and_creates_nothing():
     applied = FakeCallback(111, _career_applied_callback(item_id))
     await controller.on_career_callback(applied)
 
-    assert applied.answers == ["Сначала нажмите Готовить"]
+    assert applied.answers == ["Отклик отправлен"]
+    assert gateway.inbox_items[item_id]["owner_verdict"] == "applied"
+    assert len(gateway.applications) == 1
+
+
+@pytest.mark.asyncio
+async def test_applied_does_not_overwrite_a_settled_card():
+    """Снятое требование «Готовить» не должно превращаться в возможность
+    переписать уже принятое решение."""
+    gateway = FakeInboxGateway()
+    controller = _controller(gateway, enabled=True)
+    item_id = await _seeded_item(gateway, controller)
+    gateway.inbox_items[item_id]["owner_verdict"] = "skip"
+
+    applied = FakeCallback(111, _career_applied_callback(item_id))
+    await controller.on_career_callback(applied)
+
+    assert applied.answers == ["Карточка уже закрыта другим решением"]
     assert gateway.applications == {}
-    assert gateway.inbox_items[item_id]["owner_verdict"] is None
+    assert gateway.inbox_items[item_id]["owner_verdict"] == "skip"
 
 
 @pytest.mark.asyncio
@@ -2041,6 +2067,7 @@ async def test_rejection_picker_offers_every_gate_and_a_way_back():
         "Мало денег",
         "Английский",
         "Вакансия закрыта",
+        "Нужна регистрация на площадке",
         "Другое",
         "Назад",
     ]
